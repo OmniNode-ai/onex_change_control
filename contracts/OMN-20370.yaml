@@ -1,0 +1,80 @@
+---
+schema_version: "1.0.0"
+ticket_id: "OMN-20370"
+title: "A hand-authored change-control receipt can carry composed probe_stdout: require a captured-run
+  record and refuse receipts without one"
+summary: >-
+  onex_change_control#12323 merged a PASS receipt whose probe_stdout named a test file absent from omnibase_infra#4462
+  at the commit it pinned, and #12266 recorded grep -c printing 1 for a pinned-ref read that prints 4.
+  On the hand-companion path probe_stdout was free text. check_receipt_hardening.py gains --capture-probe,
+  which runs the receipt's probe_command and writes probe_stdout, exit_code, run_timestamp, duration_ms
+  and a sha256 capture record from that run, and the CI receipt hardening step refuses a receipt a PR
+  adds on a non-autobind branch without a matching capture record. The landing worker brief (omniclaude-internal#276)
+  directs hand-authored receipts through the capture mode.
+contract_completeness: ENRICHED
+is_seam_ticket: false
+interface_change: false
+interfaces_touched: []
+requirements:
+  - id: "req-captured-probe-stdout"
+    statement: >-
+      A hand-authored receipt's probe_stdout, exit_code and run_timestamp come from running its probe_command,
+      and change-control CI refuses an added hand-authored receipt that carries no capture record of that
+      run.
+    acceptance:
+      - id: "AC1"
+        statement: >-
+          AC1: Capture mode runs the probe and writes probe_stdout, exit_code, run_timestamp, duration_ms
+          and the stdout and argv digests from that run, refusing a probe that prints nothing. Falsifier:
+          `uv run --locked pytest tests/unit/scripts/test_receipt_probe_capture.py -q` fails.
+      - id: "AC2"
+        statement: >-
+          AC2: The CI receipt hardening step refuses an added receipt on a non-auto branch whose capture
+          record is missing or whose stdout digest does not match its probe_stdout, and admits a captured
+          one. Falsifier: `uv run --locked pytest tests/unit/scripts/test_receipt_probe_capture.py -q
+          -k gate` fails.
+      - id: "AC3"
+        statement: >-
+          AC3: The landing worker brief directs hand-authored receipts through the capture mode and forbids
+          hand-typed probe_stdout. Falsifier: the brief at omniclaude-internal#276's head does not name
+          check_receipt_hardening.py --capture-probe.
+evidence_requirements:
+  - kind: "tests"
+    description: "The capture and gate controls pass at the source tree."
+    command: "uv run --locked pytest tests/unit/scripts/test_receipt_probe_capture.py -q"
+  - kind: "tests"
+    description: "The gate controls pass at the source tree."
+    command: "uv run --locked pytest tests/unit/scripts/test_receipt_probe_capture.py -q -k gate"
+emergency_bypass:
+  enabled: false
+  justification: ""
+  follow_up_ticket_id: ""
+dod_evidence:
+  - id: "dod-20370-capture-and-gate"
+    description: >-
+      The capture-mode and gate controls in tests/unit/scripts/test_receipt_probe_capture.py pass, including
+      the live #12323 receipt refused and a stdout edited after capture refused.
+    source: "manual"
+    binds_ac: ["AC1", "AC2"]
+    checks:
+      - check_type: "test_passes"
+        check_value: "uv run --locked pytest tests/unit/scripts/test_receipt_probe_capture.py -q"
+  - id: "dod-20370-gate-controls"
+    description: "The gate-only controls pass: missing record refused, edited stdout refused, captured
+      admitted, auto/ exempt."
+    source: "manual"
+    binds_ac: ["AC2"]
+    checks:
+      - check_type: "test_passes"
+        check_value: "uv run --locked pytest tests/unit/scripts/test_receipt_probe_capture.py -q -k gate"
+  - id: "dod-20370-worker-brief"
+    description: >-
+      The landing worker brief at omniclaude-internal#276's head commit fc873bde2f413017e5afd28a0dfc1eba3c16d20a
+      names the capture command; counts the lines carrying it.
+    source: "manual"
+    binds_ac: ["AC3"]
+    checks:
+      - check_type: "command"
+        check_value: >-
+          gh api -H 'Accept: application/vnd.github.raw' "repos/OmniNode-ai/omniclaude-internal/contents/plugins/omni/skills/merge-drain/scripts/landing_worker_run.py?ref=fc873bde2f413017e5afd28a0dfc1eba3c16d20a"
+          | grep -cF 'check_receipt_hardening.py --capture-probe'

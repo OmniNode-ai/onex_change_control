@@ -366,6 +366,10 @@ jobs:
         env:
           BASE_REF: ${{ github.base_ref || github.event.merge_group.base_ref || 'dev' }}
           GH_TOKEN: ${{ steps.app-token.outputs.token || github.token }}
+          # OMN-20370: the PR head branch. A receipt this PR ADDS must carry a
+          # capture record (check_receipt_hardening.py --capture-probe) unless
+          # the branch is the autobind producer's auto/ branch. Empty off a PR.
+          HEAD_REF: ${{ github.head_ref }}
         run: |
           set -euo pipefail
           base_ref="${BASE_REF#refs/heads/}"
@@ -374,7 +378,11 @@ jobs:
           # preserves legal newline-containing paths and gives hardening one
           # process/session (one local index and one bounded REST budget).
           changed_paths_file="$(mktemp)"
-          trap 'rm -f "$changed_paths_file"' EXIT
+          added_paths_file="$(mktemp)"
+          trap 'rm -f "$changed_paths_file" "$added_paths_file"' EXIT
+          git diff --name-only -z --diff-filter=A "origin/${base_ref}"...HEAD -- \
+            ':(glob)drift/dod_receipts/**/*.yaml' \
+            ':(glob)drift/dod_receipts/**/*.yml' > "$added_paths_file"
           git diff --name-only -z --diff-filter=ACMRT "origin/${base_ref}"...HEAD -- \
             ':(glob)drift/dod_receipts/**/*.yaml' \
             ':(glob)drift/dod_receipts/**/*.yml' \
@@ -393,7 +401,9 @@ jobs:
           fi
           uv run python scripts/validation/check_receipt_hardening.py \
             --paths-file0 "$changed_paths_file" \
-            --commit-sha-rest-budget "$rest_budget"
+            --commit-sha-rest-budget "$rest_budget" \
+            --probe-capture-added-file0 "$added_paths_file" \
+            --head-ref "$HEAD_REF"
 
       # OMN-18304: the step above validates the FILES in the diff. A changed
       # contract is routed to the contract-shaped check and is never expanded

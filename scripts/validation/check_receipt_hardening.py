@@ -485,6 +485,7 @@ from __future__ import annotations
 
 import argparse
 import ast
+import hashlib
 import json
 import os
 import re
@@ -3209,6 +3210,9 @@ def check_commit_sha_wiring(precommit_yaml: Path, ci_yaml: Path) -> list[str]:
         "git diff --name-only -z --diff-filter=ACMRT",
         '--paths-file0 "$changed_paths_file"',
         "--commit-sha-rest-budget",
+        "git diff --name-only -z --diff-filter=A",
+        '--probe-capture-added-file0 "$added_paths_file"',
+        '--head-ref "$HEAD_REF"',
     ):
         if required not in ci_text:
             failures.append(
@@ -3619,6 +3623,293 @@ def _write_commit_sha_inventory(
     return 2 if incomplete else 0
 
 
+# ---------------------------------------------------------------------------
+# OMN-20370 rule PROBE_CAPTURE — a hand-authored receipt's probe_stdout comes
+# from running its probe_command, never from typing.
+# ---------------------------------------------------------------------------
+#
+# onex_change_control#12323 merged a PASS receipt whose probe_stdout named a
+# test file absent from the PR at the commit it pinned, and #12266 recorded
+# ``grep -c`` printing 1 for a pinned-ref read that prints 4. On the
+# hand-companion path probe_stdout was free text, and nothing here could tell
+# captured output from composed text.
+#
+# ``--capture-probe`` is the producing side: it runs the receipt's
+# probe_command with ``/bin/bash -c`` and writes probe_stdout, exit_code,
+# run_timestamp and duration_ms from that run, plus a capture record in
+# ``artifact_sha256``: the sha256 of the recorded stdout and the sha256 of the
+# exact argv. ``--probe-capture-added-file0`` is the gate: CI hands it the
+# receipts a PR ADDS, and on any branch that is not the autobind producer's
+# (``auto/``) each one must carry a capture record matching its own fields.
+#
+# Limit, stated plainly: the record is recomputable from the receipt, so the
+# gate proves the receipt went through the capture path or was forged on
+# purpose. It removes the careless path (a summary typed in place of output);
+# it does not prove provenance. Re-executing the probe at the gate is the next
+# step and is not attempted here.
+
+PROBE_CAPTURE_TICKET = "OMN-20370"
+PROBE_CAPTURE_RULE = "[PROBE_CAPTURE]"
+PROBE_CAPTURE_VERIFIER = "occ-probe-capture-v1"
+PROBE_CAPTURE_EXEMPT_BRANCH_PREFIX = "auto/"
+_ANSI_CSI_RE = re.compile(r"\x1b\[[0-9;?]*[ -/]*[@-~]")
+_DEFAULT_PROBE_TIMEOUT_S = 1800
+_PROBE_SHELL = "/bin/bash"
+
+
+class ProbeCaptureError(RuntimeError):
+    """The probe could not be captured into an honest receipt."""
+
+
+class _CaptureDumper(yaml.SafeDumper):
+    """Writes multi-line strings as literal block scalars.
+
+    A quoted multi-line scalar is what yamlfmt rewrites with its internal
+    line marker (OMN-15479); a literal block survives it unchanged.
+    """
+
+
+def _represent_capture_str(dumper: yaml.SafeDumper, data: str) -> yaml.Node:
+    style = "|" if "\n" in data else None
+    return dumper.represent_scalar("tag:yaml.org,2002:str", data, style=style)
+
+
+_CaptureDumper.add_representer(str, _represent_capture_str)
+
+
+def normalize_probe_stdout(text: str) -> str:
+    """Strip ANSI CSI codes, CRLF, per-line trailing blanks and edge newlines.
+
+    yamlfmt may reflow a block scalar's trailing whitespace; the digest is
+    taken over this normal form so formatting never moves it, while any change
+    to the content does. Pure and idempotent.
+    """
+    lines = _ANSI_CSI_RE.sub("", text).replace("\r\n", "\n").split("\n")
+    return "\n".join(line.rstrip() for line in lines).strip("\n")
+
+
+def _sha256_text(text: str) -> str:
+    return "sha256:" + hashlib.sha256(text.encode("utf-8")).hexdigest()
+
+
+def _red_green_proof(probe_stdout: str) -> dict[str, object] | None:
+    """The structured red/green proof object, when probe_stdout is one."""
+    try:
+        parsed = json.loads(probe_stdout)
+    except (TypeError, ValueError):
+        return None
+    if isinstance(parsed, dict) and {"evidence_ref", "red_ref"} <= parsed.keys():
+        return parsed
+    return None
+
+
+def probe_capture_argvs(probe_command: str, probe_stdout: str) -> list[list[str]]:
+    """The exact argv(s) the capture path ran for this receipt.
+
+    One ``/bin/bash -c`` leg, or two for a red/green proof (the red leg is the
+    probe with its evidence ref replaced by the red ref). Pure function.
+    """
+    proof = _red_green_proof(probe_stdout)
+    if proof is None:
+        return [[_PROBE_SHELL, "-c", probe_command]]
+    red_command = probe_command.replace(
+        str(proof["evidence_ref"]), str(proof["red_ref"])
+    )
+    return [[_PROBE_SHELL, "-c", probe_command], [_PROBE_SHELL, "-c", red_command]]
+
+
+def probe_capture_record(probe_command: str, probe_stdout: str) -> list[str]:
+    """``[sha256(stdout), sha256(argv)]`` for the receipt's own fields."""
+    argvs = probe_capture_argvs(probe_command, probe_stdout)
+    return [
+        _sha256_text(normalize_probe_stdout(probe_stdout)),
+        _sha256_text(json.dumps(argvs, separators=(",", ":"))),
+    ]
+
+
+def probe_capture_violations(receipt: object, label: str) -> list[str]:
+    """PROBE_CAPTURE fragments for one receipt mapping, empty when captured."""
+    if not isinstance(receipt, dict):
+        return [f"{label}: {PROBE_CAPTURE_RULE} receipt is not a mapping"]
+    command = receipt.get("probe_command")
+    stdout = receipt.get("probe_stdout")
+    if not isinstance(command, str) or not isinstance(stdout, str):
+        return [
+            f"{label}: {PROBE_CAPTURE_RULE} probe_command and probe_stdout "
+            "must both be strings"
+        ]
+    problems: list[str] = []
+    if receipt.get("verifier") != PROBE_CAPTURE_VERIFIER:
+        problems.append(f"verifier is not {PROBE_CAPTURE_VERIFIER!r}")
+    if list(receipt.get("artifact_sha256") or []) != probe_capture_record(
+        command, stdout
+    ):
+        problems.append(
+            "artifact_sha256 is not [sha256(probe_stdout), sha256(argv)] of "
+            "this receipt's own probe fields"
+        )
+    duration = receipt.get("duration_ms")
+    if not isinstance(duration, int) or isinstance(duration, bool) or duration < 0:
+        problems.append("duration_ms is missing")
+    if not isinstance(receipt.get("exit_code"), int):
+        problems.append("exit_code is missing")
+    if not problems:
+        return []
+    return [
+        f"{label}: {PROBE_CAPTURE_RULE} hand-authored receipt has no capture "
+        f"record ({'; '.join(problems)}). probe_stdout must be the output of "
+        "running probe_command, never typed or summarised "
+        f"({PROBE_CAPTURE_TICKET}). Fill it by running: uv run python "
+        "scripts/validation/check_receipt_hardening.py --capture-probe "
+        f"{label} --probe-cwd <checkout the probe runs in>"
+    ]
+
+
+def _capture_target(document: dict[str, object]) -> dict[str, object] | None:
+    """The receipt mapping inside a receipt or supersede document.
+
+    A tombstone supersession carries no replacement and records no run.
+    """
+    if "supersedes" in document:
+        replacement = document.get("replacement")
+        return replacement if isinstance(replacement, dict) else None
+    return document
+
+
+def _run_probe_leg(command: str, cwd: Path, timeout_s: int) -> tuple[str, int]:
+    """Run one probe leg as ``/bin/bash -c <command>``.
+
+    The command reaches bash through the environment and ``eval`` so the
+    argv handed to ``subprocess`` stays a literal; the shell semantics are
+    those of ``/bin/bash -c <command>``, which is the argv recorded.
+    """
+    completed = subprocess.run(
+        ["/bin/bash", "-c", 'eval "$OCC_PROBE_COMMAND"'],
+        env={**os.environ, "OCC_PROBE_COMMAND": command},
+        cwd=cwd,
+        capture_output=True,
+        timeout=timeout_s,
+        check=False,
+    )
+    return completed.stdout.decode("utf-8", errors="replace"), completed.returncode
+
+
+def capture_probe(
+    receipt_path: Path,
+    probe_cwd: Path,
+    *,
+    red_ref: str | None = None,
+    timeout_s: int = _DEFAULT_PROBE_TIMEOUT_S,
+) -> dict[str, object]:
+    """Run the receipt's probe_command and write its fields from that run.
+
+    Returns the receipt mapping written. Raises ``ProbeCaptureError`` when the
+    probe prints nothing (the schema refuses an empty stdout, and composing a
+    line in its place is the defect this exists to stop), or when a PASS
+    receipt's probe exits non-zero.
+    """
+    document = yaml.safe_load(receipt_path.read_text())
+    if not isinstance(document, dict):
+        msg = f"{receipt_path}: not a YAML mapping"
+        raise ProbeCaptureError(msg)
+    target = _capture_target(document)
+    if target is None:
+        msg = f"{receipt_path}: tombstone, no probe to run"
+        raise ProbeCaptureError(msg)
+    command = target.get("probe_command")
+    if not isinstance(command, str) or not command.strip():
+        msg = f"{receipt_path}: probe_command is empty"
+        raise ProbeCaptureError(msg)
+    started = datetime.now(UTC)
+    stdout, exit_code = _run_probe_leg(command, probe_cwd, timeout_s)
+    recorded = normalize_probe_stdout(stdout)
+    if red_ref is not None:
+        evidence_ref = str(target.get("commit_sha") or "")
+        if not evidence_ref or evidence_ref not in command:
+            msg = (
+                f"{receipt_path}: --red-ref needs probe_command to name the "
+                "receipt's commit_sha, which it replaces for the red leg"
+            )
+            raise ProbeCaptureError(msg)
+        _, red_exit = _run_probe_leg(
+            command.replace(evidence_ref, red_ref), probe_cwd, timeout_s
+        )
+        if target.get("status") == "PASS" and red_exit == 0:
+            msg = (
+                f"{receipt_path}: the red leg at {red_ref} also exited 0, so the "
+                "probe does not tell the change apart from its absence."
+            )
+            raise ProbeCaptureError(msg)
+        recorded = json.dumps(
+            {
+                "evidence_ref": evidence_ref,
+                "green_exit": exit_code,
+                "red_exit": red_exit,
+                "red_ref": red_ref,
+            },
+            sort_keys=True,
+            separators=(",", ":"),
+        )
+    duration_ms = int((datetime.now(UTC) - started).total_seconds() * 1000)
+    if not recorded:
+        msg = (
+            f"{receipt_path}: the probe printed nothing (exit {exit_code}). "
+            "Make the probe print what it asserts (drop grep -q, print the "
+            "value it compares); never write a line in its place."
+        )
+        raise ProbeCaptureError(msg)
+    if target.get("status") == "PASS" and exit_code != 0:
+        msg = (
+            f"{receipt_path}: the probe exited {exit_code}; a PASS receipt "
+            "needs exit 0. Record the run as FAIL, or fix what it checks."
+        )
+        raise ProbeCaptureError(msg)
+    target["probe_stdout"] = recorded
+    target["exit_code"] = exit_code
+    target["run_timestamp"] = (
+        started.replace(microsecond=0).isoformat().replace("+00:00", "Z")
+    )
+    target["duration_ms"] = duration_ms
+    target["verifier"] = PROBE_CAPTURE_VERIFIER
+    target["artifact_sha256"] = probe_capture_record(command, recorded)
+    receipt_path.write_text(
+        yaml.dump(
+            document,
+            Dumper=_CaptureDumper,
+            sort_keys=False,
+            allow_unicode=True,
+            width=100,
+        )
+    )
+    return target
+
+
+def run_probe_capture_gate(added_paths: list[Path], head_ref: str) -> list[str]:
+    """PROBE_CAPTURE violations for the receipts a PR adds."""
+    if head_ref.startswith(PROBE_CAPTURE_EXEMPT_BRANCH_PREFIX):
+        return []
+    violations: list[str] = []
+    for path in added_paths:
+        posix = path.as_posix()
+        if not posix.startswith(f"{RECEIPTS_ROOT.as_posix()}/"):
+            continue
+        if path.suffix not in (".yaml", ".yml") or not path.is_file():
+            continue
+        try:
+            document = yaml.safe_load(path.read_text())
+        except yaml.YAMLError as exc:
+            violations.append(f"{posix}: {PROBE_CAPTURE_RULE} unparseable: {exc}")
+            continue
+        if not isinstance(document, dict):
+            violations.append(f"{posix}: {PROBE_CAPTURE_RULE} not a mapping")
+            continue
+        target = _capture_target(document)
+        if target is None:
+            continue
+        violations.extend(probe_capture_violations(target, posix))
+    return violations
+
+
 def main(  # noqa: C901, PLR0912, PLR0915
     argv: list[str] | None = None,
 ) -> int:
@@ -3777,7 +4068,63 @@ def main(  # noqa: C901, PLR0912, PLR0915
             "gate them)."
         ),
     )
+    parser.add_argument(
+        "--capture-probe",
+        metavar="RECEIPT",
+        help=(
+            f"{PROBE_CAPTURE_TICKET}: run RECEIPT's probe_command and write "
+            "probe_stdout, exit_code, run_timestamp, duration_ms and the capture "
+            "record from that run. The only way to fill a hand-authored receipt."
+        ),
+    )
+    parser.add_argument(
+        "--probe-cwd",
+        default=".",
+        help="Directory the probe runs in (the product checkout at commit_sha).",
+    )
+    parser.add_argument(
+        "--red-ref",
+        help=(
+            "With --capture-probe: also run the probe with commit_sha replaced "
+            "by this ref, and record the structured red/green proof."
+        ),
+    )
+    parser.add_argument(
+        "--probe-timeout",
+        type=int,
+        default=_DEFAULT_PROBE_TIMEOUT_S,
+        help="Seconds before one probe leg is killed.",
+    )
+    parser.add_argument(
+        "--probe-capture-added-file0",
+        help=(
+            f"{PROBE_CAPTURE_TICKET}: NUL-delimited receipts this PR adds; each "
+            "must carry a capture record unless --head-ref is an autobind branch."
+        ),
+    )
+    parser.add_argument(
+        "--head-ref",
+        default="",
+        help="The PR head branch, read with --probe-capture-added-file0.",
+    )
     args = parser.parse_args(argv)
+    if args.capture_probe:
+        try:
+            written = capture_probe(
+                Path(args.capture_probe),
+                Path(args.probe_cwd),
+                red_ref=args.red_ref,
+                timeout_s=args.probe_timeout,
+            )
+        except (ProbeCaptureError, OSError, subprocess.TimeoutExpired) as exc:
+            print(f"PROBE CAPTURE REFUSED: {exc}")
+            return 2
+        print(
+            f"PROBE CAPTURED: {args.capture_probe} exit={written['exit_code']} "
+            f"duration_ms={written['duration_ms']} "
+            f"capture_record={written['artifact_sha256']}"
+        )
+        return 0
     if args.staged and args.paths_file0:
         parser.error("--staged and --paths-file0 are mutually exclusive")
     contracts_dir = Path(args.contracts_dir)
@@ -3910,6 +4257,20 @@ def main(  # noqa: C901, PLR0912, PLR0915
                 derived_verifier_baseline,
             )
         )
+
+    if args.probe_capture_added_file0:
+        if not args.head_ref:
+            print(
+                f"{PROBE_CAPTURE_RULE} no --head-ref (not a pull request): "
+                "added-receipt capture check not applicable."
+            )
+        else:
+            try:
+                added_paths = _read_paths_file0(Path(args.probe_capture_added_file0))
+            except OSError as exc:
+                print(f"Receipt hardening infrastructure unavailable: {exc}")
+                return 2
+            all_violations.extend(run_probe_capture_gate(added_paths, args.head_ref))
 
     if infrastructure_diagnostics:
         print("Receipt hardening infrastructure unavailable:\n")
