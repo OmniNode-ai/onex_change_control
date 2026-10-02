@@ -3661,6 +3661,22 @@ class ProbeCaptureError(RuntimeError):
     """The probe could not be captured into an honest receipt."""
 
 
+class _CaptureDumper(yaml.SafeDumper):
+    """Writes multi-line strings as literal block scalars.
+
+    A quoted multi-line scalar is what yamlfmt rewrites with its internal
+    line marker (OMN-15479); a literal block survives it unchanged.
+    """
+
+
+def _represent_capture_str(dumper: yaml.SafeDumper, data: str) -> yaml.Node:
+    style = "|" if "\n" in data else None
+    return dumper.represent_scalar("tag:yaml.org,2002:str", data, style=style)
+
+
+_CaptureDumper.add_representer(str, _represent_capture_str)
+
+
 def normalize_probe_stdout(text: str) -> str:
     """Strip ANSI CSI codes, CRLF, per-line trailing blanks and edge newlines.
 
@@ -3857,7 +3873,13 @@ def capture_probe(
     target["verifier"] = PROBE_CAPTURE_VERIFIER
     target["artifact_sha256"] = probe_capture_record(command, recorded)
     receipt_path.write_text(
-        yaml.safe_dump(document, sort_keys=False, allow_unicode=True, width=100)
+        yaml.dump(
+            document,
+            Dumper=_CaptureDumper,
+            sort_keys=False,
+            allow_unicode=True,
+            width=100,
+        )
     )
     return target
 

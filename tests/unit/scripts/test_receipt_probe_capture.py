@@ -88,6 +88,7 @@ def test_capture_writes_fields_from_the_run(tmp_path: Path) -> None:
     assert written["artifact_sha256"] == gate.probe_capture_record(
         written["probe_command"], "first\nsecond"
     )
+    assert "probe_stdout: |" in path.read_text()  # a literal block survives yamlfmt
     on_disk = yaml.safe_load(path.read_text())
     assert on_disk["probe_stdout"] == "first\nsecond"
     assert on_disk["run_timestamp"] != "2026-10-02T00:00:00Z"
