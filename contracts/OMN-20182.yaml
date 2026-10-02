@@ -54,3 +54,92 @@ dod_evidence:
     checks:
       - check_type: "command"
         check_value: "gh pr view 3145 --repo OmniNode-ai/omnimarket --json files"
+  - id: "dod-da-20182-ac1-secret-ref-every-tier"
+    description: |-
+      AC1 behavior proof (done-audit-0c2f, OMN-17427). Runs the backend secret-discipline scanner over
+      a backend with no secret reference in the judge, typed_decision, an unknown and an empty tier
+      and asserts exactly one violation each, and over a local backend with no reference and asserts
+      none.
+    source: "generated"
+    execution_scope: "local_done_gate"
+    checks:
+      - check_type: "test_passes"
+        check_value: |-
+          env -u PYTHONPATH uv run pytest "tests/ci/test_check_backend_secret_discipline.py::test_non_local_backend_requires_ref_in_every_tier" "tests/ci/test_check_backend_secret_discipline.py::test_local_backend_without_ref_passes" -q
+        cwd: "${OMNI_HOME}/omnimarket"
+    binds_ac:
+      - "AC1"
+    ac_bindings:
+      - label: "AC1"
+        criterion_hash: "3a61dc30504a25a368a5878e6aaeee07d5703dcb352cc7c2b50d6cedd0794d7e"
+        proposed_by: "done-audit-0c2f"
+        accepted_by: "done-audit-0c2f"
+        accepted_at: "2026-10-02T16:45:00Z"
+  - id: "dod-da-20182-ac2-duplicate-backend-id"
+    description: |-
+      AC2 behavior proof (done-audit-0c2f, OMN-17427). The duplicate-registry test module asserts the
+      manifest covers bifrost_delegation.yaml backends by backend_id, that a planted duplicate in
+      every manifest registry makes the validator and its CLI exit 1, that the pre-commit hook covers
+      every registry, and that the required lint job runs the validator with no if and no continue-on-
+      error.
+    source: "generated"
+    execution_scope: "local_done_gate"
+    checks:
+      - check_type: "test_passes"
+        check_value: |-
+          env -u PYTHONPATH uv run pytest "tests/ci/test_duplicate_registry_ids.py" -q
+        cwd: "${OMNI_HOME}/omnimarket"
+    binds_ac:
+      - "AC2"
+    ac_bindings:
+      - label: "AC2"
+        criterion_hash: "3cef9793e2b3533ec13ca1d68b360ca82881da8029f87d8bbe2cc9cd9796fca6"
+        proposed_by: "done-audit-0c2f"
+        accepted_by: "done-audit-0c2f"
+        accepted_at: "2026-10-02T16:45:00Z"
+  - id: "dod-da-20182-ac3-flip-step-unfetchable-base"
+    description: |-
+      AC3 behavior proof (done-audit-0c2f, OMN-17427), two checks. (1) The flip-bundle test module
+      asserts the live ci.yml step fetches and verifies origin/dev before the gate and rejects four
+      fail-open variants. (2) A probe executes the step's own run block, extracted from ci.yml, under
+      bash -e as GitHub runs it, with the gate replaced by a stub that prints GATE_REACHED: against a
+      reachable origin with a dev branch the step exits 0 and reaches the gate (positive control),
+      against an unfetchable origin it exits non-zero before the gate. Mutation control, run by the
+      author on .201 at omnimarket 3974d94f0d1c: with `|| true` appended to the fetch and verify lines
+      the unfetchable case reached the gate and the probe exited 1.
+    source: "generated"
+    execution_scope: "local_done_gate"
+    checks:
+      - check_type: "test_passes"
+        check_value: |-
+          env -u PYTHONPATH uv run pytest "tests/ci/test_flip_bundle_ci_gate.py" -q
+        cwd: "${OMNI_HOME}/omnimarket"
+      - check_type: "command"
+        check_value: |-
+          cd "${OMNI_HOME}/omnimarket" || exit 2
+          t="$(mktemp -d)"
+          mkdir -p "$t/bin" "$t/good" "$t/bad"
+          printf '#!/bin/sh\necho GATE_REACHED\n' > "$t/bin/uv" && chmod +x "$t/bin/uv"
+          env -u PYTHONPATH uv run python -c "import sys, yaml; s = next(x for x in yaml.safe_load(open('.github/workflows/ci.yml'))['jobs']['lint']['steps'] if x.get('name') == 'Canonical-shape flip-bundle seam gate (OMN-15344 fan-out)'); open(sys.argv[1], 'w').write(s['run'])" "$t/step.sh" || exit 2
+          git init -q --bare "$t/origin.git"
+          git -C "$t/good" init -q
+          seed="$(git -C "$t/good" -c user.name=probe -c user.email=probe@invalid commit-tree "$(git -C "$t/good" write-tree)" -m seed)"
+          git -C "$t/good" push -q "$t/origin.git" "$seed:refs/heads/dev"
+          git -C "$t/good" remote add origin "$t/origin.git"
+          git -C "$t/bad" init -q
+          git -C "$t/bad" remote add origin "$t/no-such-origin.git"
+          (cd "$t/good" && PATH="$t/bin:$PATH" bash -e "$t/step.sh") > "$t/good.out" 2>&1; good=$?
+          (cd "$t/bad" && PATH="$t/bin:$PATH" bash -e "$t/step.sh") > "$t/bad.out" 2>&1; bad=$?
+          good_gate="$(grep -c GATE_REACHED "$t/good.out")"; bad_gate="$(grep -c GATE_REACHED "$t/bad.out")"
+          echo "reachable origin: step rc=$good gate_reached=$good_gate"
+          echo "unfetchable origin: step rc=$bad gate_reached=$bad_gate"
+          rm -rf "$t"
+          test "$good" -eq 0 && test "$good_gate" -eq 1 && test "$bad" -ne 0 && test "$bad_gate" -eq 0
+    binds_ac:
+      - "AC3"
+    ac_bindings:
+      - label: "AC3"
+        criterion_hash: "407ee5f96374752a4fbda6faa8fa84f77c6005cd12bd777103b17f30b61bce03"
+        proposed_by: "done-audit-0c2f"
+        accepted_by: "done-audit-0c2f"
+        accepted_at: "2026-10-02T16:45:00Z"
