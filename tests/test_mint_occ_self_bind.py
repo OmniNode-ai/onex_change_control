@@ -882,3 +882,170 @@ def test_a_probe_that_exits_zero_with_no_output_writes_nothing(
     _stub_probe(monkeypatch, exit_code=0, stdout="   \n")
     assert main(tree.argv(write=True)) == 3
     assert tree.minted_files() == []
+
+
+# ---------------------------------------------------------------------------
+# A STALE self-bind is replaced like a missing one; a tampered one is refused.
+# ---------------------------------------------------------------------------
+#
+# A hand-authored companion appends a block to a contract shared with other
+# companions, and the minted self-bind pins that contract's WHOLE-file hash. Each
+# merge of a sibling therefore rewrites the contract bytes under every other
+# companion and leaves its self-bind pinning bytes that no longer exist. The gate
+# refuses that as ``contract_hash_mismatch`` and the minter used to say "nothing
+# to mint" because only an ABSENT self-bind was acted on. The gate stays exactly
+# as strict as it was: the stale file is replaced by one bound to the current
+# bytes, never waved through.
+
+
+def _mint_then_change_contract(
+    tree: OccTree, monkeypatch: pytest.MonkeyPatch, ticket: str = TICKET_A
+) -> str:
+    """Mint a real self-bind, then change the contract bytes under it.
+
+    The change touches ``summary`` only, so the declared receipt (bound by its
+    per-entry hash) stays valid and the minted self-bind (bound by the whole-file
+    hash) is the ONE stale binding. Returns the self-bind's original bytes.
+    """
+    _stub_probe(monkeypatch)
+    assert main(tree.argv(write=True)) == 0
+    original = tree.self_bind(ticket).read_text(encoding="utf-8")
+    contract_path = tree.root / "contracts" / f"{ticket}.yaml"
+    contract_path.write_text(
+        contract_path.read_text(encoding="utf-8").replace(
+            "Fixture contract for the OMN-18921 mint suite.",
+            "A sibling companion appended to this contract.",
+        ),
+        encoding="utf-8",
+    )
+    return original
+
+
+def test_the_stale_fixture_is_refused_for_exactly_the_reason_this_fix_is_for(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """POSITIVE CONTROL: refused ``contract_hash_mismatch`` on the self-bind."""
+    tree = _build_tree(tmp_path, TICKET_A)
+    _mint_then_change_contract(tree, monkeypatch)
+
+    verdict = tree.verdict()
+    assert verdict.reason is EnumOccEligibilityReason.CONTRACT_HASH_MISMATCH, (
+        verdict.detail
+    )
+    assert verdict.stale_receipt_bindings == (
+        f"{TICKET_A}:{self_bind_evidence_id(PR_NUMBER)}:command",
+    )
+
+
+def test_a_companion_whose_contract_changed_under_it_gets_a_fresh_self_bind(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """THE TICKET. The stale self-bind is replaced and the gate then passes."""
+    tree = _build_tree(tmp_path, TICKET_A)
+    original = _mint_then_change_contract(tree, monkeypatch)
+    contract_path = tree.root / "contracts" / f"{TICKET_A}.yaml"
+    current = f"sha256:{compute_contract_sha256(contract_path)}"
+    assert f'contract_sha256: "{current}"' not in original
+
+    calls = _stub_probe(monkeypatch)
+    assert main(tree.argv(write=True)) == 0
+
+    assert calls == [(OCC_REPO, PR_NUMBER)], "the replacement must run a real probe"
+    replaced = tree.self_bind(TICKET_A).read_text(encoding="utf-8")
+    assert replaced != original
+    assert _load_receipt(tree.self_bind(TICKET_A)).contract_sha256 == current
+
+    after = tree.verdict()
+    assert after.reason is EnumOccEligibilityReason.ELIGIBLE, after.detail
+    # One file, replaced in place: no second self-bind and nothing in the
+    # declared tree.
+    assert tree.minted_files() == [tree.self_bind(TICKET_A)]
+
+
+def test_a_stale_self_bind_is_not_replaced_without_write(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A dry run reports and leaves the stale file, and the gate still refuses."""
+    tree = _build_tree(tmp_path, TICKET_A)
+    original = _mint_then_change_contract(tree, monkeypatch)
+
+    _stub_probe(monkeypatch)
+    assert main(tree.argv(write=False)) == 0
+
+    assert tree.self_bind(TICKET_A).read_text(encoding="utf-8") == original
+    assert tree.verdict().reason is EnumOccEligibilityReason.CONTRACT_HASH_MISMATCH
+
+
+def _set_line(text: str, key: str, replacement: str) -> str:
+    """Replace the single top-level ``key:`` line of rendered receipt YAML."""
+    lines = text.splitlines()
+    hits = [i for i, line in enumerate(lines) if line.startswith(f"{key}:")]
+    assert len(hits) == 1, (key, hits)
+    lines[hits[0]] = replacement
+    return "\n".join(lines) + "\n"
+
+
+@pytest.mark.parametrize(
+    ("key", "replacement"),
+    [
+        pytest.param("runner", 'runner: "hand-edit"', id="foreign-runner"),
+        pytest.param("verifier", 'verifier: "somebody"', id="foreign-verifier"),
+        pytest.param(
+            "status",
+            'status: PASS\ncontract_entry_sha256: "sha256:' + "0" * 64 + '"',
+            id="entry-hash-smuggled",
+        ),
+        pytest.param("exit_code", "exit_code: 1", id="failed-probe"),
+    ],
+)
+def test_a_tampered_self_bind_is_refused_and_left_untouched(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    key: str,
+    replacement: str,
+) -> None:
+    """A stale self-bind that is also not what the minter wrote is NOT replaced.
+
+    Replacing it would let the bot overwrite a file somebody else authored or
+    altered. The bytes stay as found, no probe runs, the run fails loud, and the
+    gate still refuses the tree.
+    """
+    tree = _build_tree(tmp_path, TICKET_A)
+    _mint_then_change_contract(tree, monkeypatch)
+    tampered = _set_line(
+        tree.self_bind(TICKET_A).read_text(encoding="utf-8"), key, replacement
+    )
+    tree.self_bind(TICKET_A).write_text(tampered, encoding="utf-8")
+    assert tree.verdict().eligible is False
+
+    calls = _stub_probe(monkeypatch)
+    assert main(tree.argv(write=True)) == 5
+
+    assert calls == []
+    assert tree.self_bind(TICKET_A).read_text(encoding="utf-8") == tampered
+    assert tree.verdict().eligible is False
+
+
+def test_a_stale_declared_receipt_is_not_the_minters_to_fix(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A hash mismatch on a hand-authored receipt mints nothing and exits 0."""
+    tree = _build_tree(tmp_path, TICKET_A)
+    contract_path = tree.root / "contracts" / f"{TICKET_A}.yaml"
+    contract_path.write_text(
+        contract_path.read_text(encoding="utf-8").replace(
+            "The declared probe ran and passed.", "The declared probe was reworded."
+        ),
+        encoding="utf-8",
+    )
+    verdict = tree.verdict()
+    assert verdict.reason is EnumOccEligibilityReason.CONTRACT_HASH_MISMATCH
+
+    calls = _stub_probe(monkeypatch)
+    assert main(tree.argv(write=True)) == 0
+    assert calls == []
+    assert tree.minted_files() == []
