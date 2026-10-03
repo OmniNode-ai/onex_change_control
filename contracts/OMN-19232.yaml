@@ -1,0 +1,36 @@
+---
+schema_version: "1.0.0"
+ticket_id: OMN-19232
+title: "onex delegate resolves its state root from the flag, then ONEX_STATE_DIR, then ~/.onex_state,
+  never the working directory"
+summary: >-
+  `onex delegate --state-root` defaulted to the cwd-relative string `.onex_state` and ignored `ONEX_STATE_DIR`,
+  so a run started from a worktree wrote `runs/<run_id>/receipt.json` under that worktree. The default
+  is now resolved by `resolve_state_root` in `src/omnibase_infra/cli/receipt_mode.py`: the explicit flag,
+  then an absolute `ONEX_STATE_DIR`, then `~/.onex_state`. A relative `ONEX_STATE_DIR`, a root under `~/.claude`
+  and an unresolvable home are refused. `run.json` records the absolute `state_root` and the `delegate
+  artifacts` line ends with `state_root=<abs>`. The change is a CLI path default with no new deployed
+  surface; the probe below reads the merged source over the GitHub API.
+is_seam_ticket: false
+interface_change: false
+interfaces_touched: []
+evidence_requirements:
+  - kind: "tests"
+    description: "The delegate CLI resolves its state root from the flag, then ONEX_STATE_DIR, then the
+      home default, and records it."
+    command: "see dod_evidence check_values"
+emergency_bypass:
+  enabled: false
+  justification: ""
+  follow_up_ticket_id: ""
+dod_evidence:
+  - id: "dod-OmniNode-ai-omnibase_infra-pr-4510-probe"
+    description: >-
+      PR #4510 on OmniNode-ai/omnibase_infra, hand-authored companion: the check reads src/omnibase_infra/cli/receipt_mode.py
+      at the PR commit be2dabcc3dce7c96bed7837450bc38a6aad50148 and counts the line `def resolve_state_root`,
+      1 there. The path carries no such line at the merge base, so the count is 0 and grep exits 1 there.
+    source: "generated"
+    checks:
+      - check_type: "command"
+        check_value: |-
+          gh api 'repos/OmniNode-ai/omnibase_infra/contents/src/omnibase_infra/cli/receipt_mode.py?ref=be2dabcc3dce7c96bed7837450bc38a6aad50148' --jq .content | base64 -d | grep -c 'def resolve_state_root'
