@@ -88,3 +88,118 @@ dod_evidence:
     checks:
       - check_type: "command"
         check_value: "gh pr view 11027 --repo OmniNode-ai/onex_change_control --json number,state"
+  - id: "dod-da-19358-ac1-gate-runner-base-unchanged"
+    description: |-
+      AC1 proof (evid-B06-2a21, OMN-17427), two checks. (1) test_gate_runner_base_is_a_build_arg_with_unchanged_default asserts Dockerfile.gate-runner has exactly one FROM, FROM ${BASE_IMAGE}, preceded by ARG BASE_IMAGE=python:3.13-slim-bookworm, the tag every earlier build used. (2) A git readback of the merge commit of omnibase_infra#4033 against its first parent: the only changed lines of docker/Dockerfile.gate-runner are the removed FROM line and the added ARG and FROM lines (1 file, 2 insertions, 1 deletion).
+    source: "generated"
+    execution_scope: "local_done_gate"
+    checks:
+      - check_type: "test_passes"
+        check_value: |-
+          env -u PYTHONPATH uv run pytest "tests/ci/test_dtl_env_dockerfile.py::test_gate_runner_base_is_a_build_arg_with_unchanged_default" -q
+        cwd: "${OMNI_HOME}/omnibase_infra"
+      - check_type: "command"
+        check_value: |-
+          test "$(git diff -U0 29379669bfd0^ 29379669bfd0 -- docker/Dockerfile.gate-runner | grep -E '^[-+]' | grep -vE '^(\+\+\+|---)' | tr '\n' '|')" = '-FROM python:3.13-slim-bookworm|+ARG BASE_IMAGE=python:3.13-slim-bookworm|+FROM ${BASE_IMAGE}|' && git diff --stat 29379669bfd0^ 29379669bfd0 -- docker/Dockerfile.gate-runner | tail -n 1
+        cwd: "${OMNI_HOME}/omnibase_infra"
+    binds_ac:
+      - "AC1"
+    ac_bindings:
+      - label: "AC1"
+        criterion_hash: "7d379b63822662a7e8c94e9b7feaccd075b0bc9a4103f7877dc096fba7bbcc96"
+        proposed_by: "evid-B06-2a21"
+        accepted_by: "evid-B06-2a21"
+        accepted_at: "2026-10-02T21:00:00Z"
+    supersedes_ac_binding:
+      - item: "dod-OmniNode-ai-omnibase_infra-pr-4033"
+        label: "AC1"
+        reason: |-
+          dod-OmniNode-ai-omnibase_infra-pr-4033 binds AC1 only to a source grep or PR file-list read, which proves the code was written and not that AC1 holds. Re-bound by dod-da-19358-ac1-gate-runner-base-unchanged, which executes the behavior (evid-B06-2a21, OMN-17427).
+  - id: "dod-da-19358-ac2-env-image-venv-no-source"
+    description: |-
+      AC2 proof (evid-B06-2a21, OMN-17427), two checks. (1) Two Dockerfile tests: the env image copies only pyproject.toml and uv.lock, and syncs with --frozen --no-install-project --all-extras into /opt/dtl-venv, so no project source is baked in. (2) A live readback on the .101 lab Mac, run over ssh with --network none against the content-keyed env image dtl-env:omnimarket-9317e28ad468-0f7b315b1ba6: /opt/dtl-venv/bin/python imports pytest, and the second import (pytest, omnimarket) fails with ModuleNotFoundError on omnimarket.
+    source: "generated"
+    execution_scope: "local_done_gate"
+    checks:
+      - check_type: "test_passes"
+        check_value: |-
+          env -u PYTHONPATH uv run pytest "tests/ci/test_dtl_env_dockerfile.py::test_dtl_env_copies_only_the_lock_inputs" "tests/ci/test_dtl_env_dockerfile.py::test_dtl_env_syncs_the_locked_environment_without_the_project" -q
+        cwd: "${OMNI_HOME}/omnibase_infra"
+      - check_type: "command"
+        check_value: |-
+          img=dtl-env:omnimarket-9317e28ad468-0f7b315b1ba6
+          run="export PATH=/usr/local/bin:\$PATH; docker run --rm --network none $img /opt/dtl-venv/bin/python"
+          ok="$(ssh -o BatchMode=yes -o ConnectTimeout=15 192.168.86.101 "$run -c 'import pytest; print(pytest.__version__)'")" || exit 1
+          err="$(ssh -o BatchMode=yes -o ConnectTimeout=15 192.168.86.101 "$run -c 'import pytest, omnimarket'" 2>&1)" && { echo "FAIL: import omnimarket succeeded in $img"; exit 1; }
+          last="$(printf '%s\n' "$err" | tail -n 1)"
+          echo "image=$img pytest=$ok second_import=$last"
+          test "$last" = "ModuleNotFoundError: No module named 'omnimarket'"
+    binds_ac:
+      - "AC2"
+    ac_bindings:
+      - label: "AC2"
+        criterion_hash: "93ada29723aa6b77c797181f018f8905a6745ac7085ce1b26511facb079cdc6c"
+        proposed_by: "evid-B06-2a21"
+        accepted_by: "evid-B06-2a21"
+        accepted_at: "2026-10-02T21:00:00Z"
+    supersedes_ac_binding:
+      - item: "dod-OmniNode-ai-omnibase_infra-pr-4033"
+        label: "AC2"
+        reason: |-
+          dod-OmniNode-ai-omnibase_infra-pr-4033 binds AC2 only to a source grep or PR file-list read, which proves the code was written and not that AC2 holds. Re-bound by dod-da-19358-ac2-env-image-venv-no-source, which executes the behavior (evid-B06-2a21, OMN-17427).
+  - id: "dod-da-19358-ac3-rebuild-same-image-id"
+    description: |-
+      AC3 proof (evid-B06-2a21, OMN-17427). A live readback on the .101 lab Mac: the repository's own docker/Dockerfile.dtl-env is built twice with the same key (same tag, lock directory, build arguments and --provenance=false --sbom=false), and both builds print the image id the tag already held. The check mutates nothing: a rebuild of unchanged inputs resolves to the existing image.
+    source: "generated"
+    execution_scope: "local_done_gate"
+    checks:
+      - check_type: "command"
+        check_value: |-
+          img=dtl-env:omnimarket-9317e28ad468-0f7b315b1ba6
+          host=192.168.86.101
+          before="$(ssh -o BatchMode=yes -o ConnectTimeout=15 $host "export PATH=/usr/local/bin:\$PATH; docker image inspect --format '{{.Id}}' $img")" || exit 1
+          build() { ssh -o BatchMode=yes -o ConnectTimeout=15 $host "export PATH=/usr/local/bin:\$PATH; cd ~/dtl/build && docker build --provenance=false --sbom=false -q -f - --build-arg SOURCE_DATE_EPOCH=0 --build-arg TEST_IMAGE=omninode-gate-runner:dtl-09fee4fc4 -t $img env" < docker/Dockerfile.dtl-env; }
+          first="$(build)" || exit 1
+          second="$(build)" || exit 1
+          echo "before=$before first=$first second=$second"
+          test "$first" = "$second" && test "$first" = "$before"
+        cwd: "${OMNI_HOME}/omnibase_infra"
+    binds_ac:
+      - "AC3"
+    ac_bindings:
+      - label: "AC3"
+        criterion_hash: "8fd435d11a7c98fec84dc81d864213411f6e05b34aa67ae003267f3ce82f636b"
+        proposed_by: "evid-B06-2a21"
+        accepted_by: "evid-B06-2a21"
+        accepted_at: "2026-10-02T21:00:00Z"
+    supersedes_ac_binding:
+      - item: "dod-OmniNode-ai-omnibase_infra-pr-4033"
+        label: "AC3"
+        reason: |-
+          dod-OmniNode-ai-omnibase_infra-pr-4033 binds AC3 only to a source grep or PR file-list read, which proves the code was written and not that AC3 holds. Re-bound by dod-da-19358-ac3-rebuild-same-image-id, which executes the behavior (evid-B06-2a21, OMN-17427).
+  - id: "dod-da-19358-ac4-runtime-affecting-line"
+    description: |-
+      AC4 proof (evid-B06-2a21, OMN-17427). A live readback of the body of omnibase_infra#4033: it carries a Runtime-affecting line that answers yes or no, and the PR is MERGED at merge commit 29379669bfd07645c865528c34ddf5e972ca364d. The ledger rows for the runtime-train handoff (MSG to runtime-train 2026-09-24T08:20:23Z, STATUS 2026-09-24T13:27:53Z) are the process record for the second clause and are not machine-bound here.
+    source: "generated"
+    execution_scope: "local_done_gate"
+    checks:
+      - check_type: "command"
+        check_value: |-
+          line="$(gh pr view 4033 --repo OmniNode-ai/omnibase_infra --json body --jq .body | grep -m1 -E '^Runtime-affecting: (yes|no)')" || { echo "PR #4033 body has no Runtime-affecting line"; exit 1; }
+          echo "$line"
+          state="$(gh pr view 4033 --repo OmniNode-ai/omnibase_infra --json state,mergeCommit --jq '[.state, .mergeCommit.oid] | @tsv')" || exit 2
+          echo "$state"
+          test "$state" = "$(printf 'MERGED\t29379669bfd07645c865528c34ddf5e972ca364d')"
+    binds_ac:
+      - "AC4"
+    ac_bindings:
+      - label: "AC4"
+        criterion_hash: "8f9330b5d4cf6d0766b7439f6bd3d2f50c1bcc6ac771ad56180b8f4b0dab2a5b"
+        proposed_by: "evid-B06-2a21"
+        accepted_by: "evid-B06-2a21"
+        accepted_at: "2026-10-02T21:00:00Z"
+    supersedes_ac_binding:
+      - item: "dod-OmniNode-ai-omnibase_infra-pr-4033"
+        label: "AC4"
+        reason: |-
+          dod-OmniNode-ai-omnibase_infra-pr-4033 binds AC4 only to a source grep or PR file-list read, which proves the code was written and not that AC4 holds. Re-bound by dod-da-19358-ac4-runtime-affecting-line, which executes the behavior (evid-B06-2a21, OMN-17427).
