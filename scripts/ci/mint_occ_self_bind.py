@@ -37,6 +37,17 @@ written nothing. Reaching that reason means every contract resolved and every
 declared receipt is PASS and hash-bound, and the ONLY defect is that nothing
 binds to this pull request, so the remedy is unambiguous.
 
+A STALE SELF-BIND IS RE-MINTED LIKE A MISSING ONE (OMN-17427). Companions that
+append to one shared contract each pin its WHOLE-file hash in their self-bind, so
+every sibling merge rewrites the contract under the rest and strands their
+self-bind. The gate reports that as ``contract_hash_mismatch`` naming this PR's
+own self-bind, and this script now replaces that file with a freshly probed one
+bound to the current bytes. The gate's hash check is untouched and stays strict:
+the new file passes only because it pins the contract as it now is. The
+replacement is limited to a file this script itself wrote -- same runner,
+verifier, PASS, exit 0, this PR, whole-file pin only. A stale file that is
+anything else exits 5 and is left byte-for-byte as found.
+
 THE RECEIPT IS EARNED, NOT ASSERTED. The declared check is
 ``gh pr view <n> --json number,state,headRefName`` and this script RUNS it, in
 CI, where ``gh`` is authenticated, and records the real command, the real
@@ -101,7 +112,9 @@ import subprocess
 import sys
 from datetime import UTC, datetime
 from pathlib import Path
+from typing import TYPE_CHECKING
 
+import yaml
 from omnibase_core.enums.enum_occ_eligibility_reason import EnumOccEligibilityReason
 from omnibase_core.models.validation.model_occ_eligibility_input import (
     ModelOccEligibilityInput,
@@ -110,6 +123,11 @@ from omnibase_core.validation.validator_occ_merge_eligibility import (
     validate_occ_merge_eligibility,
 )
 from omnibase_core.validation.validator_receipt_gate import compute_contract_sha256
+
+if TYPE_CHECKING:
+    from omnibase_core.models.validation.model_occ_eligibility_result import (
+        ModelOccEligibilityResult,
+    )
 
 #: The structural tree. Deliberately NOT ``drift/dod_receipts`` -- that prefix
 #: is the receipt-hardening gate's scope and a declared item's home, and an
@@ -310,12 +328,16 @@ def main(argv: list[str] | None = None) -> int:
     repo_root = Path(args.repo_root).resolve()
     result = validate_occ_merge_eligibility(_snapshot(args))
 
+    if result.reason is EnumOccEligibilityReason.CONTRACT_HASH_MISMATCH:
+        return _remint_stale(args, repo_root, result)
+
     if result.reason is not EnumOccEligibilityReason.MISSING_OCC_SELF_BIND:
         print(
             "mint_occ_self_bind: nothing to mint -- eligibility reason is "
             f"{result.reason.value}, not missing_occ_self_bind. This script "
             "mints only for the one verdict whose sole defect is an absent "
-            "self-bind (OMN-18921)."
+            "self-bind (OMN-18921), or a self-bind of its own made stale by a "
+            "contract change (OMN-17427)."
         )
         return 0
 
@@ -336,6 +358,105 @@ def main(argv: list[str] | None = None) -> int:
         return 2
 
     return _probe_and_mint(args, repo_root, tickets)
+
+
+def _stale_self_bind_tickets(
+    result: ModelOccEligibilityResult, pr_number: int
+) -> tuple[str, ...]:
+    """Return the tickets whose own self-bind for this PR the gate called stale.
+
+    Empty unless EVERY stale binding the gate named is the structural self-bind
+    of this pull request. A stale hand-authored receipt is the author's to
+    repair, and replacing a self-bind beside it would not clear the verdict.
+    """
+    suffix = f":{self_bind_evidence_id(pr_number)}:{SELF_BIND_CHECK_TYPE}"
+    keys = result.stale_receipt_bindings
+    if not keys or not all(key.endswith(suffix) for key in keys):
+        return ()
+    return tuple(key.removesuffix(suffix) for key in keys)
+
+
+def _tampering(
+    path: Path, *, ticket_id: str, pr_number: int, current_hash: str
+) -> str | None:
+    """Return why ``path`` is not a self-bind this script minted, else ``None``.
+
+    The gate's ``contract_hash_mismatch`` says the file is stale. It does not say
+    the file is ours. Only a file this script rendered, whose sole difference
+    from a fresh mint is the pinned contract hash, may be overwritten.
+    """
+    try:
+        raw = yaml.safe_load(path.read_text(encoding="utf-8"))
+    except (OSError, yaml.YAMLError) as exc:
+        return f"unreadable: {exc}"
+    if not isinstance(raw, dict):
+        return "not a mapping"
+    expected = {
+        "ticket_id": ticket_id,
+        "evidence_item_id": self_bind_evidence_id(pr_number),
+        "check_type": SELF_BIND_CHECK_TYPE,
+        "status": "PASS",
+        "runner": _RUNNER,
+        "verifier": _VERIFIER,
+        "exit_code": 0,
+        "pr_number": pr_number,
+    }
+    for key, value in expected.items():
+        if raw.get(key) != value:
+            return f"{key} is {raw.get(key)!r}, expected {value!r}"
+    if "contract_entry_sha256" in raw or "binds_ac" in raw:
+        return "carries a per-entry binding the minter never writes"
+    pinned = raw.get("contract_sha256")
+    if not isinstance(pinned, str) or pinned == current_hash:
+        return f"contract_sha256 {pinned!r} is not a stale pin of an older file"
+    return None
+
+
+def _remint_stale(
+    args: argparse.Namespace, repo_root: Path, result: ModelOccEligibilityResult
+) -> int:
+    """Replace a stale self-bind of our own with one bound to the current file.
+
+    OMN-17427. Companions that append to one shared contract each pin its whole
+    file hash, so every sibling merge strands the rest. The gate's check is not
+    touched: the stale file is overwritten by a freshly probed one, and the gate
+    then recomputes the hash itself. A file that is stale AND not exactly what
+    this script writes is refused, never overwritten.
+    """
+    tickets = _stale_self_bind_tickets(result, args.pr_number)
+    if not tickets:
+        print(
+            "mint_occ_self_bind: nothing to mint -- eligibility reason is "
+            "contract_hash_mismatch on something other than this PR's own "
+            "self-bind, which is the author's to repair (OMN-17427)."
+        )
+        return 0
+
+    for ticket_id in tickets:
+        contract_path = repo_root / "contracts" / f"{ticket_id}.yaml"
+        if not contract_path.is_file():
+            print(
+                f"mint_occ_self_bind: ERROR -- {contract_path} does not exist, "
+                "so no contract hash can bind the self-bind to it.",
+                file=sys.stderr,
+            )
+            return 4
+        reason = _tampering(
+            self_bind_path(repo_root, ticket_id, args.pr_number),
+            ticket_id=ticket_id,
+            pr_number=args.pr_number,
+            current_hash=f"sha256:{compute_contract_sha256(contract_path)}",
+        )
+        if reason is not None:
+            print(
+                f"mint_occ_self_bind: ERROR -- the self-bind for {ticket_id} is "
+                f"stale but is not a file this script wrote ({reason}); "
+                "refusing to overwrite it (OMN-17427).",
+                file=sys.stderr,
+            )
+            return 5
+
+    return _probe_and_mint(args, repo_root, tickets, replace=frozenset(tickets))
 
 
 def _refuse_indeterminate_probe(probe_stdout: str, exit_code: int) -> int | None:
@@ -365,7 +486,10 @@ def _refuse_indeterminate_probe(probe_stdout: str, exit_code: int) -> int | None
 
 
 def _probe_and_mint(
-    args: argparse.Namespace, repo_root: Path, tickets: tuple[str, ...]
+    args: argparse.Namespace,
+    repo_root: Path,
+    tickets: tuple[str, ...],
+    replace: frozenset[str] = frozenset(),
 ) -> int:
     """Run the declared check once, then write each owed self-bind."""
     probe_command, probe_stdout, exit_code = run_probe(
@@ -379,7 +503,7 @@ def _probe_and_mint(
     pending: list[Path] = []
     for ticket_id in tickets:
         path = self_bind_path(repo_root, ticket_id, args.pr_number)
-        if path.is_file():
+        if path.is_file() and ticket_id not in replace:
             print(f"mint_occ_self_bind: {path} already exists -- left untouched")
             continue
         contract_path = repo_root / "contracts" / f"{ticket_id}.yaml"
@@ -402,16 +526,19 @@ def _probe_and_mint(
             probe_stdout=probe_stdout,
             exit_code=exit_code,
         )
+        replacing = ticket_id in replace
         if args.write:
             path.parent.mkdir(parents=True, exist_ok=True)
             path.write_text(rendered, encoding="utf-8")
             written.append(path)
         else:
             pending.append(path)
-        print(
-            f"mint_occ_self_bind: {'wrote' if args.write else 'would write'} "
-            f"{path.relative_to(repo_root)}"
-        )
+        action = "replace" if replacing else "write"
+        if args.write:
+            action = "replaced" if replacing else "wrote"
+        else:
+            action = f"would {action}"
+        print(f"mint_occ_self_bind: {action} {path.relative_to(repo_root)}")
 
     if not written:
         if pending:
