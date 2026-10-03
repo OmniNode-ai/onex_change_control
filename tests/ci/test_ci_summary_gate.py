@@ -42,6 +42,9 @@ from scripts.ci.ci_summary_gate import (
     ADVISORY_DECLARATION_MARKER,
     CLASSIFICATION_ONLY,
     EXEMPT_CONTEXTS,
+    EXIT_FAILURE,
+    EXIT_PENDING,
+    EXIT_SUCCESS,
     EXPECTED_EXTERNAL_CONTEXTS,
     EXTERNAL_GOOD_CONCLUSIONS,
     EXTERNAL_SWEEP_EXCLUSIONS,
@@ -355,6 +358,89 @@ def _all_green_check_runs() -> list[dict[str, object]]:
         }
         for i, n in enumerate(EXPECTED_EXTERNAL_CONTEXTS)
     ]
+
+
+class TestRunningRowsHoldTheVerdictOmn20066:
+    """In-run rows without a verdict must hold CI Summary at PENDING."""
+
+    @pytest.mark.parametrize("status", ["queued", "in_progress", "waiting", "pending"])
+    def test_running_unregistered_job_cannot_conclude_success(
+        self, status: str
+    ) -> None:
+        jobs = [*_all_green_jobs(), _job("Some New Job", None, status=status)]
+        code, report = evaluate(jobs, run_attempt=1)
+        assert code == EXIT_PENDING, report
+        assert (
+            "  default-deny sweep rows still running (PENDING, re-polled): Some New Job"
+            in report
+        )
+
+    @pytest.mark.skip(reason="OCC uses the same gate tiers for every workflow event")
+    def test_merge_group_running_unregistered_job_holds_pending(self) -> None:
+        """There is no separate merge-group gate-tier mechanism to exercise."""
+
+    def test_running_job_then_completed_success_concludes_success(self) -> None:
+        jobs = [*_all_green_jobs(), _job("Some New Job", None, status="in_progress")]
+        code, report = evaluate(jobs, run_attempt=1)
+        assert code == EXIT_PENDING, report
+
+        jobs[-1] = _job("Some New Job", "success")
+        code, report = evaluate(jobs, run_attempt=1)
+        assert code == EXIT_SUCCESS, report
+        assert "default-deny sweep rows still running" not in report
+
+    def test_running_job_then_completed_failure_fails(self) -> None:
+        jobs = [*_all_green_jobs(), _job("Some New Job", None, status="in_progress")]
+        code, report = evaluate(jobs, run_attempt=1)
+        assert code == EXIT_PENDING, report
+
+        jobs[-1] = _job("Some New Job", "failure")
+        code, report = evaluate(jobs, run_attempt=1)
+        assert code == EXIT_FAILURE, report
+        assert "default-deny sweep failures: Some New Job" in report
+        assert "default-deny sweep rows still running" not in report
+
+    def test_failure_wins_over_a_running_row(self) -> None:
+        jobs = [
+            *_all_green_jobs(),
+            _job("Failed New Job", "failure"),
+            _job("Some New Job", None, status="in_progress"),
+        ]
+        code, report = evaluate(jobs, run_attempt=1)
+        assert code == EXIT_FAILURE, report
+        assert "default-deny sweep failures: Failed New Job" in report
+
+    @pytest.mark.parametrize(
+        "name",
+        [
+            "URL Authority Gate (OMN-13563)",
+            "public-repo-hygiene / report",
+            SELF_JOB_NAME,
+        ],
+    )
+    def test_allowlisted_running_rows_do_not_hold(self, name: str) -> None:
+        jobs = [*_all_green_jobs(), _job(name, None, status="in_progress")]
+        code, report = evaluate(jobs, run_attempt=1)
+        assert code == EXIT_SUCCESS, report
+        assert "default-deny sweep rows still running" not in report
+
+    def test_every_job_needing_ci_summary_is_allowlisted(self) -> None:
+        """Waiting on a downstream job would deadlock the CI Summary poller."""
+        workflow = yaml.safe_load(
+            (WORKFLOWS_DIR / "ci.yml").read_text(encoding="utf-8")
+        )
+        for job_id, job in workflow["jobs"].items():
+            needs = job.get("needs", [])
+            if isinstance(needs, str):
+                needs = [needs]
+            if "ci-summary" in needs:
+                display_name = COMPOSED_NAME_OVERRIDES.get(
+                    ("ci.yml", job_id), job.get("name") or job_id
+                )
+                assert ci_summary_gate._is_allowlisted(display_name, SOFT_ALLOWLIST), (
+                    f"{job_id} ({display_name}) needs ci-summary "
+                    "and must be allowlisted"
+                )
 
 
 def test_strict_success_only_all_green_passes() -> None:
