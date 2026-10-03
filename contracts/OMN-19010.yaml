@@ -1,0 +1,166 @@
+---
+schema_version: "1.0.0"
+ticket_id: "OMN-19010"
+title: "Evidence companion for OMN-19010"
+summary: >-
+  Hand-authored OCC evidence companion for OmniNode-ai/omni_home#531 and #532 (OMN-19010): the fan-out's
+  READY control prompt is pinned to a declared response-shape directive, and a test-shaped item must name
+  its task class.
+is_seam_ticket: false
+interface_change: false
+interfaces_touched: []
+requirements:
+  - id: "req-transcribed-acceptance-criteria"
+    statement: |-
+      The acceptance criteria declared in the OMN-19010 ticket body, transcribed as written with no criterion added. Each criterion id is the label used by binds_ac.
+    acceptance:
+      - id: "AC1"
+        statement: |-
+          AC-1: The workflow declares a READY control prompt whose text matches at least one pattern in `response_shape_directives`, read from the contract file at test time and applied as a case-insensitive regular expression — falsifier: `uv run pytest tests/test_delegate_fanout_workflow.py -k control_prompt`, red when the workflow's control prompt is reworded or when the matching phrase leaves the contract table.
+      - id: "AC2"
+        statement: |-
+          AC-2: The pin discriminates rather than matching anything — falsifier: `uv run pytest tests/test_delegate_fanout_workflow.py -k discriminates`, asserting the prompt that failed on 2026-09-21 matches no pattern in the table, red if the matcher is loosened to accept it.
+      - id: "AC3"
+        statement: |-
+          AC-3: An item marked test-shaped that declares no task type is refused at admission and never dispatched — falsifier: `uv run pytest tests/test_delegate_fanout_workflow.py -k test_shaped`, red when the refusal is removed or when a task type stops satisfying it.
+      - id: "AC4"
+        statement: |-
+          AC-4: The cross-repo pin executes in the required whole-tree job rather than skipping — falsifier: `uv run pytest tests/test_delegate_fanout_workflow.py -k contract_is_reachable`, red when the contract file cannot be resolved from any declared search path, so an absent sibling checkout fails rather than silently skipping.
+      - id: "AC5"
+        statement: |-
+          AC-5: A live run on the dev lane using the declared control prompt verbatim returns a completed terminal for the control — falsifier: `bash omnibase_infra/scripts/onex delegate` driven with the declared control prompt, its correlation id resolvable to a run directory whose receipt records a completed terminal rather than a single-word-fragment refusal.
+evidence_requirements:
+  - kind: "ci"
+    description: "omni_home#531 and #532 merged; the behaviour is proven by the bound dod_evidence items
+      below"
+    command: "gh pr view 531 --repo OmniNode-ai/omni_home --json number,state,mergedAt"
+emergency_bypass:
+  enabled: false
+  justification: ""
+  follow_up_ticket_id: ""
+dod_evidence:
+  - id: "dod-omn19010-ac1-control-prompt-matches-directive"
+    description: >-
+      AC1 binding. tests/test_delegate_fanout_workflow.py in omni_home (merged by omni_home#531 and #532)
+      reads response_shape_directives out of omnimarket's task_class_contracts.v1.yaml and matches the
+      workflow's READY_CONTROL_PROMPT against it as a case-insensitive regular expression; the selector
+      `control_prompt` picks four tests. The check passes only when pytest's last line starts with `4
+      passed, `, so a skipped test (an absent omnimarket sibling) is red, never green.
+    source: "manual"
+    execution_scope: "local_done_gate"
+    binds_ac: ["AC1"]
+    ac_bindings:
+      - label: "AC1"
+        criterion_hash: "e91901b87759fbb11beaa92ddad652d94f2637de8ff0246751681fca8751a299"
+        proposed_by: "evid-B03-2a21-r"
+    checks:
+      - check_type: "command"
+        check_value: >-
+          bash -o pipefail -c 'uv run pytest tests/test_delegate_fanout_workflow.py -q -k control_prompt
+          2>&1 | tail -n 1 | grep -E "^4 passed, "'
+        cwd: "${OMNI_HOME}"
+  - id: "dod-omn19010-ac2-matcher-discriminates"
+    description: >-
+      AC2 binding. The negative control: the prompt that failed on the dev lane on 2026-09-21 ("Name the
+      capital city of France. Answer with the city name and nothing else.") matches no pattern in the
+      contract's response_shape_directives table. The selector `discriminates` picks one test; the check
+      passes only when pytest's last line starts with `1 passed, `.
+    source: "manual"
+    execution_scope: "local_done_gate"
+    binds_ac: ["AC2"]
+    ac_bindings:
+      - label: "AC2"
+        criterion_hash: "73964ad30e24f32c250c862dfa039a29aff7c75e0c8138ee092dbf523155e6cf"
+        proposed_by: "evid-B03-2a21-r"
+    checks:
+      - check_type: "command"
+        check_value: >-
+          bash -o pipefail -c 'uv run pytest tests/test_delegate_fanout_workflow.py -q -k discriminates
+          2>&1 | tail -n 1 | grep -E "^1 passed, "'
+        cwd: "${OMNI_HOME}"
+  - id: "dod-omn19010-ac3-test-shaped-item-refused"
+    description: >-
+      AC3 binding. A test-shaped item with no task type is refused at admission and never dispatched,
+      and a task type satisfies the refusal. The selector `test_shaped` picks three tests; the check passes
+      only when pytest's last line starts with `3 passed, `.
+    source: "manual"
+    execution_scope: "local_done_gate"
+    binds_ac: ["AC3"]
+    ac_bindings:
+      - label: "AC3"
+        criterion_hash: "10426f3383bc2c2b5459514a6e7ee239dd0f6ca1cc70228c304d4ca80e242ffc"
+        proposed_by: "evid-B03-2a21-r"
+    checks:
+      - check_type: "command"
+        check_value: >-
+          bash -o pipefail -c 'uv run pytest tests/test_delegate_fanout_workflow.py -q -k test_shaped
+          2>&1 | tail -n 1 | grep -E "^3 passed, "'
+        cwd: "${OMNI_HOME}"
+  - id: "dod-omn19010-ac4-contract-reachable-in-ci"
+    description: >-
+      AC4 binding, both halves. The test `contract_is_reachable` asserts the omnimarket contract file
+      resolves (and fails in CI rather than skipping when it does not); the check passes only when pytest's
+      last line starts with `1 passed, `. The enforcement half is that omni_home's required whole-tree
+      workflow (.github/workflows/tests.yml) carries the step "Check out the omnimarket sibling" that
+      puts the contract where the test looks, which the second grep prints.
+    source: "manual"
+    execution_scope: "local_done_gate"
+    binds_ac: ["AC4"]
+    ac_bindings:
+      - label: "AC4"
+        criterion_hash: "217fe6cdac470cacf979f3120e32dccc932faf3001ce785fe6efb078882fd2f6"
+        proposed_by: "evid-B03-2a21-r"
+    checks:
+      - check_type: "command"
+        check_value: >-
+          bash -o pipefail -c 'uv run pytest tests/test_delegate_fanout_workflow.py -q -k contract_is_reachable
+          2>&1 | tail -n 1 | grep -E "^1 passed, " && grep -n "Check out the omnimarket sibling" .github/workflows/tests.yml'
+        cwd: "${OMNI_HOME}"
+  - id: "dod-omn19010-ac5-dev-lane-ready-control-completed"
+    description: >-
+      AC5 binding, a readback of the recorded dev-lane run. The run was made on the .201 dev lane on 2026-09-21
+      with the declared control prompt (omni_home#531); its correlation id resolves to a run directory
+      under .claude_scratch/delegate-fanout/omn19010-labproof/ whose receipt.json records lane dev, locus
+      deployed-lane, a terminal payload with status completed, quality_gate_passed true and response READY,
+      and whose run.json prompt is byte-equal to READY_CONTROL_PROMPT as the workflow declares it today.
+      The check exits 1 on any mismatch, including a missing run directory. It reads a local scratch directory,
+      hence local_done_gate. A fresh run was attempted on lab host h200 on 2026-10-02 and refused by the
+      workspace-floor gate before dispatch (omnimarket installed dadcc91b7648 is not the proven commit
+      1639ff078d59), so this item proves the 2026-09-21 run and not a new one.
+    source: "manual"
+    execution_scope: "local_done_gate"
+    binds_ac: ["AC5"]
+    ac_bindings:
+      - label: "AC5"
+        criterion_hash: "7fa9fa35527fcea4df4e6bc34ea4d136d8274dc8d4421f2708ce3b627643eca2"
+        proposed_by: "evid-B03-2a21-r"
+    checks:
+      - check_type: "command"
+        check_value: >-
+          python3 -c "import json,pathlib,re,sys; r=pathlib.Path('.claude_scratch/delegate-fanout/omn19010-labproof/00-ready-control/runs/108df0b0-c0f0-43e5-845f-07c486cef92c');
+          rc=json.loads((r/'receipt.json').read_text()); run=json.loads((r/'run.json').read_text()); p=rc['receipt']['result']['terminal_payload']['payload'];
+          c=re.search(r\"const READY_CONTROL_PROMPT = '([^']*)'\", pathlib.Path('.claude/workflows/delegate-fanout.js').read_text()).group(1);
+          ok=(rc['lane']=='dev' and rc['locus']=='deployed-lane' and rc['status']=='success' and rc['receipt']['exit_code']==0
+          and rc['correlation_id']=='26968f46-f7e9-464d-b769-89ed3c2187ee' and run['prompt']==c and p['prompt_text']==c
+          and p['status']=='completed' and p['quality_gate_passed'] is True and p['response']=='READY'
+          and not p['quality_gates_failed']); print('correlation_id',rc['correlation_id'],'lane',rc['lane'],'locus',rc['locus'],'prompt',repr(run['prompt']),'terminal_status',p['status'],'quality_gate_passed',p['quality_gate_passed'],'response',repr(p['response']),'ok',ok);
+          sys.exit(0 if ok else 1)"
+        cwd: "${OMNI_HOME}"
+  - id: "dod-omn19010-ac4-omnimarket-sibling-step-merged"
+    description: >-
+      AC4 enforcement half, hosted. Reads omni_home's merged .github/workflows/tests.yml at the omni_home#532
+      merge commit c03e38bad69a39738c1b21bd4922066c29de8146 through the GitHub contents API and requires
+      the step "Check out the omnimarket sibling" in it, the step that puts the omnimarket contract where
+      the `contract_is_reachable` test looks. It reads a surface this PR does not author, and it goes
+      red when the step is absent at that commit.
+    source: "manual"
+    binds_ac: ["AC4"]
+    ac_bindings:
+      - label: "AC4"
+        criterion_hash: "217fe6cdac470cacf979f3120e32dccc932faf3001ce785fe6efb078882fd2f6"
+        proposed_by: "evid-B03-2a21-r"
+    checks:
+      - check_type: "command"
+        check_value: >-
+          bash -o pipefail -c 'gh api "repos/OmniNode-ai/omni_home/contents/.github/workflows/tests.yml?ref=c03e38bad69a39738c1b21bd4922066c29de8146"
+          --jq .content | base64 -d | grep -c "Check out the omnimarket sibling"'
