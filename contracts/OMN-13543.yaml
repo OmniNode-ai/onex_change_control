@@ -80,3 +80,39 @@ dod_evidence:
     checks:
       - check_type: "command"
         check_value: "gh pr view 11141 --repo OmniNode-ai/onex_change_control --json number,state"
+  - id: "dod-da-13543-dod0-runner-failed-terminal"
+    description: |-
+      DoD proof (mac-evid-b06b07, OMN-17427). OMN-13543 carries no labelled acceptance criteria, so nothing here binds an AC label. This runs the test added by omnimarket#2869: the delegation golden runner reads a failed terminal as failed and an ok terminal as ok.
+    source: "generated"
+    execution_scope: "local_done_gate"
+    checks:
+      - check_type: "test_passes"
+        check_value: |-
+          env -u PYTHONPATH uv run pytest "tests/delegation_golden/test_runner_terminal_ok_omn13543.py" -q
+        cwd: "${OMNI_HOME}/omnimarket"
+  - id: "dod-da-13543-dod1-exhausted-row-model-tokens"
+    description: |-
+      DoD proof (mac-evid-b06b07, OMN-17427). No AC label is bound: the ticket has none. A live readback on the .201 dev lane: research delegation 6918912c-f4df-45bb-aae3-7424c0ac91f8 (2026-09-16) escalated twice without passing the quality bar (actual score 0.800) and its delegation_events row carries terminal_ok false, model_name gemini-2.5-flash and 54 tokens, not a blank row. It is the only research row on the lane with escalation_count of 2 or more and a real model and tokens. For contrast, the lane also holds 82 research rows that terminalised as timeout with a blank model_name and zero tokens; those are budget timeouts that never reached a provider, not ladder exhaustion, and the ticket's DoD does not cover them.
+    source: "generated"
+    execution_scope: "local_done_gate"
+    checks:
+      - check_type: "command"
+        check_value: |-
+          lab_ssh="$(docker inspect omnibase-infra-postgres >/dev/null 2>&1 && echo "sh -c" || echo "ssh -o BatchMode=yes -o ConnectTimeout=15 jonah@192.168.86.201")"
+          corr=6918912c-f4df-45bb-aae3-7424c0ac91f8
+          row="$($lab_ssh "docker exec omnibase-infra-postgres psql -U postgres -d omnidash_analytics -At -F '|' -c \"select task_type, terminal_ok, model_name, coalesce(tokens_input,0)+coalesce(tokens_output,0), escalation_count from public.delegation_events where correlation_id='$corr'\"")" || exit 1
+          echo "dev lane omnibase-infra-postgres omnidash_analytics.public.delegation_events correlation=$corr row=$row"
+          test "$row" = "research|f|gemini-2.5-flash|54|2"
+  - id: "dod-da-13543-dod2-passing-row-completed"
+    description: |-
+      DoD proof (mac-evid-b06b07, OMN-17427). No AC label is bound: the ticket has none. A live readback on the .201 dev lane: research delegation 8c1d77b4-a926-4cd4-a618-84ca4dbf462b (2026-10-02) terminalised with terminal_ok true, model_name Qwen3.8-27B, 244 tokens and the quality gate passed.
+    source: "generated"
+    execution_scope: "local_done_gate"
+    checks:
+      - check_type: "command"
+        check_value: |-
+          lab_ssh="$(docker inspect omnibase-infra-postgres >/dev/null 2>&1 && echo "sh -c" || echo "ssh -o BatchMode=yes -o ConnectTimeout=15 jonah@192.168.86.201")"
+          corr=8c1d77b4-a926-4cd4-a618-84ca4dbf462b
+          row="$($lab_ssh "docker exec omnibase-infra-postgres psql -U postgres -d omnidash_analytics -At -F '|' -c \"select task_type, terminal_ok, model_name, coalesce(tokens_input,0)+coalesce(tokens_output,0), quality_gate_passed from public.delegation_events where correlation_id='$corr'\"")" || exit 1
+          echo "dev lane omnibase-infra-postgres omnidash_analytics.public.delegation_events correlation=$corr row=$row"
+          test "$row" = "research|t|Qwen3.8-27B|244|t"

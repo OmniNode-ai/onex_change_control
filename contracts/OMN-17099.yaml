@@ -178,3 +178,30 @@ dod_evidence:
     checks:
       - check_type: "command"
         check_value: "gh pr view 11990 --repo OmniNode-ai/onex_change_control --json number,state"
+  - id: "dod-da-17099-dod1-renderer-binds-backends"
+    description: |-
+      DoD proof (mac-evid-b06b07, OMN-17427). OMN-17099 carries no labelled acceptance criteria, so nothing here binds an AC label. Runs the omnibase_infra tests for the DoD line 'the renderer binds any backend that declares endpoint_url_env, not only the fixed set': a lane overlay adds a fully specified backend to the rendered contract, the endpoint is whatever the lane declares, an incomplete declaration fails naming the missing field, and the renderer's own tests pass.
+    source: "generated"
+    execution_scope: "local_done_gate"
+    checks:
+      - check_type: "test_passes"
+        check_value: |-
+          env -u PYTHONPATH uv run pytest "tests/unit/runtime/test_bifrost_lane_overlay_adds_backend_omn17099.py" "tests/unit/runtime/test_render_bifrost_delegation_contract.py" -q
+        cwd: "${OMNI_HOME}/omnibase_infra"
+  - id: "dod-da-17099-dod2-dev-lane-embedding-endpoint"
+    description: |-
+      DoD proof (mac-evid-b06b07, OMN-17427). No AC label is bound: the ticket has none. The Done-proof probe, read live on the .201 dev lane (compose project omnibase-infra, container omnibase-infra-runtime-worker-1): the rendered contract at /app/data/delegation/bifrost_delegation.yaml carries a non-null endpoint_url for local-embedding. The check prints cloud-vertex-gemini's endpoint_url as well and does not assert it: on 2026-10-02 that lane sets BIFROST_VERTEX_GEMINI_ENDPOINT_URL and its rendered cloud-vertex-gemini endpoint_url is still null, so the DoD line that names both backends is met for local-embedding only.
+    source: "generated"
+    execution_scope: "local_done_gate"
+    checks:
+      - check_type: "command"
+        check_value: |-
+          lab_ssh="$(docker inspect omnibase-infra-postgres >/dev/null 2>&1 && echo "sh -c" || echo "ssh -o BatchMode=yes -o ConnectTimeout=15 jonah@192.168.86.201")"
+          $lab_ssh "docker exec omnibase-infra-runtime-worker-1 cat /app/data/delegation/bifrost_delegation.yaml" | python3 -c '
+          import sys, yaml
+          d = yaml.safe_load(sys.stdin)
+          by = {b["backend_id"]: b for b in d["backends"]}
+          emb = by["local-embedding"]["endpoint_url"]
+          vtx = by["cloud-vertex-gemini"]["endpoint_url"]
+          print(f"dev lane (compose project omnibase-infra on .201) rendered contract: local-embedding endpoint_url={emb} cloud-vertex-gemini endpoint_url={vtx}")
+          sys.exit(0 if emb else 1)'

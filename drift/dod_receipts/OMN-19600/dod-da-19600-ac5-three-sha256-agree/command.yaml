@@ -1,0 +1,101 @@
+---
+schema_version: 1.0.0
+ticket_id: OMN-19600
+evidence_item_id: dod-da-19600-ac5-three-sha256-agree
+check_type: command
+check_value: |-
+  lab_ssh="$(docker inspect omnibase-infra-postgres >/dev/null 2>&1 && echo "sh -c" || echo "ssh -o BatchMode=yes -o ConnectTimeout=15 jonah@192.168.86.201")"
+  work="$(mktemp -d -t omn19600.XXXXXX)"
+  trap 'rm -rf "$work"' EXIT
+  corr=1b978011-a6ce-4081-933b-9596ba2639bc
+  $lab_ssh "docker exec omnibase-infra-postgres psql -U postgres -d omnidash_analytics -At -c \"select response_text from public.delegation_events where correlation_id='$corr'\"" > "$work/response.txt" || exit 1
+  test -s "$work/response.txt" || { echo "no stored reply for $corr on the .201 dev lane"; exit 1; }
+  cat > "$work/check.py" <<'PY'
+  import hashlib, json, os, sys
+  from pathlib import Path
+  from uuid import UUID
+
+  work = Path(os.environ["WORK"])
+  os.environ["ONEX_ARTIFACT_STORE_ROOT"] = str(work / "artifacts")
+  from omnibase_core.artifacts.artifact_store import ArtifactStore
+  from omnibase_core.models.artifacts.model_artifact_ref import ModelArtifactRef
+  from omnimarket.models.delegation.wire.model_delegation_output_files import ModelDeclaredOutputFile, ModelDeclaredOutputs
+  from omnimarket.nodes.node_delegation_output_extract_compute import HandlerDelegationOutputExtract, ModelDelegationOutputExtractRequest
+  from omnimarket.nodes.node_delegation_output_materialize_effect import HandlerDelegationOutputMaterialize, ModelDelegationOutputMaterializeRequest
+
+  corr = UUID(os.environ["CORR"])
+  reply = (work / "response.txt").read_text()
+  declared = ModelDeclaredOutputs(files=(ModelDeclaredOutputFile(path="tests/test_slugify.py", kind="test"),))
+  ex = HandlerDelegationOutputExtract().handle(ModelDelegationOutputExtractRequest(response_text=reply, declared_outputs=declared))
+  target = work / "target"
+  target.mkdir()
+  store = ArtifactStore()
+  res = HandlerDelegationOutputMaterialize(artifact_store=store).handle(
+      ModelDelegationOutputMaterializeRequest(correlation_id=corr, target_root=str(target), files=ex.files, manifest=ex.manifest)
+  )
+  entry = ex.manifest.entries[0]
+  on_disk = hashlib.sha256((target / entry.path).read_bytes()).hexdigest()
+  blob = hashlib.sha256(store.read_blob(ModelArtifactRef(ref=entry.artifact_ref))).hexdigest()
+  print(f"correlation={corr} file={entry.path} manifest_sha256={entry.sha256} on_disk_sha256={on_disk} artifact_blob_sha256={blob} refusals={len(res.refusals)}")
+  sys.exit(0 if entry.sha256 == on_disk == blob and not res.refusals and not ex.manifest.refusals else 1)
+  PY
+  WORK="$work" CORR="$corr" env -u PYTHONPATH uv run python "$work/check.py"
+contract_sha256: sha256:2aebe1dd10e12d9c8ea3d02bc2c75419a99a9f196cf95393c1b56bda8af47953
+contract_entry_sha256: sha256:9135817fbfcb932cf3b2032dfde8b18797304d8bcb5fa016723866722ec43ce3
+status: PASS
+run_timestamp: '2026-10-03T01:08:03Z'
+commit_sha: d173b570c51d9bf6919727be58928b8eddfc0859
+runner: mac-evid-b06b07@mac
+verifier: occ-probe-capture-v1
+probe_command: |-
+  cd "${OMNI_HOME}/omnimarket" || exit 2
+  gh api repos/OmniNode-ai/omnimarket/commits/d173b570c51d9bf6919727be58928b8eddfc0859 --jq .sha || exit 2
+  lab_ssh="$(docker inspect omnibase-infra-postgres >/dev/null 2>&1 && echo "sh -c" || echo "ssh -o BatchMode=yes -o ConnectTimeout=15 jonah@192.168.86.201")"
+  work="$(mktemp -d -t omn19600.XXXXXX)"
+  trap 'rm -rf "$work"' EXIT
+  corr=1b978011-a6ce-4081-933b-9596ba2639bc
+  $lab_ssh "docker exec omnibase-infra-postgres psql -U postgres -d omnidash_analytics -At -c \"select response_text from public.delegation_events where correlation_id='$corr'\"" > "$work/response.txt" || exit 1
+  test -s "$work/response.txt" || { echo "no stored reply for $corr on the .201 dev lane"; exit 1; }
+  cat > "$work/check.py" <<'PY'
+  import hashlib, json, os, sys
+  from pathlib import Path
+  from uuid import UUID
+
+  work = Path(os.environ["WORK"])
+  os.environ["ONEX_ARTIFACT_STORE_ROOT"] = str(work / "artifacts")
+  from omnibase_core.artifacts.artifact_store import ArtifactStore
+  from omnibase_core.models.artifacts.model_artifact_ref import ModelArtifactRef
+  from omnimarket.models.delegation.wire.model_delegation_output_files import ModelDeclaredOutputFile, ModelDeclaredOutputs
+  from omnimarket.nodes.node_delegation_output_extract_compute import HandlerDelegationOutputExtract, ModelDelegationOutputExtractRequest
+  from omnimarket.nodes.node_delegation_output_materialize_effect import HandlerDelegationOutputMaterialize, ModelDelegationOutputMaterializeRequest
+
+  corr = UUID(os.environ["CORR"])
+  reply = (work / "response.txt").read_text()
+  declared = ModelDeclaredOutputs(files=(ModelDeclaredOutputFile(path="tests/test_slugify.py", kind="test"),))
+  ex = HandlerDelegationOutputExtract().handle(ModelDelegationOutputExtractRequest(response_text=reply, declared_outputs=declared))
+  target = work / "target"
+  target.mkdir()
+  store = ArtifactStore()
+  res = HandlerDelegationOutputMaterialize(artifact_store=store).handle(
+      ModelDelegationOutputMaterializeRequest(correlation_id=corr, target_root=str(target), files=ex.files, manifest=ex.manifest)
+  )
+  entry = ex.manifest.entries[0]
+  on_disk = hashlib.sha256((target / entry.path).read_bytes()).hexdigest()
+  blob = hashlib.sha256(store.read_blob(ModelArtifactRef(ref=entry.artifact_ref))).hexdigest()
+  print(f"correlation={corr} file={entry.path} manifest_sha256={entry.sha256} on_disk_sha256={on_disk} artifact_blob_sha256={blob} refusals={len(res.refusals)}")
+  sys.exit(0 if entry.sha256 == on_disk == blob and not res.refusals and not ex.manifest.refusals else 1)
+  PY
+  WORK="$work" CORR="$corr" env -u PYTHONPATH uv run python "$work/check.py"
+probe_stdout: |-
+  d173b570c51d9bf6919727be58928b8eddfc0859
+  correlation=1b978011-a6ce-4081-933b-9596ba2639bc file=tests/test_slugify.py manifest_sha256=9b618b74f7878e57120385e3f9f3e187b2fa9ea8822b8e5a71264adfbd5b1e99 on_disk_sha256=9b618b74f7878e57120385e3f9f3e187b2fa9ea8822b8e5a71264adfbd5b1e99 artifact_blob_sha256=9b618b74f7878e57120385e3f9f3e187b2fa9ea8822b8e5a71264adfbd5b1e99 refusals=0
+actual_output: 'PASS: probe captured on the launching Mac (OMN-20370 capture path) in a clean checkout
+  at d173b570c51d; exit 0. Hand-authored (OMN-15247) by lane mac-evid-b06b07 (OMN-17427) to bind AC5 to
+  a check that executes it.'
+exit_code: 0
+pr_number: 2909
+branch: dev
+duration_ms: 3900
+artifact_sha256:
+  - sha256:e06b9cca0be204502b0bcadb0885ab9b56cb1d5e03f7b045a05dec971d93a132
+  - sha256:0aebbe8540d50589a3cd2cc2b6ba44bef8556dd134a4d328577db2e3f2706885
