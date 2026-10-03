@@ -59,6 +59,7 @@ Verdict policy — DEFAULT-DENY, FAIL-CLOSED, four layers
 3. **L3 default-deny sweep.** Any *other* job present in this run's job list,
    completed, and not ``success``/``skipped`` fails the gate — unless it is the
    poller itself or an explicit, reason-carrying :data:`SOFT_ALLOWLIST` entry.
+   Non-exempt running rows hold the verdict at PENDING and are re-polled.
 4. **L4 EXPECTED_EXTERNAL_CONTEXTS.** Checks 1-3 only see ``actions/runs/
    {RUN_ID}/jobs`` — this workflow run's own job list. A job living in ANY
    OTHER workflow file (``guards.yml`` (OMN-16260 -- Dep Provenance Gate,
@@ -1398,7 +1399,8 @@ def evaluate(
         )
     )
 
-    # (3) Default-deny sweep over every OTHER present+completed job.
+    # (3) Default-deny sweep over every OTHER present job: fail completed
+    #     refusals and WAIT for running rows (PENDING, re-polled).
     sweep_failures = sorted(
         j.name
         for name, j in latest.items()
@@ -1407,6 +1409,14 @@ def evaluate(
         and not _is_allowlisted(name, allowlist)
         and j.status == "completed"
         and j.conclusion not in GOOD_CONCLUSIONS
+    )
+    sweep_running = sorted(
+        j.name
+        for name, j in latest.items()
+        if name != self_name
+        and name not in gate_names
+        and not _is_allowlisted(name, allowlist)
+        and j.status != "completed"
     )
 
     # Completeness anchor: every gate must be present AND completed.
@@ -1466,7 +1476,7 @@ def evaluate(
         # decision.
         + [f"malformed sweep exclusion: {f}" for f in exclusion_findings]
     )
-    all_unresolved = gate_missing_or_pending + external_unresolved
+    all_unresolved = gate_missing_or_pending + sweep_running + external_unresolved
 
     def _verdict(label: str) -> str:
         return _report(
@@ -1481,6 +1491,7 @@ def evaluate(
             external_contexts,
             external_failures,
             external_unresolved,
+            sweep_running=sweep_running,
             sweep_names=ext_sweep_names,
             sweep_external_failures=ext_sweep_failures,
             sweep_in_flight=ext_sweep_in_flight,
@@ -1510,6 +1521,7 @@ def _report(
     external_failures: list[str] | None = None,
     external_unresolved: list[str] | None = None,
     *,
+    sweep_running: list[str] | None = None,
     sweep_names: list[str] | None = None,
     sweep_external_failures: list[str] | None = None,
     sweep_in_flight: list[str] | None = None,
@@ -1541,6 +1553,11 @@ def _report(
         lines.append(f"  skippable-gate failures: {', '.join(skippable_failures)}")
     if sweep_failures:
         lines.append(f"  default-deny sweep failures: {', '.join(sweep_failures)}")
+    if sweep_running:
+        lines.append(
+            "  default-deny sweep rows still running (PENDING, re-polled): "
+            + ", ".join(sweep_running)
+        )
     if gate_missing_or_pending:
         lines.append(f"  gates missing/pending: {', '.join(gate_missing_or_pending)}")
     if external_contexts:
