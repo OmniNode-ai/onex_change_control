@@ -1,0 +1,77 @@
+---
+schema_version: 1.0.0
+ticket_id: OMN-19371
+evidence_item_id: dod-da-19371-ac4-first-scheduled-run-green
+check_type: command
+check_value: |-
+  repo=OmniNode-ai/omninode_infra
+  merged="$(gh pr view 1654 --repo "$repo" --json mergedAt --jq .mergedAt)" || exit 1
+  first="$(gh run list --repo "$repo" --workflow m3-tenant-attribution-chain.yml --event schedule --limit 100 --json databaseId,conclusion,createdAt | jq -r --arg m "$merged" '[.[] | select(.createdAt > $m)] | min_by(.createdAt) | "\(.databaseId) \(.conclusion) \(.createdAt)"')" || exit 1
+  id="${first%% *}"
+  rest="${first#* }"
+  conclusion="${rest%% *}"
+  d="$(mktemp -d)" || exit 1
+  gh run download "$id" --repo "$repo" -D "$d" || { rm -rf "$d"; exit 1; }
+  python3 - "$d" "$id" "$conclusion" "$merged" <<'PY'
+  import glob, json, sys
+  d, run_id, conclusion, merged = sys.argv[1:5]
+  doc = json.load(open(glob.glob(d + "/**/c19-staging-receipt.json", recursive=True)[0]))
+  counted = set(doc["verdict"]["counted_kinds"])
+  legs = {leg["kind"]: leg["reason"] for leg in doc["receipt"]["legs"]}
+  held = {"ATTRIBUTED_OK", "REFUSED_BY_RLS"}
+  assert len(counted) == 6, counted
+  assert all(legs.get(k) in held for k in counted), {k: legs.get(k) for k in counted}
+  assert doc["verdict"]["ok"] is True and doc["verdict"]["failures"] == []
+  assert conclusion == "success", conclusion
+  print(f"first scheduled run after merge {merged}: run={run_id} conclusion={conclusion} verdict.ok={doc['verdict']['ok']} counted_legs_held={len(counted)}/6")
+  PY
+  rc=$?
+  rm -rf "$d"
+  exit $rc
+contract_sha256: sha256:2b078cb73183199577b1614a5f02c9efbd3a5bb6fbed5581d0456691ed8c5447
+contract_entry_sha256: sha256:f37b0496c08f74953538b6c10ea146a686af1e15e072cbfad0271dd82c5151a6
+status: PASS
+run_timestamp: '2026-10-02T22:13:03Z'
+commit_sha: 828b944ce74e06c12e3026b0c856931490fdb6bd
+runner: evid-B10-2a21@h201
+verifier: occ-probe-capture-v1
+probe_command: |-
+  cd "${OMNI_HOME}/omninode_infra" || exit 2
+  gh api repos/OmniNode-ai/omninode_infra/commits/828b944ce74e06c12e3026b0c856931490fdb6bd --jq .sha || exit 2
+  repo=OmniNode-ai/omninode_infra
+  merged="$(gh pr view 1654 --repo "$repo" --json mergedAt --jq .mergedAt)" || exit 1
+  first="$(gh run list --repo "$repo" --workflow m3-tenant-attribution-chain.yml --event schedule --limit 100 --json databaseId,conclusion,createdAt | jq -r --arg m "$merged" '[.[] | select(.createdAt > $m)] | min_by(.createdAt) | "\(.databaseId) \(.conclusion) \(.createdAt)"')" || exit 1
+  id="${first%% *}"
+  rest="${first#* }"
+  conclusion="${rest%% *}"
+  d="$(mktemp -d)" || exit 1
+  gh run download "$id" --repo "$repo" -D "$d" || { rm -rf "$d"; exit 1; }
+  python3 - "$d" "$id" "$conclusion" "$merged" <<'PY'
+  import glob, json, sys
+  d, run_id, conclusion, merged = sys.argv[1:5]
+  doc = json.load(open(glob.glob(d + "/**/c19-staging-receipt.json", recursive=True)[0]))
+  counted = set(doc["verdict"]["counted_kinds"])
+  legs = {leg["kind"]: leg["reason"] for leg in doc["receipt"]["legs"]}
+  held = {"ATTRIBUTED_OK", "REFUSED_BY_RLS"}
+  assert len(counted) == 6, counted
+  assert all(legs.get(k) in held for k in counted), {k: legs.get(k) for k in counted}
+  assert doc["verdict"]["ok"] is True and doc["verdict"]["failures"] == []
+  assert conclusion == "success", conclusion
+  print(f"first scheduled run after merge {merged}: run={run_id} conclusion={conclusion} verdict.ok={doc['verdict']['ok']} counted_legs_held={len(counted)}/6")
+  PY
+  rc=$?
+  rm -rf "$d"
+  exit $rc
+probe_stdout: |-
+  828b944ce74e06c12e3026b0c856931490fdb6bd
+  first scheduled run after merge 2026-09-24T18:38:19Z: run=36098595107 conclusion=success verdict.ok=True counted_legs_held=6/6
+actual_output: 'PASS: probe captured on lab host h201 (OMN-20370 capture path) against a clean checkout
+  of omninode_infra at 828b944ce74e; exit 0. Hand-authored (OMN-15247) by lane evid-B10-2a21 (OMN-17427)
+  to bind AC4 to a check that executes it.'
+exit_code: 0
+pr_number: 1654
+branch: dev
+duration_ms: 2587
+artifact_sha256:
+  - sha256:eeaf679ee5e7ee151a53032d9a1832f3e3ae81e40991e11f2a553f123e6a604a
+  - sha256:8fae37c3958fe3e9013e44f873c9e50b89b37021e750cfc0fad43de47c0cfefe
