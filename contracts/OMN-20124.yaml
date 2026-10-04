@@ -315,3 +315,210 @@ dod_evidence:
         proposed_by: "lane=dod-closeout-bind-2026-10-04T1045Z-c0"
         accepted_by: "lane=dod-closeout-accept-2026-10-04T1045Z-c0"
         accepted_at: "2026-10-04T11:32:31Z"
+  - id: "dod-acc-1004t1245z-20124-ac1-stdout-clean-env"
+    description: |-
+      AC1 binding proposed by lane dod-closeout-bind-2026-10-04T1245Z-c0 and accepted by a different lane, dod-closeout-accept-2026-10-04T1245Z-c0, after an independent re-run at omnibase_infra origin/dev a26c3d72a: 1 passed, 2 deselected; exit_0, stdout_is_the_answer, no_json_line_on_stdout and summary_line_names_full_receipt_on_stderr all true. This is the clean-environment form (env -i HOME PATH PYTHONPATH) of the 1045Z check, which failed under the verifier while passing in a lane shell; it models the clean outside-user machine the ticket describes. Only run_receipt_mode (the bus dispatch) is faked; it hands a recorded receipt to the real renderer the command wires in, and in receipt_mode.py the renderer branch is the only normal-path stdout write (the other stdout writes are the artifact-capture-failure path). The human form is selected when stdout is a terminal (the quickstart user at a shell); a pipe keeps the JSON receipt line by design (cli_delegate.py _stdout_is_tty). Negative controls run by the accepting lane: at the implementing merge's parent ef6a00268 the check fails (no _stdout_is_tty), and with the TTY patch removed there stdout carries the JSON receipt (stdout_is_the_answer and no_json_line_on_stdout false); at origin/dev with stdout not a terminal the same keys are false. Residual: the artifacts line is written by the receipt callback on stderr and is not asserted.
+    source: "manual"
+    execution_scope: "local_done_gate"
+    checks:
+      - check_type: "command"
+        check_value: |-
+          d="$(mktemp -d)" || exit 2; trap 'rm -rf "$d"' EXIT
+          cat > "$d/test_omn20124_default_flags.py" <<'PY'
+          import json, sys, tempfile
+          from pathlib import Path
+          import click, pytest
+          from click.testing import CliRunner
+          from omnibase_infra.cli import cli_delegate
+
+          @pytest.mark.parametrize("mode", ["ac1", "ac2", "ac3"])
+          def test_default_flags_on_a_terminal(mode, monkeypatch):
+              fx = Path("tests/fixtures/delegation")
+              fixture = fx / ("omn18569/dispatched_envelope_carrier_receipt.json" if mode in ("ac1", "ac3") else "omn18306/failed_no_accepted_attempt_receipt.json")
+              env = json.loads(fixture.read_text())
+              tmp = Path(tempfile.mkdtemp())
+              (tmp / "c.yaml").write_text("name: x\n")
+              monkeypatch.setattr(cli_delegate, "_resolve_packaged_contract", lambda _n: tmp / "c.yaml")
+              monkeypatch.setattr(cli_delegate, "_stdout_is_tty", lambda: True)
+              class R:
+                  def model_dump(self, *, mode): return env
+                  def model_dump_json(self): return json.dumps(env, separators=(",", ":"))
+              def fake(**kw):
+                  r = kw.get("receipt_renderer")
+                  if r is None:
+                      click.echo(R().model_dump_json()); return int(env.get("exit_code") or 0)
+                  ok = r(R()); return int(env.get("exit_code") or 0) if ok else 1
+              monkeypatch.setattr(cli_delegate, "run_receipt_mode", fake)
+              res = CliRunner().invoke(cli_delegate.delegate_command, ["say hello", "--state-root", str(tmp / "state"), "--emit-socket", str(tmp / "x.sock")], catch_exceptions=False)
+              out, err = res.stdout, res.stderr
+              tp = env["result"]["terminal_payload"]; tp = tp.get("payload", tp)
+              outl = [l for l in out.splitlines() if l.strip()]
+              c = {}
+              if mode == "ac1":
+                  ans = tp["response"]
+                  c = {"exit_0": res.exit_code == 0, "stdout_is_the_answer": out.strip() == ans.strip(), "no_json_line_on_stdout": not any(l.lstrip().startswith("{") for l in outl), "summary_line_names_full_receipt_on_stderr": any("full receipt" in l and env["run_id"] in l for l in err.splitlines())}
+              elif mode == "ac3":
+                  ans = tp["response"]
+                  c = {"exit_0": res.exit_code == 0, "every_stdout_line_is_answer_text": all(l.strip() in ans for l in outl) and len(outl) >= 1, "diagnostics_on_stderr": len([l for l in err.splitlines() if l.strip()]) >= 1}
+              elif mode == "ac2":
+                  lines = [l for l in err.splitlines() if l.strip()]
+                  fl = [l for l in lines if l.startswith("onex delegate failed: ")]
+                  first_json = next((i for i, l in enumerate(lines) if l.lstrip().startswith("{")), len(lines))
+                  c = {"nonzero_exit": res.exit_code != 0, "stdout_empty": out.strip() == "", "one_plain_failure_line": len(fl) == 1 and "\n" not in fl[0], "line_names_typed_cause": bool(fl) and tp["terminal_failure_cause"] in fl[0], "line_carries_error_message": bool(fl) and tp["error_message"].splitlines()[0][:60] in fl[0], "plain_line_before_any_json": bool(fl) and lines.index(fl[0]) < first_json}
+              print(json.dumps({"mode": mode, "checks": c, "stderr_tail": err.splitlines()[-3:]}))
+              assert c and all(c.values()), c
+          PY
+          env -i HOME="$HOME" PATH="$PATH" PYTHONPATH="$PWD" uv run pytest -p tests.conftest -p tests.unit.cli.conftest "$d/test_omn20124_default_flags.py" -q -s -p no:cacheprovider --rootdir=. -k ac1
+        cwd: "${OMNI_HOME}/omnibase_infra"
+    binds_ac:
+      - "AC1"
+    ac_bindings:
+      - label: "AC1"
+        criterion_hash: "bb1fa806287f127669bedb0855df0082d66b6636d420d95130040b51083d70b6"
+        proposed_by: "lane=dod-closeout-bind-2026-10-04T1245Z-c0"
+        accepted_by: "lane=dod-closeout-accept-2026-10-04T1245Z-c0"
+        accepted_at: "2026-10-04T13:21:49Z"
+  - id: "dod-acc-1004t1245z-20124-ac2-failline-clean-env"
+    description: |-
+      AC2 binding proposed by lane dod-closeout-bind-2026-10-04T1245Z-c0 and accepted by a different lane, dod-closeout-accept-2026-10-04T1245Z-c0, after an independent re-run at omnibase_infra origin/dev a26c3d72a: 1 passed, 2 deselected; nonzero_exit, stdout_empty, one_plain_failure_line, line_names_typed_cause, line_carries_error_message and plain_line_before_any_json all true. This is the clean-environment form (env -i HOME PATH PYTHONPATH) of the 1045Z check, which failed under the verifier while passing in a lane shell; it models the clean outside-user machine the ticket describes. Only run_receipt_mode (the bus dispatch) is faked; it hands a recorded receipt to the real renderer the command wires in, and in receipt_mode.py the renderer branch is the only normal-path stdout write (the other stdout writes are the artifact-capture-failure path). The human form is selected when stdout is a terminal (the quickstart user at a shell); a pipe keeps the JSON receipt line by design (cli_delegate.py _stdout_is_tty). Residual: the fixture is a recorded provider_error failure, not the falsifier's live no-key run; a live no-key run is a live delegation and was not performed.
+    source: "manual"
+    execution_scope: "local_done_gate"
+    checks:
+      - check_type: "command"
+        check_value: |-
+          d="$(mktemp -d)" || exit 2; trap 'rm -rf "$d"' EXIT
+          cat > "$d/test_omn20124_default_flags.py" <<'PY'
+          import json, sys, tempfile
+          from pathlib import Path
+          import click, pytest
+          from click.testing import CliRunner
+          from omnibase_infra.cli import cli_delegate
+
+          @pytest.mark.parametrize("mode", ["ac1", "ac2", "ac3"])
+          def test_default_flags_on_a_terminal(mode, monkeypatch):
+              fx = Path("tests/fixtures/delegation")
+              fixture = fx / ("omn18569/dispatched_envelope_carrier_receipt.json" if mode in ("ac1", "ac3") else "omn18306/failed_no_accepted_attempt_receipt.json")
+              env = json.loads(fixture.read_text())
+              tmp = Path(tempfile.mkdtemp())
+              (tmp / "c.yaml").write_text("name: x\n")
+              monkeypatch.setattr(cli_delegate, "_resolve_packaged_contract", lambda _n: tmp / "c.yaml")
+              monkeypatch.setattr(cli_delegate, "_stdout_is_tty", lambda: True)
+              class R:
+                  def model_dump(self, *, mode): return env
+                  def model_dump_json(self): return json.dumps(env, separators=(",", ":"))
+              def fake(**kw):
+                  r = kw.get("receipt_renderer")
+                  if r is None:
+                      click.echo(R().model_dump_json()); return int(env.get("exit_code") or 0)
+                  ok = r(R()); return int(env.get("exit_code") or 0) if ok else 1
+              monkeypatch.setattr(cli_delegate, "run_receipt_mode", fake)
+              res = CliRunner().invoke(cli_delegate.delegate_command, ["say hello", "--state-root", str(tmp / "state"), "--emit-socket", str(tmp / "x.sock")], catch_exceptions=False)
+              out, err = res.stdout, res.stderr
+              tp = env["result"]["terminal_payload"]; tp = tp.get("payload", tp)
+              outl = [l for l in out.splitlines() if l.strip()]
+              c = {}
+              if mode == "ac1":
+                  ans = tp["response"]
+                  c = {"exit_0": res.exit_code == 0, "stdout_is_the_answer": out.strip() == ans.strip(), "no_json_line_on_stdout": not any(l.lstrip().startswith("{") for l in outl), "summary_line_names_full_receipt_on_stderr": any("full receipt" in l and env["run_id"] in l for l in err.splitlines())}
+              elif mode == "ac3":
+                  ans = tp["response"]
+                  c = {"exit_0": res.exit_code == 0, "every_stdout_line_is_answer_text": all(l.strip() in ans for l in outl) and len(outl) >= 1, "diagnostics_on_stderr": len([l for l in err.splitlines() if l.strip()]) >= 1}
+              elif mode == "ac2":
+                  lines = [l for l in err.splitlines() if l.strip()]
+                  fl = [l for l in lines if l.startswith("onex delegate failed: ")]
+                  first_json = next((i for i, l in enumerate(lines) if l.lstrip().startswith("{")), len(lines))
+                  c = {"nonzero_exit": res.exit_code != 0, "stdout_empty": out.strip() == "", "one_plain_failure_line": len(fl) == 1 and "\n" not in fl[0], "line_names_typed_cause": bool(fl) and tp["terminal_failure_cause"] in fl[0], "line_carries_error_message": bool(fl) and tp["error_message"].splitlines()[0][:60] in fl[0], "plain_line_before_any_json": bool(fl) and lines.index(fl[0]) < first_json}
+              print(json.dumps({"mode": mode, "checks": c, "stderr_tail": err.splitlines()[-3:]}))
+              assert c and all(c.values()), c
+          PY
+          env -i HOME="$HOME" PATH="$PATH" PYTHONPATH="$PWD" uv run pytest -p tests.conftest -p tests.unit.cli.conftest "$d/test_omn20124_default_flags.py" -q -s -p no:cacheprovider --rootdir=. -k ac2
+        cwd: "${OMNI_HOME}/omnibase_infra"
+    binds_ac:
+      - "AC2"
+    ac_bindings:
+      - label: "AC2"
+        criterion_hash: "3653d560f281b6a0db60af39f02d74716774b61d73a6cb69d6b642d69cdeb506"
+        proposed_by: "lane=dod-closeout-bind-2026-10-04T1245Z-c0"
+        accepted_by: "lane=dod-closeout-accept-2026-10-04T1245Z-c0"
+        accepted_at: "2026-10-04T13:21:49Z"
+  - id: "dod-acc-1004t1245z-20124-ac3-stderr-clean-env"
+    description: |-
+      AC3 binding proposed by lane dod-closeout-bind-2026-10-04T1245Z-c0 and accepted by a different lane, dod-closeout-accept-2026-10-04T1245Z-c0, after an independent re-run at omnibase_infra origin/dev a26c3d72a: 1 passed, 2 deselected; exit_0, every_stdout_line_is_answer_text and diagnostics_on_stderr all true. This is the clean-environment form (env -i HOME PATH PYTHONPATH) of the 1045Z check, which failed under the verifier while passing in a lane shell; it models the clean outside-user machine the ticket describes. Only run_receipt_mode (the bus dispatch) is faked; it hands a recorded receipt to the real renderer the command wires in, and in receipt_mode.py the renderer branch is the only normal-path stdout write (the other stdout writes are the artifact-capture-failure path). The human form is selected when stdout is a terminal (the quickstart user at a shell); a pipe keeps the JSON receipt line by design (cli_delegate.py _stdout_is_tty). Residual: diagnostics emitted inside the real run_receipt_mode are faked out; by reading, its identity line goes to stderr.
+    source: "manual"
+    execution_scope: "local_done_gate"
+    checks:
+      - check_type: "command"
+        check_value: |-
+          d="$(mktemp -d)" || exit 2; trap 'rm -rf "$d"' EXIT
+          cat > "$d/test_omn20124_default_flags.py" <<'PY'
+          import json, sys, tempfile
+          from pathlib import Path
+          import click, pytest
+          from click.testing import CliRunner
+          from omnibase_infra.cli import cli_delegate
+
+          @pytest.mark.parametrize("mode", ["ac1", "ac2", "ac3"])
+          def test_default_flags_on_a_terminal(mode, monkeypatch):
+              fx = Path("tests/fixtures/delegation")
+              fixture = fx / ("omn18569/dispatched_envelope_carrier_receipt.json" if mode in ("ac1", "ac3") else "omn18306/failed_no_accepted_attempt_receipt.json")
+              env = json.loads(fixture.read_text())
+              tmp = Path(tempfile.mkdtemp())
+              (tmp / "c.yaml").write_text("name: x\n")
+              monkeypatch.setattr(cli_delegate, "_resolve_packaged_contract", lambda _n: tmp / "c.yaml")
+              monkeypatch.setattr(cli_delegate, "_stdout_is_tty", lambda: True)
+              class R:
+                  def model_dump(self, *, mode): return env
+                  def model_dump_json(self): return json.dumps(env, separators=(",", ":"))
+              def fake(**kw):
+                  r = kw.get("receipt_renderer")
+                  if r is None:
+                      click.echo(R().model_dump_json()); return int(env.get("exit_code") or 0)
+                  ok = r(R()); return int(env.get("exit_code") or 0) if ok else 1
+              monkeypatch.setattr(cli_delegate, "run_receipt_mode", fake)
+              res = CliRunner().invoke(cli_delegate.delegate_command, ["say hello", "--state-root", str(tmp / "state"), "--emit-socket", str(tmp / "x.sock")], catch_exceptions=False)
+              out, err = res.stdout, res.stderr
+              tp = env["result"]["terminal_payload"]; tp = tp.get("payload", tp)
+              outl = [l for l in out.splitlines() if l.strip()]
+              c = {}
+              if mode == "ac1":
+                  ans = tp["response"]
+                  c = {"exit_0": res.exit_code == 0, "stdout_is_the_answer": out.strip() == ans.strip(), "no_json_line_on_stdout": not any(l.lstrip().startswith("{") for l in outl), "summary_line_names_full_receipt_on_stderr": any("full receipt" in l and env["run_id"] in l for l in err.splitlines())}
+              elif mode == "ac3":
+                  ans = tp["response"]
+                  c = {"exit_0": res.exit_code == 0, "every_stdout_line_is_answer_text": all(l.strip() in ans for l in outl) and len(outl) >= 1, "diagnostics_on_stderr": len([l for l in err.splitlines() if l.strip()]) >= 1}
+              elif mode == "ac2":
+                  lines = [l for l in err.splitlines() if l.strip()]
+                  fl = [l for l in lines if l.startswith("onex delegate failed: ")]
+                  first_json = next((i for i, l in enumerate(lines) if l.lstrip().startswith("{")), len(lines))
+                  c = {"nonzero_exit": res.exit_code != 0, "stdout_empty": out.strip() == "", "one_plain_failure_line": len(fl) == 1 and "\n" not in fl[0], "line_names_typed_cause": bool(fl) and tp["terminal_failure_cause"] in fl[0], "line_carries_error_message": bool(fl) and tp["error_message"].splitlines()[0][:60] in fl[0], "plain_line_before_any_json": bool(fl) and lines.index(fl[0]) < first_json}
+              print(json.dumps({"mode": mode, "checks": c, "stderr_tail": err.splitlines()[-3:]}))
+              assert c and all(c.values()), c
+          PY
+          env -i HOME="$HOME" PATH="$PATH" PYTHONPATH="$PWD" uv run pytest -p tests.conftest -p tests.unit.cli.conftest "$d/test_omn20124_default_flags.py" -q -s -p no:cacheprovider --rootdir=. -k ac3
+        cwd: "${OMNI_HOME}/omnibase_infra"
+    binds_ac:
+      - "AC3"
+    ac_bindings:
+      - label: "AC3"
+        criterion_hash: "384e941b98111f9162f8cad059f7ef98f1ae963196393d84f214e7dc63c5724c"
+        proposed_by: "lane=dod-closeout-bind-2026-10-04T1245Z-c0"
+        accepted_by: "lane=dod-closeout-accept-2026-10-04T1245Z-c0"
+        accepted_at: "2026-10-04T13:21:49Z"
+  - id: "dod-acc-1004t1245z-20124-ac4-quickstart"
+    description: |-
+      AC4 binding proposed by lane dod-closeout-bind-2026-10-04T1245Z-c0 and accepted by a different lane, dod-closeout-accept-2026-10-04T1245Z-c0, after an independent re-run at omnibase_infra origin/dev a26c3d72a and knowledge-base origin/main e33d969: all six keys true, exit 0. Step 4 of the public quickstart never sends the reader to result.txt for the answer, says the answer prints as plain text, documents --json, and documents the success-summary and failure-line prefixes the merged renderer emits. Residual judged not to trip the falsifier: Step 5 lists result.txt among the run files and offers cat of it as a way to reread the newest answer, after Step 4 states the answer is printed.
+    source: "manual"
+    execution_scope: "local_done_gate"
+    checks:
+      - check_type: "command"
+        check_value: |-
+          env -u PYTHONPATH uv run python -c "import json,os,subprocess,sys,tempfile; from pathlib import Path; from omnibase_infra.cli.delegate_human_output import render_delegate_outcome; doc=subprocess.check_output(['git','-C',os.environ['OMNI_HOME']+'/knowledge-base','show','origin/main:guides/onex-plugin-quickstart.md'],text=True); s4=doc.split('## Step 4',1)[1].split('## Step 5',1)[0]; fx=Path('tests/fixtures/delegation'); d=Path(tempfile.mkdtemp()); ok=render_delegate_outcome(json.loads((fx/'omn18569/dispatched_envelope_carrier_receipt.json').read_text()),state_root=d); bad=render_delegate_outcome(json.loads((fx/'omn18306/failed_no_accepted_attempt_receipt.json').read_text()),state_root=d); c={'step4_never_routes_answer_to_result_txt':'result.txt' not in s4,'step4_says_answer_prints_as_plain_text':'answer as plain text' in s4,'success_summary_prefix_matches_renderer':ok.succeeded and ok.stderr[0].startswith('onex delegate: model ') and 'onex delegate: model <model>, cost' in s4,'failure_prefix_matches_renderer':(not bad.succeeded) and bad.stdout=='' and bad.stderr[0].startswith('onex delegate failed: ') and 'onex delegate failed:' in s4,'json_flag_documented':'--json' in s4,'no_json_in_default_stdout':(not ok.stdout.lstrip().startswith('{')) and 'no JSON in the default terminal output' in s4}; print(json.dumps(c)); sys.exit(0 if all(c.values()) else 1)"
+        cwd: "${OMNI_HOME}/omnibase_infra"
+    binds_ac:
+      - "AC4"
+    ac_bindings:
+      - label: "AC4"
+        criterion_hash: "2145c59c1dfd66d682444b5047af0660418f3cda25647aa2a0a74dd29bab3d43"
+        proposed_by: "lane=dod-closeout-bind-2026-10-04T1245Z-c0"
+        accepted_by: "lane=dod-closeout-accept-2026-10-04T1245Z-c0"
+        accepted_at: "2026-10-04T13:21:49Z"
