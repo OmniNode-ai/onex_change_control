@@ -1,0 +1,121 @@
+---
+schema_version: 1.0.0
+ticket_id: OMN-20124
+evidence_item_id: dod-acc-1004t1245z-20124-ac3-stderr-clean-env
+check_type: command
+check_value: |-
+  d="$(mktemp -d)" || exit 2; trap 'rm -rf "$d"' EXIT
+  cat > "$d/test_omn20124_default_flags.py" <<'PY'
+  import json, sys, tempfile
+  from pathlib import Path
+  import click, pytest
+  from click.testing import CliRunner
+  from omnibase_infra.cli import cli_delegate
+
+  @pytest.mark.parametrize("mode", ["ac1", "ac2", "ac3"])
+  def test_default_flags_on_a_terminal(mode, monkeypatch):
+      fx = Path("tests/fixtures/delegation")
+      fixture = fx / ("omn18569/dispatched_envelope_carrier_receipt.json" if mode in ("ac1", "ac3") else "omn18306/failed_no_accepted_attempt_receipt.json")
+      env = json.loads(fixture.read_text())
+      tmp = Path(tempfile.mkdtemp())
+      (tmp / "c.yaml").write_text("name: x\n")
+      monkeypatch.setattr(cli_delegate, "_resolve_packaged_contract", lambda _n: tmp / "c.yaml")
+      monkeypatch.setattr(cli_delegate, "_stdout_is_tty", lambda: True)
+      class R:
+          def model_dump(self, *, mode): return env
+          def model_dump_json(self): return json.dumps(env, separators=(",", ":"))
+      def fake(**kw):
+          r = kw.get("receipt_renderer")
+          if r is None:
+              click.echo(R().model_dump_json()); return int(env.get("exit_code") or 0)
+          ok = r(R()); return int(env.get("exit_code") or 0) if ok else 1
+      monkeypatch.setattr(cli_delegate, "run_receipt_mode", fake)
+      res = CliRunner().invoke(cli_delegate.delegate_command, ["say hello", "--state-root", str(tmp / "state"), "--emit-socket", str(tmp / "x.sock")], catch_exceptions=False)
+      out, err = res.stdout, res.stderr
+      tp = env["result"]["terminal_payload"]; tp = tp.get("payload", tp)
+      outl = [l for l in out.splitlines() if l.strip()]
+      c = {}
+      if mode == "ac1":
+          ans = tp["response"]
+          c = {"exit_0": res.exit_code == 0, "stdout_is_the_answer": out.strip() == ans.strip(), "no_json_line_on_stdout": not any(l.lstrip().startswith("{") for l in outl), "summary_line_names_full_receipt_on_stderr": any("full receipt" in l and env["run_id"] in l for l in err.splitlines())}
+      elif mode == "ac3":
+          ans = tp["response"]
+          c = {"exit_0": res.exit_code == 0, "every_stdout_line_is_answer_text": all(l.strip() in ans for l in outl) and len(outl) >= 1, "diagnostics_on_stderr": len([l for l in err.splitlines() if l.strip()]) >= 1}
+      elif mode == "ac2":
+          lines = [l for l in err.splitlines() if l.strip()]
+          fl = [l for l in lines if l.startswith("onex delegate failed: ")]
+          first_json = next((i for i, l in enumerate(lines) if l.lstrip().startswith("{")), len(lines))
+          c = {"nonzero_exit": res.exit_code != 0, "stdout_empty": out.strip() == "", "one_plain_failure_line": len(fl) == 1 and "\n" not in fl[0], "line_names_typed_cause": bool(fl) and tp["terminal_failure_cause"] in fl[0], "line_carries_error_message": bool(fl) and tp["error_message"].splitlines()[0][:60] in fl[0], "plain_line_before_any_json": bool(fl) and lines.index(fl[0]) < first_json}
+      print(json.dumps({"mode": mode, "checks": c, "stderr_tail": err.splitlines()[-3:]}))
+      assert c and all(c.values()), c
+  PY
+  env -i HOME="$HOME" PATH="$PATH" PYTHONPATH="$PWD" uv run pytest -p tests.conftest -p tests.unit.cli.conftest "$d/test_omn20124_default_flags.py" -q -s -p no:cacheprovider --rootdir=. -k ac3
+contract_sha256: 7b73e434c1f6de52980ea8c1bfd1ee11bfc1c9a11682b7e3540bb42376b14600
+contract_entry_sha256: sha256:aa425293a1fad55e423a744d74691e4431dd430f16fd6a8c501e9bed06fe248d
+status: PASS
+run_timestamp: '2026-10-04T13:37:53Z'
+commit_sha: a26c3d72a633daf75bed1c8abcc0086089bc2f87
+runner: landing-L2628@h202
+verifier: occ-probe-capture-v1
+probe_command: |-
+  d="$(mktemp -d)" || exit 2; trap 'rm -rf "$d"' EXIT
+  cat > "$d/test_omn20124_default_flags.py" <<'PY'
+  import json, sys, tempfile
+  from pathlib import Path
+  import click, pytest
+  from click.testing import CliRunner
+  from omnibase_infra.cli import cli_delegate
+
+  @pytest.mark.parametrize("mode", ["ac1", "ac2", "ac3"])
+  def test_default_flags_on_a_terminal(mode, monkeypatch):
+      fx = Path("tests/fixtures/delegation")
+      fixture = fx / ("omn18569/dispatched_envelope_carrier_receipt.json" if mode in ("ac1", "ac3") else "omn18306/failed_no_accepted_attempt_receipt.json")
+      env = json.loads(fixture.read_text())
+      tmp = Path(tempfile.mkdtemp())
+      (tmp / "c.yaml").write_text("name: x\n")
+      monkeypatch.setattr(cli_delegate, "_resolve_packaged_contract", lambda _n: tmp / "c.yaml")
+      monkeypatch.setattr(cli_delegate, "_stdout_is_tty", lambda: True)
+      class R:
+          def model_dump(self, *, mode): return env
+          def model_dump_json(self): return json.dumps(env, separators=(",", ":"))
+      def fake(**kw):
+          r = kw.get("receipt_renderer")
+          if r is None:
+              click.echo(R().model_dump_json()); return int(env.get("exit_code") or 0)
+          ok = r(R()); return int(env.get("exit_code") or 0) if ok else 1
+      monkeypatch.setattr(cli_delegate, "run_receipt_mode", fake)
+      res = CliRunner().invoke(cli_delegate.delegate_command, ["say hello", "--state-root", str(tmp / "state"), "--emit-socket", str(tmp / "x.sock")], catch_exceptions=False)
+      out, err = res.stdout, res.stderr
+      tp = env["result"]["terminal_payload"]; tp = tp.get("payload", tp)
+      outl = [l for l in out.splitlines() if l.strip()]
+      c = {}
+      if mode == "ac1":
+          ans = tp["response"]
+          c = {"exit_0": res.exit_code == 0, "stdout_is_the_answer": out.strip() == ans.strip(), "no_json_line_on_stdout": not any(l.lstrip().startswith("{") for l in outl), "summary_line_names_full_receipt_on_stderr": any("full receipt" in l and env["run_id"] in l for l in err.splitlines())}
+      elif mode == "ac3":
+          ans = tp["response"]
+          c = {"exit_0": res.exit_code == 0, "every_stdout_line_is_answer_text": all(l.strip() in ans for l in outl) and len(outl) >= 1, "diagnostics_on_stderr": len([l for l in err.splitlines() if l.strip()]) >= 1}
+      elif mode == "ac2":
+          lines = [l for l in err.splitlines() if l.strip()]
+          fl = [l for l in lines if l.startswith("onex delegate failed: ")]
+          first_json = next((i for i, l in enumerate(lines) if l.lstrip().startswith("{")), len(lines))
+          c = {"nonzero_exit": res.exit_code != 0, "stdout_empty": out.strip() == "", "one_plain_failure_line": len(fl) == 1 and "\n" not in fl[0], "line_names_typed_cause": bool(fl) and tp["terminal_failure_cause"] in fl[0], "line_carries_error_message": bool(fl) and tp["error_message"].splitlines()[0][:60] in fl[0], "plain_line_before_any_json": bool(fl) and lines.index(fl[0]) < first_json}
+      print(json.dumps({"mode": mode, "checks": c, "stderr_tail": err.splitlines()[-3:]}))
+      assert c and all(c.values()), c
+  PY
+  env -i HOME="$HOME" PATH="$PATH" PYTHONPATH="$PWD" uv run pytest -p tests.conftest -p tests.unit.cli.conftest "$d/test_omn20124_default_flags.py" -q -s -p no:cacheprovider --rootdir=. -k ac3
+  gh api repos/OmniNode-ai/omnibase_infra/commits/a26c3d72a633daf75bed1c8abcc0086089bc2f87 --jq .sha
+probe_stdout: |-
+  {"mode": "ac3", "checks": {"exit_0": true, "every_stdout_line_is_answer_text": true, "diagnostics_on_stderr": true}, "stderr_tail": ["caller: lane=unattributed:omnipc2 (fallback host) session=none (none)", "onex delegate: model Qwen3.6-35B-A3B, cost $0.0000, run d0c7356a-4f02-41ef-aee3-a28c009a57ad, full receipt /tmp/tmpix500c8t/state/runs/d0c7356a-4f02-41ef-aee3-a28c009a57ad/receipt.json", "delegate artifacts (NO TERMINAL -- failed): /tmp/tmpix500c8t/state/runs/93c4a113-ecef-467b-a9fd-916591072cde/result.txt /tmp/tmpix500c8t/state/runs/93c4a113-ecef-467b-a9fd-916591072cde/receipt.json /tmp/tmpix500c8t/state/runs/93c4a113-ecef-467b-a9fd-916591072cde/run.json"]}
+  .
+  1 passed, 2 deselected in 0.32s
+  a26c3d72a633daf75bed1c8abcc0086089bc2f87
+actual_output: 'PASS: probe captured on h202 at omnibase_infra a26c3d72a. Authored by landing lane 2628
+  for OCC#12800.'
+exit_code: 0
+pr_number: 12800
+branch: dev
+duration_ms: 3828
+artifact_sha256:
+  - sha256:13662567c386287ae0da535cf08ccb0254c024dfaa952cbb203dbd08c985b2ae
+  - sha256:42d241f525cc787203a503acd93a6394a113dd9fde8f53613d961f3f549417dc
