@@ -233,3 +233,199 @@ dod_evidence:
         proposed_by: "evid-B01-2a21"
         accepted_by: "bind-accept-d-2a21"
         accepted_at: "2026-10-03T07:25:00Z"
+  - id: dod-omn19267-acc-ac1
+    description: AC1 live local-tier reasoning probe. Assert the newly executed run has an accepted local
+      attempt, a non-empty result.txt and response, and no output_refusal. Draft binding pending a successful
+      live run; earlier source and PR-state bindings are retired.
+    source: generated
+    execution_scope: local_done_gate
+    checks:
+      - check_type: command
+        check_value: |-
+          python3 - <<'PY'
+          import json, os, subprocess, sys
+          from pathlib import Path
+          state = Path(os.environ['OMNI_HOME']) / '.onex_state'
+          run = subprocess.run([
+              str(Path(os.environ['OMNI_HOME']) / 'omnibase_infra/scripts/onex'),
+              'delegate', 'Explain in three sentences why a test that only checks source text cannot establish runtime behavior.',
+              '--task-type', 'reasoning', '--ticket', 'OMN-19267', '--bus', 'kafka',
+              '--lane', 'dev', '--locus', 'deployed-lane', '--state-root', str(state), '--json',
+          ], capture_output=True, text=True, timeout=600)
+          if run.returncode:
+              print(json.dumps({'exit_code': run.returncode, 'stdout': run.stdout, 'stderr': run.stderr}, sort_keys=True))
+              sys.exit(run.returncode)
+          reply = json.loads(run.stdout)
+          run_id = reply['run_id']
+          receipt = json.loads((state / 'runs' / run_id / 'receipt.json').read_text())
+          terminal = receipt['receipt']['result']['terminal_payload']['payload']
+          accepted = [a for a in terminal['attempts'] if a['acceptance_decision'] == 'accept']
+          result = (state / 'runs' / run_id / 'result.txt').read_text()
+          assert receipt['status'] == 'success', receipt
+          assert terminal['status'] == 'completed', terminal['status']
+          assert accepted and accepted[-1]['tier'] == 'local', accepted
+          assert terminal.get('output_refusal') is None, terminal.get('output_refusal')
+          assert result.strip() and terminal['response'].strip(), 'empty reasoning deliverable'
+          print(json.dumps({'run_id': run_id, 'correlation_id': receipt['correlation_id'],
+              'accepted_tier': accepted[-1]['tier'], 'backend_id': accepted[-1]['backend_id'],
+              'output_refusal': terminal.get('output_refusal'), 'result_bytes': len(result.encode()),
+              'status': terminal['status']}, sort_keys=True))
+          PY
+    binds_ac:
+      - AC1
+    ac_bindings:
+      - label: AC1
+        criterion_hash: 327d1a01cd3cb1d10804e529d59a2113ac4cd0fff9dc43360bd84c0921a1416a
+        proposed_by: occ-autobind
+    supersedes_ac_binding:
+      - item: dod-OmniNode-ai-omnimarket-pr-2809
+        label: AC1
+        reason: Replace a source-text or PR-state binding with an executing criterion probe that fails
+          when the behavior is absent.
+      - item: dod-OmniNode-ai-omninode_infra-pr-1645
+        label: AC1
+        reason: Replace a source-text or PR-state binding with an executing criterion probe that fails
+          when the behavior is absent.
+  - id: dod-omn19267-acc-ac2
+    description: AC2 independent re-run of the profile behavior authored for OMN-19267. Run the original
+      regression test on a fresh omnimarket dev export, then require it to turn red with the pre-change
+      inference profile at 607cce198d85b51bbd5a107533491f723af372e0. The execution wrapper is authored
+      by omn19267-acc.
+    source: generated
+    execution_scope: local_done_gate
+    checks:
+      - check_type: command
+        check_value: |-
+          python3 - <<'PY'
+          import json, os, subprocess, tempfile
+          from pathlib import Path
+          with tempfile.TemporaryDirectory(prefix='omn19267-ac2-') as directory:
+              root = Path(directory)
+              tree = root / 'omnimarket'
+              tree.mkdir()
+              sha = subprocess.check_output(['gh', 'api', 'repos/OmniNode-ai/omnimarket/commits/dev', '--jq', '.sha'], text=True).strip()
+              archive = subprocess.check_output(['gh', 'api', 'repos/OmniNode-ai/omnimarket/tarball/' + sha])
+              subprocess.run(['tar', 'xz', '--strip-components=1', '-C', str(tree)], input=archive, check=True)
+              print('omnimarket dev=' + sha, flush=True)
+              env = dict(os.environ)
+              env.pop('PYTHONPATH', None)
+              env['UV_PROJECT_ENVIRONMENT'] = str(root / 'venv')
+              test = ['uv', 'run', '--frozen', 'pytest', 'tests/unit/delegation/test_prose_task_class_no_think_omn18967.py', '-q', '-p', 'no:cacheprovider']
+              subprocess.run(test, cwd=tree, env=env, check=True)
+              historical_ref = '607cce198d85b51bbd5a107533491f723af372e0'
+              import base64
+              old = subprocess.check_output(['gh', 'api', 'repos/OmniNode-ai/omnimarket/contents/src/omnimarket/configs/inference_protocols.v1.yaml?ref=' + historical_ref, '--jq', '.content'])
+              config = tree / 'src/omnimarket/configs/inference_protocols.v1.yaml'
+              config.write_bytes(base64.b64decode(old))
+              red = subprocess.run(test, cwd=tree, env=env, capture_output=True, text=True)
+              print(red.stdout, end='', flush=True)
+              assert red.returncode == 1, 'historical profile must fail the current regression test'
+              assert 'reasoning ON' in red.stdout and 'complex_reasoning' in red.stdout, red.stdout
+              print(json.dumps({'historical_ref': historical_ref, 'historical_profile_red_exit': red.returncode, 'green_ref': sha}, sort_keys=True))
+          PY
+    binds_ac:
+      - AC2
+    ac_bindings:
+      - label: AC2
+        criterion_hash: c12e6a4744f21112e829689d2c4f9a23f85a57624ac96bd190120cfab013c302
+        proposed_by: evid-B01-2a21
+        accepted_by: omn19267-acc
+        accepted_at: '2026-10-04T08:33:01Z'
+    supersedes_ac_binding:
+      - item: dod-OmniNode-ai-omnimarket-pr-2809
+        label: AC2
+        reason: Replace a source-text or PR-state binding with an executing criterion probe that fails
+          when the behavior is absent.
+      - item: dod-OmniNode-ai-omninode_infra-pr-1645
+        label: AC2
+        reason: Replace a source-text or PR-state binding with an executing criterion probe that fails
+          when the behavior is absent.
+      - item: dod-b01-19267-ac2-reasoning-profiles-no-think
+        label: AC2
+        reason: Replace this prior binding with a fresh execution and negative control of the same behavior.
+          The new probe supplies its own inputs; the earlier checks and records remain unchanged.
+      - item: dod-accept-d-19267-ac2
+        label: AC2
+        reason: Replace this prior binding with a fresh execution and negative control of the same behavior.
+          The new probe supplies its own inputs; the earlier checks and records remain unchanged.
+  - id: ac-falsifier-ac3
+    description: Declare the exact original generated AC3 falsifier before its append-only repair. The
+      verifier also derives this id after contract entries; its id-based supersession resolves both occurrences
+      to the replacement below.
+    source: generated
+    checks:
+      - check_type: test_passes
+        check_value: uv run pytest tests/architecture/test_omn_15651_task_class_authority.py -q
+        cwd: ${OMNI_HOME}/omninode_infra
+  - id: dod-omn19267-acc-ac3
+    description: AC3 independent re-run of the OMN-15651 architecture behavior. Export all four canonical
+      repositories at fresh dev SHAs into a temporary candidate workspace, supply OMN_15651_CANDIDATE_WORKSPACE
+      within the probe, and execute the original test. A whole-file inference profile hash mutation must
+      turn the same test red. The execution wrapper is authored by omn19267-acc.
+    source: generated
+    execution_scope: local_done_gate
+    checks:
+      - check_type: command
+        check_value: |-
+          gh api repos/OmniNode-ai/omninode_infra/pulls/1645 --jq '.merge_commit_sha' &&
+          python3 - <<'PY'
+          import hashlib, json, os, subprocess, tempfile
+          from pathlib import Path
+          with tempfile.TemporaryDirectory(prefix='omn19267-ac3-') as directory:
+              root = Path(directory)
+              endpoints = {
+                  'omnibase_core': 'repos/OmniNode-ai/omnibase_core/',
+                  'omnibase_infra': 'repos/OmniNode-ai/omnibase_infra/',
+                  'omnimarket': 'repos/OmniNode-ai/omnimarket/',
+                  'omninode_infra': 'repos/OmniNode-ai/omninode_infra/',
+              }
+              for repo, endpoint in endpoints.items():
+                  tree = root / repo
+                  tree.mkdir()
+                  sha = subprocess.check_output(['gh', 'api', endpoint + 'commits/dev', '--jq', '.sha'], text=True).strip()
+                  archive = subprocess.check_output(['gh', 'api', endpoint + 'tarball/' + sha])
+                  subprocess.run(['tar', 'xz', '--strip-components=1', '-C', str(tree)], input=archive, check=True)
+                  print(repo + ' dev=' + sha, flush=True)
+              env = dict(os.environ)
+              env.pop('PYTHONPATH', None)
+              env['OMN_15651_CANDIDATE_WORKSPACE'] = str(root)
+              env['UV_PROJECT_ENVIRONMENT'] = str(root / 'venv')
+              tree = root / 'omninode_infra'
+              test = ['uv', 'run', '--frozen', 'pytest', 'tests/architecture/test_omn_15651_task_class_authority.py', '-q', '-p', 'no:cacheprovider']
+              subprocess.run(test, cwd=tree, env=env, check=True)
+              config = root / 'omnimarket/src/omnimarket/configs/inference_protocols.v1.yaml'
+              payload = config.read_bytes()
+              print('inference_protocols.v1.yaml sha256=' + hashlib.sha256(payload).hexdigest(), flush=True)
+              config.write_bytes(payload + b'\n')
+              red = subprocess.run(test, cwd=tree, env=env, capture_output=True, text=True)
+              print(red.stdout, end='', flush=True)
+              assert red.returncode == 1, 'a changed whole-file hash must fail candidate admission'
+              assert 'OMN-15651 audited exclusion source identity drift' in red.stdout and 'inference_protocols.v1.yaml' in red.stdout, red.stdout
+              print(json.dumps({'changed_whole_file_hash_red_exit': red.returncode, 'candidate_workspace_supplied': True}, sort_keys=True))
+          PY
+    binds_ac:
+      - AC3
+    ac_bindings:
+      - label: AC3
+        criterion_hash: 3084644d0eeaddad9bc67ddb4a5579eab618d48d6e7268b75d2bfaa18b79667e
+        proposed_by: evid-B01-2a21
+        accepted_by: omn19267-acc
+        accepted_at: '2026-10-04T08:33:01Z'
+    supersedes_ac_binding:
+      - item: dod-OmniNode-ai-omnimarket-pr-2809
+        label: AC3
+        reason: Replace a source-text or PR-state binding with an executing criterion probe that fails
+          when the behavior is absent.
+      - item: dod-OmniNode-ai-omninode_infra-pr-1645
+        label: AC3
+        reason: Replace a source-text or PR-state binding with an executing criterion probe that fails
+          when the behavior is absent.
+      - item: dod-b01-19267-ac3-omn15651-pins-match-sha
+        label: AC3
+        reason: Replace this prior binding with a fresh execution and negative control of the same behavior.
+          The new probe supplies its own inputs; the earlier checks and records remain unchanged.
+      - item: dod-accept-d-19267-ac3
+        label: AC3
+        reason: Replace this prior binding with a fresh execution and negative control of the same behavior.
+          The new probe supplies its own inputs; the earlier checks and records remain unchanged.
+    evidence_artifact: supersedes_dod_evidence:ac-falsifier-ac3

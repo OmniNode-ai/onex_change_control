@@ -1,0 +1,229 @@
+---
+schema_version: 1.0.0
+ticket_id: OMN-19267
+evidence_item_id: dod-omn19267-acc-ac2
+check_type: command
+check_value: |-
+  python3 - <<'PY'
+  import json, os, subprocess, tempfile
+  from pathlib import Path
+  with tempfile.TemporaryDirectory(prefix='omn19267-ac2-') as directory:
+      root = Path(directory)
+      tree = root / 'omnimarket'
+      tree.mkdir()
+      sha = subprocess.check_output(['gh', 'api', 'repos/OmniNode-ai/omnimarket/commits/dev', '--jq', '.sha'], text=True).strip()
+      archive = subprocess.check_output(['gh', 'api', 'repos/OmniNode-ai/omnimarket/tarball/' + sha])
+      subprocess.run(['tar', 'xz', '--strip-components=1', '-C', str(tree)], input=archive, check=True)
+      print('omnimarket dev=' + sha, flush=True)
+      env = dict(os.environ)
+      env.pop('PYTHONPATH', None)
+      env['UV_PROJECT_ENVIRONMENT'] = str(root / 'venv')
+      test = ['uv', 'run', '--frozen', 'pytest', 'tests/unit/delegation/test_prose_task_class_no_think_omn18967.py', '-q', '-p', 'no:cacheprovider']
+      subprocess.run(test, cwd=tree, env=env, check=True)
+      historical_ref = '607cce198d85b51bbd5a107533491f723af372e0'
+      import base64
+      old = subprocess.check_output(['gh', 'api', 'repos/OmniNode-ai/omnimarket/contents/src/omnimarket/configs/inference_protocols.v1.yaml?ref=' + historical_ref, '--jq', '.content'])
+      config = tree / 'src/omnimarket/configs/inference_protocols.v1.yaml'
+      config.write_bytes(base64.b64decode(old))
+      red = subprocess.run(test, cwd=tree, env=env, capture_output=True, text=True)
+      print(red.stdout, end='', flush=True)
+      assert red.returncode == 1, 'historical profile must fail the current regression test'
+      assert 'reasoning ON' in red.stdout and 'complex_reasoning' in red.stdout, red.stdout
+      print(json.dumps({'historical_ref': historical_ref, 'historical_profile_red_exit': red.returncode, 'green_ref': sha}, sort_keys=True))
+  PY
+contract_entry_sha256: sha256:1a0e2172b78190868af6db1aa0466a643b89f01b30270414837e5ed827658fd9
+status: PASS
+commit_sha: a2b1629174fed85f2e49a6962087f306102e4a05
+runner: omn19267-acc@h202
+probe_command: |-
+  python3 - <<'PY'
+  import json, os, subprocess, tempfile
+  from pathlib import Path
+  with tempfile.TemporaryDirectory(prefix='omn19267-ac2-') as directory:
+      root = Path(directory)
+      tree = root / 'omnimarket'
+      tree.mkdir()
+      sha = subprocess.check_output(['gh', 'api', 'repos/OmniNode-ai/omnimarket/commits/dev', '--jq', '.sha'], text=True).strip()
+      archive = subprocess.check_output(['gh', 'api', 'repos/OmniNode-ai/omnimarket/tarball/' + sha])
+      subprocess.run(['tar', 'xz', '--strip-components=1', '-C', str(tree)], input=archive, check=True)
+      print('omnimarket dev=' + sha, flush=True)
+      env = dict(os.environ)
+      env.pop('PYTHONPATH', None)
+      env['UV_PROJECT_ENVIRONMENT'] = str(root / 'venv')
+      test = ['uv', 'run', '--frozen', 'pytest', 'tests/unit/delegation/test_prose_task_class_no_think_omn18967.py', '-q', '-p', 'no:cacheprovider']
+      subprocess.run(test, cwd=tree, env=env, check=True)
+      historical_ref = '607cce198d85b51bbd5a107533491f723af372e0'
+      import base64
+      old = subprocess.check_output(['gh', 'api', 'repos/OmniNode-ai/omnimarket/contents/src/omnimarket/configs/inference_protocols.v1.yaml?ref=' + historical_ref, '--jq', '.content'])
+      config = tree / 'src/omnimarket/configs/inference_protocols.v1.yaml'
+      config.write_bytes(base64.b64decode(old))
+      red = subprocess.run(test, cwd=tree, env=env, capture_output=True, text=True)
+      print(red.stdout, end='', flush=True)
+      assert red.returncode == 1, 'historical profile must fail the current regression test'
+      assert 'reasoning ON' in red.stdout and 'complex_reasoning' in red.stdout, red.stdout
+      print(json.dumps({'historical_ref': historical_ref, 'historical_profile_red_exit': red.returncode, 'green_ref': sha}, sort_keys=True))
+  PY
+pr_number: 2809
+branch: dev
+probe_stdout: |-
+  omnimarket dev=a2b1629174fed85f2e49a6962087f306102e4a05
+  ....................                                                     [100%]
+  20 passed in 0.77s
+  .......FF........FF.                                                     [100%]
+  =================================== FAILURES ===================================
+  _ test_every_allowed_task_class_suppresses_thinking_or_is_a_declared_exclusion[reasoning] _
+
+  task_type = 'reasoning'
+
+      @pytest.mark.unit
+      @pytest.mark.parametrize("task_type", _allowed_task_types())
+      def test_every_allowed_task_class_suppresses_thinking_or_is_a_declared_exclusion(
+          task_type: str,
+      ) -> None:
+          """Each declared task class resolves to thinking-off, or is excluded on record.
+
+          This is the AC2 table.  It fails per slug, so the failure names the class
+          that would leak rather than reporting one opaque aggregate.
+          """
+
+          request_options = _request_options_for(task_type)
+          suppressed = _thinking_is_suppressed(request_options)
+
+          if task_type in REASONING_IS_THE_DELIVERABLE:
+              assert not suppressed, (
+                  f"task class {task_type!r} is recorded in "
+                  "REASONING_IS_THE_DELIVERABLE as deliberately thinking-on, but a "
+                  "profile now suppresses its reasoning. Either the exclusion is "
+                  "stale and should be removed with its reason, or a profile "
+                  "over-matched. Resolved request options: "
+                  f"{request_options!r}"
+              )
+              return
+
+  >       assert suppressed, (
+              f"task class {task_type!r} reaches the provider with reasoning ON, so "
+              "the model's trace is emitted inline in message.content ahead of the "
+              "answer and the caller receives the preamble. Measured on the lab "
+              "endpoint 2026-09-21: 1650 chars opening 'We need to respond to user:' "
+              "against 461 clean chars with enable_thinking=false. Either add this "
+              "slug to a declared profile in inference_protocols.v1.yaml, or record "
+              "it in REASONING_IS_THE_DELIVERABLE with the reason. Resolved request "
+              f"options: {request_options!r}"
+          )
+  E       AssertionError: task class 'reasoning' reaches the provider with reasoning ON, so the model's trace is emitted inline in message.content ahead of the answer and the caller receives the preamble. Measured on the lab endpoint 2026-09-21: 1650 chars opening 'We need to respond to user:' against 461 clean chars with enable_thinking=false. Either add this slug to a declared profile in inference_protocols.v1.yaml, or record it in REASONING_IS_THE_DELIVERABLE with the reason. Resolved request options: {}
+  E       assert False
+
+  tests/unit/delegation/test_prose_task_class_no_think_omn18967.py:143: AssertionError
+  _ test_every_allowed_task_class_suppresses_thinking_or_is_a_declared_exclusion[complex_reasoning] _
+
+  task_type = 'complex_reasoning'
+
+      @pytest.mark.unit
+      @pytest.mark.parametrize("task_type", _allowed_task_types())
+      def test_every_allowed_task_class_suppresses_thinking_or_is_a_declared_exclusion(
+          task_type: str,
+      ) -> None:
+          """Each declared task class resolves to thinking-off, or is excluded on record.
+
+          This is the AC2 table.  It fails per slug, so the failure names the class
+          that would leak rather than reporting one opaque aggregate.
+          """
+
+          request_options = _request_options_for(task_type)
+          suppressed = _thinking_is_suppressed(request_options)
+
+          if task_type in REASONING_IS_THE_DELIVERABLE:
+              assert not suppressed, (
+                  f"task class {task_type!r} is recorded in "
+                  "REASONING_IS_THE_DELIVERABLE as deliberately thinking-on, but a "
+                  "profile now suppresses its reasoning. Either the exclusion is "
+                  "stale and should be removed with its reason, or a profile "
+                  "over-matched. Resolved request options: "
+                  f"{request_options!r}"
+              )
+              return
+
+  >       assert suppressed, (
+              f"task class {task_type!r} reaches the provider with reasoning ON, so "
+              "the model's trace is emitted inline in message.content ahead of the "
+              "answer and the caller receives the preamble. Measured on the lab "
+              "endpoint 2026-09-21: 1650 chars opening 'We need to respond to user:' "
+              "against 461 clean chars with enable_thinking=false. Either add this "
+              "slug to a declared profile in inference_protocols.v1.yaml, or record "
+              "it in REASONING_IS_THE_DELIVERABLE with the reason. Resolved request "
+              f"options: {request_options!r}"
+          )
+  E       AssertionError: task class 'complex_reasoning' reaches the provider with reasoning ON, so the model's trace is emitted inline in message.content ahead of the answer and the caller receives the preamble. Measured on the lab endpoint 2026-09-21: 1650 chars opening 'We need to respond to user:' against 461 clean chars with enable_thinking=false. Either add this slug to a declared profile in inference_protocols.v1.yaml, or record it in REASONING_IS_THE_DELIVERABLE with the reason. Resolved request options: {}
+  E       assert False
+
+  tests/unit/delegation/test_prose_task_class_no_think_omn18967.py:143: AssertionError
+  __ test_reasoning_classes_are_the_measured_empty_answer_regression[reasoning] __
+
+  task_type = 'reasoning'
+
+      @pytest.mark.unit
+      @pytest.mark.parametrize("task_type", ["reasoning", "complex_reasoning"])
+      def test_reasoning_classes_are_the_measured_empty_answer_regression(
+          task_type: str,
+      ) -> None:
+          """The classes that returned an empty answer, asserted on their own (OMN-19267).
+
+          Runs 621c6a72 and 253031bb: every local attempt was blanked because the
+          thinking-on response carried no marker line.  Kept separate from the table
+          so the defect keeps a named test if the exclusion table returns.
+          """
+
+          options = _request_options_for(task_type)
+  >       assert _thinking_is_suppressed(options), (
+              f"the `{task_type}` task class reached the local model with thinking "
+              "on, which returned an untagged trace with no `### ANSWER` marker and "
+              "was blanked by the deliverable extractor; resolved request options: "
+              f"{options!r}"
+          )
+  E       AssertionError: the `reasoning` task class reached the local model with thinking on, which returned an untagged trace with no `### ANSWER` marker and was blanked by the deliverable extractor; resolved request options: {}
+  E       assert False
+  E        +  where False = _thinking_is_suppressed({})
+
+  tests/unit/delegation/test_prose_task_class_no_think_omn18967.py:183: AssertionError
+  _ test_reasoning_classes_are_the_measured_empty_answer_regression[complex_reasoning] _
+
+  task_type = 'complex_reasoning'
+
+      @pytest.mark.unit
+      @pytest.mark.parametrize("task_type", ["reasoning", "complex_reasoning"])
+      def test_reasoning_classes_are_the_measured_empty_answer_regression(
+          task_type: str,
+      ) -> None:
+          """The classes that returned an empty answer, asserted on their own (OMN-19267).
+
+          Runs 621c6a72 and 253031bb: every local attempt was blanked because the
+          thinking-on response carried no marker line.  Kept separate from the table
+          so the defect keeps a named test if the exclusion table returns.
+          """
+
+          options = _request_options_for(task_type)
+  >       assert _thinking_is_suppressed(options), (
+              f"the `{task_type}` task class reached the local model with thinking "
+              "on, which returned an untagged trace with no `### ANSWER` marker and "
+              "was blanked by the deliverable extractor; resolved request options: "
+              f"{options!r}"
+          )
+  E       AssertionError: the `complex_reasoning` task class reached the local model with thinking on, which returned an untagged trace with no `### ANSWER` marker and was blanked by the deliverable extractor; resolved request options: {}
+  E       assert False
+  E        +  where False = _thinking_is_suppressed({})
+
+  tests/unit/delegation/test_prose_task_class_no_think_omn18967.py:183: AssertionError
+  =========================== short test summary info ============================
+  FAILED tests/unit/delegation/test_prose_task_class_no_think_omn18967.py::test_every_allowed_task_class_suppresses_thinking_or_is_a_declared_exclusion[reasoning]
+  FAILED tests/unit/delegation/test_prose_task_class_no_think_omn18967.py::test_every_allowed_task_class_suppresses_thinking_or_is_a_declared_exclusion[complex_reasoning]
+  FAILED tests/unit/delegation/test_prose_task_class_no_think_omn18967.py::test_reasoning_classes_are_the_measured_empty_answer_regression[reasoning]
+  FAILED tests/unit/delegation/test_prose_task_class_no_think_omn18967.py::test_reasoning_classes_are_the_measured_empty_answer_regression[complex_reasoning]
+  4 failed, 16 passed in 0.70s
+  {"green_ref": "a2b1629174fed85f2e49a6962087f306102e4a05", "historical_profile_red_exit": 1, "historical_ref": "607cce198d85b51bbd5a107533491f723af372e0"}
+exit_code: 0
+run_timestamp: '2026-10-04T08:39:44Z'
+duration_ms: 52361
+verifier: occ-probe-capture-v1
+artifact_sha256:
+  - sha256:3534d5afdcb3ff129c26dd5ca3695308f06b2ead73b6468e83aa251d3287732c
+  - sha256:90e6938ce9fb40c75f6eb8a07344712344ee1954c687e0f89f09666e600fbffc
