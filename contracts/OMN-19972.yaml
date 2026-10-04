@@ -438,3 +438,38 @@ dod_evidence:
         proposed_by: "lane=dod-closeout-bind-2026-10-04T1245Z-c1"
         accepted_by: "lane=dod-closeout-accept-2026-10-04T1245Z-c1"
         accepted_at: "2026-10-04T13:23:03Z"
+  - id: "dod-acc-1004t1445z-19972-ac1-loopback-render"
+    description: |-
+      AC1 binding proposed by lane dod-closeout-bind-2026-10-04T1445Z-c0 and accepted by a different lane, dod-closeout-accept-2026-10-04T1445Z-c0, after an independent re-run in a fresh detached worktree at omnibase_infra origin/dev a26c3d72a: exit 0, clean arm 1 passed, publish_host-removed arm 1 failed, lab-host-default arm 1 failed. The test drives the real catalog CLI 'generate local' in a subprocess and reads the compose file it writes: at least five published ports, every one 127.0.0.1:host:container, no lab-host marker, no private IPv4 host literal, and Redpanda advertising localhost by default. Removing the local bundle's loopback publish_host makes it fail, and setting the bundle's Redpanda advertise default to a lab address makes it fail, so the pass is not vacuous. An independent render at the same head was grepped for lab host names and addresses and carried only the CIDR egress allowlist, which is a range, not a host. Residual: lab host NAMES outside the test's marker list are not asserted by the test.
+    source: "manual"
+    execution_scope: "local_done_gate"
+    checks:
+      - check_type: "command"
+        check_value: |-
+          root="$(mktemp -d)" || exit 2
+          trap 'rm -rf "$root"' EXIT
+          git archive --format=tar HEAD src docker tests pyproject.toml | tar -x -C "$root" || exit 2
+          t=tests/integration/test_catalog_local_render_loopback_omn19972.py
+          k=test_cli_local_render_binds_loopback_and_names_no_lab_host
+          run() { (cd "$root" && PYTHONPATH="$root/src" uv run --project "$OLDPWD" pytest "$root/$t" -q -p no:cacheprovider --rootdir="$root" -k "$k" 2>&1 | tail -n 1); }
+          clean="$(run)"
+          b="$root/docker/catalog/bundles.yaml"
+          cp "$b" "$b.orig"
+          python3 -c "import sys,pathlib; p=pathlib.Path(sys.argv[1]); s=p.read_text(); n=s.replace('  publish_host: 127.0.0.1\n','',1); assert n!=s; p.write_text(n)" "$b" || exit 2
+          allif="$(run)"
+          cp "$b.orig" "$b"
+          python3 -c "import sys,pathlib; p=pathlib.Path(sys.argv[1]); s=p.read_text(); n=s.replace('REDPANDA_ADVERTISE_HOST: localhost','REDPANDA_ADVERTISE_HOST: 192.168.86.201',1); assert n!=s; p.write_text(n)" "$b" || exit 2
+          labhost="$(run)"
+          echo "clean: $clean"; echo "publish_host-removed: $allif"; echo "lab-host-default: $labhost"
+          case "$clean" in *"1 passed"*) ;; *) exit 1;; esac
+          case "$allif" in *"1 failed"*) ;; *) exit 1;; esac
+          case "$labhost" in *"1 failed"*) ;; *) exit 1;; esac
+        cwd: "${OMNI_HOME}/omnibase_infra"
+    binds_ac:
+      - "AC1"
+    ac_bindings:
+      - label: "AC1"
+        criterion_hash: "068349ef0f9ad4086e6752438057085ca0ee7f4e90335c2e3477988ac737c3db"
+        proposed_by: "lane=dod-closeout-bind-2026-10-04T1445Z-c0"
+        accepted_by: "lane=dod-closeout-accept-2026-10-04T1445Z-c0"
+        accepted_at: "2026-10-04T15:20:42Z"
