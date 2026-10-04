@@ -1,0 +1,135 @@
+---
+schema_version: 1.0.0
+ticket_id: OMN-19267
+evidence_item_id: dod-omn19267-acc-ac1
+check_type: command
+check_value: |-
+  python3 - <<'PY'
+  # Product under test: repos/OmniNode-ai/omnimarket/commits/4d7e6e68ad211e063117c79d1d32f4982ff7d448 (the dispatch venv runs this omnimarket).
+  import json, os, re, subprocess, tempfile
+  from pathlib import Path
+
+  PROMPT = (
+      "Reason step by step: if every bloop is a razzie and every razzie is a lazzie, "
+      "is every bloop a lazzie? State the conclusion."
+  )
+
+
+  def verdict(receipt, result_text):
+      """Return the list of AC1 failures for one delegation outcome."""
+      payload = receipt["receipt"]["result"]["terminal_payload"]["payload"]
+      attempts = payload.get("attempts") or []
+      accepted = [a for a in attempts if a.get("acceptance_decision") == "accept"]
+      failures = []
+      if not any(a.get("tier") == "local" for a in accepted):
+          failures.append("no accepted local-tier attempt")
+      if not result_text.strip():
+          failures.append("result.txt is empty")
+      refusal = payload.get("output_refusal")
+      if refusal:
+          failures.append("output_refusal=" + json.dumps(refusal, sort_keys=True))
+      return failures
+
+
+  with tempfile.TemporaryDirectory(prefix="omn19267-ac1-") as state:
+      omni = os.environ["OMNI_HOME"]
+      run = subprocess.run(
+          [omni + "/omnibase_infra/scripts/onex", "delegate", PROMPT,
+           "--task-type", "reasoning", "--bus", "kafka", "--lane", "dev",
+           "--locus", "deployed-lane", "--state-root", state],
+          capture_output=True, text=True, timeout=330,
+      )
+      assert run.returncode == 0, "delegate exit %s: %s" % (run.returncode, (run.stdout + run.stderr)[-600:])
+      line = [l for l in (run.stdout + run.stderr).splitlines() if l.startswith("delegate artifacts:")][-1]
+      result_path, receipt_path = line.split(":", 1)[1].split()[:2]
+      receipt = json.loads(Path(receipt_path).read_text())
+      text = Path(result_path).read_text()
+      failures = verdict(receipt, text)
+      assert not failures, failures
+      payload = receipt["receipt"]["result"]["terminal_payload"]["payload"]
+      accepted = [a for a in payload["attempts"] if a.get("acceptance_decision") == "accept"][0]
+      print(json.dumps({"backend_id": receipt["backend_id"], "routing_tier": receipt["routing_tier"],
+                        "accepted_tier": accepted["tier"], "accepted_model": accepted["model_id"],
+                        "result_chars": len(text), "output_refusal": payload.get("output_refusal")}, sort_keys=True))
+
+  # Negative control: the defect as measured in the ticket (empty deliverable, ambiguous_unmarked_deliverable
+  # refusal, accepted attempt absent) must be refused by the same verdict function.
+  defect = {"receipt": {"result": {"terminal_payload": {"payload": {
+      "attempts": [{"tier": "local", "acceptance_decision": "reject"}],
+      "output_refusal": {"reason": "ambiguous_unmarked_deliverable"}}}}}}
+  red = verdict(defect, "")
+  assert len(red) == 3, red
+  print(json.dumps({"defect_shaped_outcome_refused": red}, sort_keys=True))
+  PY
+contract_entry_sha256: sha256:874f36d1dbb31afcf7d1a4863f0f868e76f459452d4402c42d283baf3cbd69f1
+status: PASS
+commit_sha: 4d7e6e68ad211e063117c79d1d32f4982ff7d448
+runner: orchestrator-2a21-ac1@Stickybeatz-Studio
+probe_command: |-
+  python3 - <<'PY'
+  # Product under test: repos/OmniNode-ai/omnimarket/commits/4d7e6e68ad211e063117c79d1d32f4982ff7d448 (the dispatch venv runs this omnimarket).
+  import json, os, re, subprocess, tempfile
+  from pathlib import Path
+
+  PROMPT = (
+      "Reason step by step: if every bloop is a razzie and every razzie is a lazzie, "
+      "is every bloop a lazzie? State the conclusion."
+  )
+
+
+  def verdict(receipt, result_text):
+      """Return the list of AC1 failures for one delegation outcome."""
+      payload = receipt["receipt"]["result"]["terminal_payload"]["payload"]
+      attempts = payload.get("attempts") or []
+      accepted = [a for a in attempts if a.get("acceptance_decision") == "accept"]
+      failures = []
+      if not any(a.get("tier") == "local" for a in accepted):
+          failures.append("no accepted local-tier attempt")
+      if not result_text.strip():
+          failures.append("result.txt is empty")
+      refusal = payload.get("output_refusal")
+      if refusal:
+          failures.append("output_refusal=" + json.dumps(refusal, sort_keys=True))
+      return failures
+
+
+  with tempfile.TemporaryDirectory(prefix="omn19267-ac1-") as state:
+      omni = os.environ["OMNI_HOME"]
+      run = subprocess.run(
+          [omni + "/omnibase_infra/scripts/onex", "delegate", PROMPT,
+           "--task-type", "reasoning", "--bus", "kafka", "--lane", "dev",
+           "--locus", "deployed-lane", "--state-root", state],
+          capture_output=True, text=True, timeout=330,
+      )
+      assert run.returncode == 0, "delegate exit %s: %s" % (run.returncode, (run.stdout + run.stderr)[-600:])
+      line = [l for l in (run.stdout + run.stderr).splitlines() if l.startswith("delegate artifacts:")][-1]
+      result_path, receipt_path = line.split(":", 1)[1].split()[:2]
+      receipt = json.loads(Path(receipt_path).read_text())
+      text = Path(result_path).read_text()
+      failures = verdict(receipt, text)
+      assert not failures, failures
+      payload = receipt["receipt"]["result"]["terminal_payload"]["payload"]
+      accepted = [a for a in payload["attempts"] if a.get("acceptance_decision") == "accept"][0]
+      print(json.dumps({"backend_id": receipt["backend_id"], "routing_tier": receipt["routing_tier"],
+                        "accepted_tier": accepted["tier"], "accepted_model": accepted["model_id"],
+                        "result_chars": len(text), "output_refusal": payload.get("output_refusal")}, sort_keys=True))
+
+  # Negative control: the defect as measured in the ticket (empty deliverable, ambiguous_unmarked_deliverable
+  # refusal, accepted attempt absent) must be refused by the same verdict function.
+  defect = {"receipt": {"result": {"terminal_payload": {"payload": {
+      "attempts": [{"tier": "local", "acceptance_decision": "reject"}],
+      "output_refusal": {"reason": "ambiguous_unmarked_deliverable"}}}}}}
+  red = verdict(defect, "")
+  assert len(red) == 3, red
+  print(json.dumps({"defect_shaped_outcome_refused": red}, sort_keys=True))
+  PY
+probe_stdout: |-
+  {"accepted_model": "Qwen3.8-27B", "accepted_tier": "local", "backend_id": "local-omnipc2-chat", "output_refusal": null, "result_chars": 568, "routing_tier": "local"}
+  {"defect_shaped_outcome_refused": ["no accepted local-tier attempt", "result.txt is empty", "output_refusal={\"reason\": \"ambiguous_unmarked_deliverable\"}"]}
+exit_code: 0
+run_timestamp: '2026-10-04T11:45:12Z'
+duration_ms: 16329
+verifier: occ-probe-capture-v1
+artifact_sha256:
+  - sha256:42f63f008e238864b6468a15a040215bf5037442f62878b3268597884eb9ae54
+  - sha256:2416f75563d0a08ed3a44a587e060985be8fd58495c41ab763f2c1caed133cbf
