@@ -1,3 +1,5 @@
+Ticket: OMN-20503
+
 ## What changed
 - `src/onex_change_control/scripts/contract_compliance_check.py` gains a per-run `_QuotaBreaker` held on `_CheckContext` (no module-global state).
 - A command/test_passes check whose full output (stdout+stderr, not the 200-char snippet) matches the primary rate-limit message (`\brate limit exceeded\b`, same regex as commit_sha_resolver) and not the secondary one trips it.
