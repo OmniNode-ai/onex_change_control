@@ -1,18 +1,19 @@
 ## Summary
 
-This adds the append-only OCC contract evidence required for [OMN-20008](https://linear.app/omninode/issue/OMN-20008).
+This repairs the merged append-only OCC evidence for [OMN-20008](https://linear.app/omninode/issue/OMN-20008) so product receipt-gate validators can consume it.
 
 ## What changed
 
-- Pins OmniMarket #3361, OmniDash #354, and OmniBase Infra #4547 to their exact implementation heads.
-- Binds AC1–AC6 to behavior-running test checks and falsifiable deploy probes.
-- Adds deploy probes that read the exact product/infra files through GitHub and fail when the claimed behavior is absent.
+- Removes only the unsupported `artifact_sha256` list emitted by the landing worker from the three OMN-20008 deploy-probe receipts.
+- Preserves the merged contract, current contract hash, contract-entry hashes, pinned product heads, probe outputs, PASS statuses, and all other receipt fields byte-for-byte.
 - Keeps emergency bypass disabled and preserves the existing acceptance vocabulary.
 
 ## How it was verified
 
-- Repository pre-commit validation passed for the contract, including YAML schema, DoD evidence, substance floor, AC binding, receipt hardening, canonical shape, and fail-closed checks.
-- The probes are content-bound to the exact product and infrastructure commit SHAs; no receipt or contract self-grep is used as behavior evidence.
+- The local `ModelDodReceipt` validator accepts all three repaired receipts (`MODEL_VALIDATE_PASSED 3`).
+- The yamlfmt contamination gate passes for the contract and all three repaired receipts.
+- `git diff --check` passes, and the diff is exactly three receipt files with nine removed lines.
+- Product CI identified the defect after OCC#12746 landed: Dash verify run `37188176996` rejected the landing-worker `artifact_sha256` list as an extra field. The repair does not alter the product implementation evidence.
 
 ## Local gates
 
@@ -21,7 +22,8 @@ This adds the append-only OCC contract evidence required for [OMN-20008](https:/
 
 ## Not in this change
 
-- No product source, migration, dashboard code, receipt, or merged contract is rewritten.
+- No product source, migration, dashboard code, or merged contract is rewritten.
+- Only the three landing-worker receipt fields described above are removed.
 - No PR is merged and no Linear status is changed.
 
 ## Failure paths
@@ -36,6 +38,8 @@ This adds the append-only OCC contract evidence required for [OMN-20008](https:/
 
 none
 
-Overlap-Reviewed: #12744 — its auto-companion already carries generated OMN-20008 contract/receipt entries for OmniMarket #3361; this evidence-only change is the required correction for the missing deploy probes and the two product PRs that the auto-companion does not cover.
+Overlap-Reviewed: #12744 and #12746 — #12744 carries the original generated OMN-20008 contract/receipt entries for OmniMarket #3361; #12746 merged the three deploy probes and current contract. This repair changes only the validator-incompatible landing-worker field in those three receipts.
+
+Evidence-Source: OCC#12746
 
 Evidence-Ticket: OMN-20008
