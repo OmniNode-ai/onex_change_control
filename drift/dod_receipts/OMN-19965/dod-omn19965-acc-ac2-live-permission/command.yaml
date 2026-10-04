@@ -1,0 +1,263 @@
+---
+schema_version: 1.0.0
+ticket_id: OMN-19965
+evidence_item_id: dod-omn19965-acc-ac2-live-permission
+check_type: command
+check_value: |-
+  python3 - <<'PY'
+  import io
+  import tarfile
+  import json
+  import os
+  import re
+  import shutil
+  import subprocess
+  import tempfile
+  import threading
+  import uuid
+  from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+  from pathlib import Path
+
+  omni = Path(os.environ.get('OMNI_HOME') or (Path.home() / 'Code/omni_home' if os.name == 'posix' and __import__('sys').platform == 'darwin' else '/data/omninode/omni_home'))
+  assert shutil.which('claude'), 'Claude Code unavailable'
+  onex = omni / 'omnibase_infra/scripts/onex'
+  assert onex.is_file(), 'onex entrypoint unavailable'
+  nonce = uuid.uuid4().hex
+  command = 'onex delegate "Reply with the single word ok. Permission probe ' + nonce + '" --task-type document --ticket OMN-19965 --timeout 15 --max-tokens 32'
+
+  class Handler(BaseHTTPRequestHandler):
+      def log_message(self, *args):
+          pass
+      def do_POST(self):
+          body = json.loads(self.rfile.read(int(self.headers['Content-Length'])))
+          if 'count_tokens' in self.path:
+              payload = json.dumps({'input_tokens': 100}).encode()
+              self.send_response(200)
+              self.send_header('Content-Type', 'application/json')
+              self.send_header('Content-Length', str(len(payload)))
+              self.end_headers()
+              self.wfile.write(payload)
+              return
+          results = [b for m in body.get('messages', []) for b in m.get('content', []) if isinstance(b, dict) and b.get('type') == 'tool_result']
+          turn = len(results)
+          if turn < 4:
+              block = {'type': 'tool_use', 'id': 'probe_' + str(turn), 'name': 'Skill' if turn % 2 == 0 else 'Bash', 'input': {'skill': 'onex:delegate', 'args': '--task-type document Reply with the single word ok. Permission probe ' + nonce} if turn % 2 == 0 else {'command': command, 'description': 'Execute the delegate skill command', 'timeout': 300000}}
+              stop = 'tool_use'
+          else:
+              block = {'type': 'text', 'text': 'Permission probe complete.'}
+              stop = 'end_turn'
+          message = {'id': 'msg_' + uuid.uuid4().hex, 'type': 'message', 'role': 'assistant', 'model': 'claude-sonnet-4-6', 'content': [block], 'stop_reason': stop, 'stop_sequence': None, 'usage': {'input_tokens': 100, 'output_tokens': 50}}
+          self.send_response(200)
+          self.send_header('Content-Type', 'text/event-stream' if body.get('stream') else 'application/json')
+          self.end_headers()
+          if not body.get('stream'):
+              self.wfile.write(json.dumps(message).encode())
+              return
+          start = dict(message, content=[], stop_reason=None, usage={'input_tokens': 100, 'output_tokens': 0})
+          events = [('message_start', {'type': 'message_start', 'message': start}), ('content_block_start', {'type': 'content_block_start', 'index': 0, 'content_block': dict(block, input={}) if block['type'] == 'tool_use' else {'type': 'text', 'text': ''}}), ('content_block_delta', {'type': 'content_block_delta', 'index': 0, 'delta': {'type': 'input_json_delta', 'partial_json': json.dumps(block['input'])} if block['type'] == 'tool_use' else {'type': 'text_delta', 'text': block['text']}}), ('content_block_stop', {'type': 'content_block_stop', 'index': 0}), ('message_delta', {'type': 'message_delta', 'delta': {'stop_reason': stop, 'stop_sequence': None}, 'usage': {'output_tokens': 50}}), ('message_stop', {'type': 'message_stop'})]
+          for kind, data in events:
+              self.wfile.write(('event: ' + kind + '\ndata: ' + json.dumps(data) + '\n\n').encode())
+          self.wfile.flush()
+
+  server = ThreadingHTTPServer(('127.0.0.1', 0), Handler)
+  thread = threading.Thread(target=server.serve_forever, daemon=True)
+  thread.start()
+  try:
+      with tempfile.TemporaryDirectory(prefix='omn19965-ac2-') as root:
+          root = Path(root)
+          pin = '0e1ba6dc453128aeed7329846594574c40ee1814'
+          archive = subprocess.run(['gh', 'api', 'repos/OmniNode-ai/omniclaude/tarball/' + pin], check=True, capture_output=True).stdout
+          with tarfile.open(fileobj=io.BytesIO(archive), mode='r:gz') as tar:
+              top = tar.getnames()[0].split('/')[0]
+              tar.extractall(root / 'source', filter='data')
+          plugin = root / 'source' / top / 'plugins/onex-delegate'
+          text = (plugin / 'skills/delegate/SKILL.md').read_text()
+          rules = re.findall(r'`(Bash\(onex delegate:\*\))`', text)
+          assert rules, 'documented permission rule missing'
+          rule = rules[0]
+          summaries = {}
+          for arm in ('with_rule', 'without_rule'):
+              work = root / arm / 'work'
+              cfg = root / arm / 'config'
+              work.mkdir(parents=True)
+              cfg.mkdir()
+              allow = ['Skill(onex:delegate)'] + ([rule] if arm == 'with_rule' else [])
+              (cfg / 'settings.json').write_text(json.dumps({'permissions': {'allow': allow}}))
+              env = {k: v for k, v in os.environ.items() if not k.startswith('ANTHROPIC')}
+              env.update(ONEX_FLOOR_LOCK_WAIT_S='1', OMNI_HOME=str(omni), CLAUDE_CONFIG_DIR=str(cfg), ANTHROPIC_BASE_URL='http://127.0.0.1:' + str(server.server_port), ANTHROPIC_AUTH_TOKEN='permission-probe-loopback', CLAUDE_CODE_OAUTH_TOKEN='', CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC='1', PATH=str(onex.parent) + os.pathsep + env.get('PATH', ''))
+              session = str(uuid.uuid4())
+              proc = subprocess.run(['claude', '-p', '/onex:delegate --task-type document Reply with the single word ok. Permission probe ' + nonce, '--output-format', 'stream-json', '--verbose', '--permission-mode', 'default', '--setting-sources', 'user', '--strict-mcp-config', '--plugin-dir', str(plugin), '--session-id', session, '--max-turns', '8'], env=env, cwd=work, stdin=subprocess.DEVNULL, capture_output=True, text=True, timeout=900)
+              events = [json.loads(line) for line in proc.stdout.splitlines() if line.startswith('{')]
+              init = next((e for e in events if e.get('type') == 'system' and e.get('subtype') == 'init'), {})
+              result = next((e for e in reversed(events) if e.get('type') == 'result'), {})
+              uses = {}
+              skills = {}
+              for e in events:
+                  message = e.get('message')
+                  if not isinstance(message, dict) or not isinstance(message.get('content'), list):
+                      continue
+                  for b in message['content']:
+                      if e.get('type') == 'assistant' and b.get('type') == 'tool_use':
+                          if b.get('name') == 'Bash' and b.get('input', {}).get('command') == command:
+                              uses[b['id']] = None
+                          if b.get('name') == 'Skill' and b.get('input', {}).get('skill') == 'onex:delegate':
+                              skills[b['id']] = False
+                      if e.get('type') == 'user' and b.get('type') == 'tool_result' and b.get('tool_use_id') in skills:
+                          skills[b['tool_use_id']] = not b.get('is_error')
+                      if e.get('type') == 'user' and b.get('type') == 'tool_result' and b.get('tool_use_id') in uses:
+                          content = str(b.get('content', ''))
+                          uses[b['tool_use_id']] = {'is_error': bool(b.get('is_error')), 'approval_denied': 'requires approval' in content.lower() or 'permission' in content.lower() and 'denied' in content.lower(), 'has_output': bool(content.strip()), 'onex_reported': 'delegate artifacts' in content.lower() or 'skill_name' in content, 'dispatch_refused': 'refused_before_dispatch' in content or 'venv is STALE' in content}
+              summary = {'process_exit': proc.returncode, 'permission_mode': init.get('permissionMode'), 'session_id': init.get('session_id'), 'skill_calls': len(skills), 'skills_loaded': all(skills.values()), 'delegate_calls': len(uses), 'tool_results': list(uses.values()), 'permission_denials': len(result.get('permission_denials', [])), 'result_subtype': result.get('subtype')}
+              summaries[arm] = summary
+              print(json.dumps({'arm': arm, **summary}, sort_keys=True), flush=True)
+          w, n = summaries['with_rule'], summaries['without_rule']
+          checks = {'default_mode': w['permission_mode'] == n['permission_mode'] == 'default', 'two_skill_invocations': w['skill_calls'] == 2 and w['skills_loaded'], 'two_delegate_calls_in_same_profile': w['delegate_calls'] == 2 and bool(w['session_id']), 'both_commands_executed_without_approval': all(r and r['has_output'] and r['onex_reported'] and not r['approval_denied'] for r in w['tool_results']), 'no_permission_denials': w['permission_denials'] == 0 and w['result_subtype'] == 'success' and w['process_exit'] == 0, 'negative_control_denied': n['delegate_calls'] == n['permission_denials'] == 2 and all(r and r['approval_denied'] for r in n['tool_results'])}
+          print(json.dumps({'checks': checks, 'delegation_successes': sum(r is not None and not r['is_error'] for r in w['tool_results'])}, sort_keys=True))
+          assert all(checks.values()), 'live permission probe failed'
+  finally:
+      server.shutdown()
+      server.server_close()
+      thread.join(timeout=5)
+  PY
+contract_entry_sha256: sha256:d16cc69d39f60da9d5676d183a656c731379f15256d6a4e8c7e11af43ebab570
+status: PASS
+commit_sha: 0e1ba6dc453128aeed7329846594574c40ee1814
+runner: omn19965-acc@h202
+probe_command: |-
+  python3 - <<'DISPATCH'
+  import os,subprocess
+  s=r'''import io
+  import tarfile
+  import json
+  import os
+  import re
+  import shutil
+  import subprocess
+  import tempfile
+  import threading
+  import uuid
+  from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+  from pathlib import Path
+
+  omni = Path(os.environ.get('OMNI_HOME') or (Path.home() / 'Code/omni_home' if os.name == 'posix' and __import__('sys').platform == 'darwin' else '/data/omninode/omni_home'))
+  assert shutil.which('claude'), 'Claude Code unavailable'
+  onex = omni / 'omnibase_infra/scripts/onex'
+  assert onex.is_file(), 'onex entrypoint unavailable'
+  nonce = uuid.uuid4().hex
+  command = 'onex delegate "Reply with the single word ok. Permission probe ' + nonce + '" --task-type document --ticket OMN-19965 --timeout 15 --max-tokens 32'
+
+  class Handler(BaseHTTPRequestHandler):
+      def log_message(self, *args):
+          pass
+      def do_POST(self):
+          body = json.loads(self.rfile.read(int(self.headers['Content-Length'])))
+          if 'count_tokens' in self.path:
+              payload = json.dumps({'input_tokens': 100}).encode()
+              self.send_response(200)
+              self.send_header('Content-Type', 'application/json')
+              self.send_header('Content-Length', str(len(payload)))
+              self.end_headers()
+              self.wfile.write(payload)
+              return
+          results = [b for m in body.get('messages', []) for b in m.get('content', []) if isinstance(b, dict) and b.get('type') == 'tool_result']
+          turn = len(results)
+          if turn < 4:
+              block = {'type': 'tool_use', 'id': 'probe_' + str(turn), 'name': 'Skill' if turn % 2 == 0 else 'Bash', 'input': {'skill': 'onex:delegate', 'args': '--task-type document Reply with the single word ok. Permission probe ' + nonce} if turn % 2 == 0 else {'command': command, 'description': 'Execute the delegate skill command', 'timeout': 300000}}
+              stop = 'tool_use'
+          else:
+              block = {'type': 'text', 'text': 'Permission probe complete.'}
+              stop = 'end_turn'
+          message = {'id': 'msg_' + uuid.uuid4().hex, 'type': 'message', 'role': 'assistant', 'model': 'claude-sonnet-4-6', 'content': [block], 'stop_reason': stop, 'stop_sequence': None, 'usage': {'input_tokens': 100, 'output_tokens': 50}}
+          self.send_response(200)
+          self.send_header('Content-Type', 'text/event-stream' if body.get('stream') else 'application/json')
+          self.end_headers()
+          if not body.get('stream'):
+              self.wfile.write(json.dumps(message).encode())
+              return
+          start = dict(message, content=[], stop_reason=None, usage={'input_tokens': 100, 'output_tokens': 0})
+          events = [('message_start', {'type': 'message_start', 'message': start}), ('content_block_start', {'type': 'content_block_start', 'index': 0, 'content_block': dict(block, input={}) if block['type'] == 'tool_use' else {'type': 'text', 'text': ''}}), ('content_block_delta', {'type': 'content_block_delta', 'index': 0, 'delta': {'type': 'input_json_delta', 'partial_json': json.dumps(block['input'])} if block['type'] == 'tool_use' else {'type': 'text_delta', 'text': block['text']}}), ('content_block_stop', {'type': 'content_block_stop', 'index': 0}), ('message_delta', {'type': 'message_delta', 'delta': {'stop_reason': stop, 'stop_sequence': None}, 'usage': {'output_tokens': 50}}), ('message_stop', {'type': 'message_stop'})]
+          for kind, data in events:
+              self.wfile.write(('event: ' + kind + '\ndata: ' + json.dumps(data) + '\n\n').encode())
+          self.wfile.flush()
+
+  server = ThreadingHTTPServer(('127.0.0.1', 0), Handler)
+  thread = threading.Thread(target=server.serve_forever, daemon=True)
+  thread.start()
+  try:
+      with tempfile.TemporaryDirectory(prefix='omn19965-ac2-') as root:
+          root = Path(root)
+          pin = '0e1ba6dc453128aeed7329846594574c40ee1814'
+          archive = subprocess.run(['gh', 'api', 'repos/OmniNode-ai/omniclaude/tarball/' + pin], check=True, capture_output=True).stdout
+          with tarfile.open(fileobj=io.BytesIO(archive), mode='r:gz') as tar:
+              top = tar.getnames()[0].split('/')[0]
+              tar.extractall(root / 'source', filter='data')
+          plugin = root / 'source' / top / 'plugins/onex-delegate'
+          text = (plugin / 'skills/delegate/SKILL.md').read_text()
+          rules = re.findall(r'`(Bash\(onex delegate:\*\))`', text)
+          assert rules, 'documented permission rule missing'
+          rule = rules[0]
+          summaries = {}
+          for arm in ('with_rule', 'without_rule'):
+              work = root / arm / 'work'
+              cfg = root / arm / 'config'
+              work.mkdir(parents=True)
+              cfg.mkdir()
+              allow = ['Skill(onex:delegate)'] + ([rule] if arm == 'with_rule' else [])
+              (cfg / 'settings.json').write_text(json.dumps({'permissions': {'allow': allow}}))
+              env = {k: v for k, v in os.environ.items() if not k.startswith('ANTHROPIC')}
+              env.update(ONEX_FLOOR_LOCK_WAIT_S='1', OMNI_HOME=str(omni), CLAUDE_CONFIG_DIR=str(cfg), ANTHROPIC_BASE_URL='http://127.0.0.1:' + str(server.server_port), ANTHROPIC_AUTH_TOKEN='permission-probe-loopback', CLAUDE_CODE_OAUTH_TOKEN='', CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC='1', PATH=str(onex.parent) + os.pathsep + env.get('PATH', ''))
+              session = str(uuid.uuid4())
+              proc = subprocess.run(['claude', '-p', '/onex:delegate --task-type document Reply with the single word ok. Permission probe ' + nonce, '--output-format', 'stream-json', '--verbose', '--permission-mode', 'default', '--setting-sources', 'user', '--strict-mcp-config', '--plugin-dir', str(plugin), '--session-id', session, '--max-turns', '8'], env=env, cwd=work, stdin=subprocess.DEVNULL, capture_output=True, text=True, timeout=900)
+              events = [json.loads(line) for line in proc.stdout.splitlines() if line.startswith('{')]
+              init = next((e for e in events if e.get('type') == 'system' and e.get('subtype') == 'init'), {})
+              result = next((e for e in reversed(events) if e.get('type') == 'result'), {})
+              uses = {}
+              skills = {}
+              for e in events:
+                  message = e.get('message')
+                  if not isinstance(message, dict) or not isinstance(message.get('content'), list):
+                      continue
+                  for b in message['content']:
+                      if e.get('type') == 'assistant' and b.get('type') == 'tool_use':
+                          if b.get('name') == 'Bash' and b.get('input', {}).get('command') == command:
+                              uses[b['id']] = None
+                          if b.get('name') == 'Skill' and b.get('input', {}).get('skill') == 'onex:delegate':
+                              skills[b['id']] = False
+                      if e.get('type') == 'user' and b.get('type') == 'tool_result' and b.get('tool_use_id') in skills:
+                          skills[b['tool_use_id']] = not b.get('is_error')
+                      if e.get('type') == 'user' and b.get('type') == 'tool_result' and b.get('tool_use_id') in uses:
+                          content = str(b.get('content', ''))
+                          uses[b['tool_use_id']] = {'is_error': bool(b.get('is_error')), 'approval_denied': 'requires approval' in content.lower() or 'permission' in content.lower() and 'denied' in content.lower(), 'has_output': bool(content.strip()), 'onex_reported': 'delegate artifacts' in content.lower() or 'skill_name' in content, 'dispatch_refused': 'refused_before_dispatch' in content or 'venv is STALE' in content}
+              summary = {'process_exit': proc.returncode, 'permission_mode': init.get('permissionMode'), 'session_id': init.get('session_id'), 'skill_calls': len(skills), 'skills_loaded': all(skills.values()), 'delegate_calls': len(uses), 'tool_results': list(uses.values()), 'permission_denials': len(result.get('permission_denials', [])), 'result_subtype': result.get('subtype')}
+              summaries[arm] = summary
+              print(json.dumps({'arm': arm, **summary}, sort_keys=True), flush=True)
+          w, n = summaries['with_rule'], summaries['without_rule']
+          checks = {'default_mode': w['permission_mode'] == n['permission_mode'] == 'default', 'two_skill_invocations': w['skill_calls'] == 2 and w['skills_loaded'], 'two_delegate_calls_in_same_profile': w['delegate_calls'] == 2 and bool(w['session_id']), 'both_commands_executed_without_approval': all(r and r['has_output'] and r['onex_reported'] and not r['approval_denied'] for r in w['tool_results']), 'no_permission_denials': w['permission_denials'] == 0 and w['result_subtype'] == 'success' and w['process_exit'] == 0, 'negative_control_denied': n['delegate_calls'] == n['permission_denials'] == 2 and all(r and r['approval_denied'] for r in n['tool_results'])}
+          print(json.dumps({'checks': checks, 'delegation_successes': sum(r is not None and not r['is_error'] for r in w['tool_results'])}, sort_keys=True))
+          assert all(checks.values()), 'live permission probe failed'
+  finally:
+      server.shutdown()
+      server.server_close()
+      thread.join(timeout=5)
+  '''
+  r=subprocess.run(['python3',os.environ['CLAUDE_PLUGIN_ROOT']+'/scripts/onex_lab_run.py','--via','bus','--lane','omn19965-acc','--repo','onex_change_control','--ref','dev','--need','gh','--need','claude-login','--timeout','1800','--','python3','-c',s],timeout=2100,stderr=subprocess.STDOUT)
+  raise SystemExit(r.returncode)
+  DISPATCH
+probe_stdout: |-
+  placement: placed on h200
+    h200: ELIGIBLE load/core=0.53 free=25.2GB age=2s
+  lab-work: sent lw-f63a488039ec469b to h200
+  LANE-GUARD {"controllers": [], "cpu_pct": 400, "deadline": 1791106690, "enforced": {"cpu": false, "memory": false, "runtime": true, "swap": false}, "event": "start", "host": "Stickybeatz-Studio.local", "kind": "tests", "lane": "omn19965-acc", "linger": "na", "mem_bytes": 8589934592, "mem_enforced": false, "mode": "python-watchdog", "pid": 39722, "runtime_s": 1920, "tasks_max": 8192, "unit": "onexlane-omn19965-acc-3186ab"}
+  {"arm": "with_rule", "delegate_calls": 2, "permission_denials": 0, "permission_mode": "default", "process_exit": 0, "result_subtype": "success", "session_id": "64e786d6-c779-4ed5-a752-3295efa37414", "skill_calls": 2, "skills_loaded": true, "tool_results": [{"approval_denied": false, "dispatch_refused": true, "has_output": true, "is_error": true, "onex_reported": true}, {"approval_denied": false, "dispatch_refused": true, "has_output": true, "is_error": true, "onex_reported": true}]}
+  {"arm": "without_rule", "delegate_calls": 2, "permission_denials": 2, "permission_mode": "default", "process_exit": 0, "result_subtype": "success", "session_id": "cb5ef8db-4b99-4ccc-b238-7be76c88f648", "skill_calls": 2, "skills_loaded": true, "tool_results": [{"approval_denied": true, "dispatch_refused": false, "has_output": true, "is_error": true, "onex_reported": false}, {"approval_denied": true, "dispatch_refused": false, "has_output": true, "is_error": true, "onex_reported": false}]}
+  {"checks": {"both_commands_executed_without_approval": true, "default_mode": true, "negative_control_denied": true, "no_permission_denials": true, "two_delegate_calls_in_same_profile": true, "two_skill_invocations": true}, "delegation_successes": 0}
+  LANE-GUARD-END {"deadline_hit": false, "elapsed_s": 17.1, "event": "end", "exit": 0, "mode": "python-watchdog", "rc": 0, "residue": [], "residue_killed": 0, "signal": null, "stopped_by_signal": null, "unit": "onexlane-omn19965-acc-3186ab"}
+
+  {"work_unit_id": "lw-f63a488039ec469b", "target_host": "h200", "host": "h200", "repo": "OmniNode-ai/onex_change_control", "commit_sha": "022193d65c270278cd4f2f30f0dc2b50fc207a7a", "status": "completed", "exit_code": 0, "log_path": "/Users/jonah/lab-run/logs/lw-f63a488039ec469b.log", "duration_seconds": 17.3, "detail": ""}
+exit_code: 0
+run_timestamp: '2026-10-04T09:05:36Z'
+duration_ms: 60014
+verifier: occ-probe-capture-v1
+artifact_sha256:
+  - sha256:c8c319ae54ff8e08bb03aa54e07cb090d7e9576f10af67ea27233c3f1981c2d9
+  - sha256:b0d748db2174844ab335346a112abe7deede119473c5b95f8c561f796e701b1d

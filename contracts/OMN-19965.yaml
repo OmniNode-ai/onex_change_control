@@ -699,3 +699,231 @@ dod_evidence:
         proposed_by: "lane=dod-closeout-bind-2026-10-04T0445Z-c0"
         accepted_by: "lane=dod-closeout-accept-2026-10-04T0445Z-c0"
         accepted_at: "2026-10-04T05:43:10Z"
+  - id: dod-omn19965-acc-ac1-surface
+    description: Independent AC1 re-acceptance of the 0445Z proposal. Executes the shipped surface test
+      in a scratch copy; the planted second skill and removed permission rule must each fail the corresponding
+      assertion. The rule mutation preserves the rest of SKILL.md.
+    source: manual
+    execution_scope: local_done_gate
+    checks:
+      - check_type: command
+        check_value: |-
+          bash -eu <<'CHECK'
+          root="$(mktemp -d)"
+          trap 'rm -rf "$root"' EXIT
+          gh api repos/OmniNode-ai/omniclaude/tarball/0e1ba6dc453128aeed7329846594574c40ee1814 > "$root/source.tar.gz"
+          tar -xzf "$root/source.tar.gz" -C "$root" --strip-components=1
+          t=plugins/onex-delegate/tests/test_delegate_only_surface.py
+          s="$root/plugins/onex-delegate/skills/delegate/SKILL.md"
+          run() {
+            env -u PYTHONPATH uv run --no-project --with pytest python -m pytest "$root/$t" -q -p no:cacheprovider --rootdir="$root" "$@" > "$root/result.log" 2>&1
+          }
+          run -k 'test_exactly_one_skill_directory or test_skill_md_documents_the_one_time_permission_rule or test_root_marketplace_sources_slim_plugin'
+          clean="$(tail -n 1 "$root/result.log")"
+          mkdir "$root/plugins/onex-delegate/skills/planted"
+          if run -k test_exactly_one_skill_directory; then cat "$root/result.log"; exit 1; else planted_exit=$?; fi
+          planted="$(tail -n 1 "$root/result.log")"
+          rmdir "$root/plugins/onex-delegate/skills/planted"
+          python3 - "$s" <<'PY'
+          from pathlib import Path
+          import sys
+          p = Path(sys.argv[1])
+          text = p.read_text()
+          assert 'Bash(onex delegate:*)' in text
+          p.write_text(text.replace('Bash(onex delegate:*)', 'Bash(onex:*)'))
+          PY
+          if run -k test_skill_md_documents_the_one_time_permission_rule; then cat "$root/result.log"; exit 1; else stripped_exit=$?; fi
+          stripped="$(tail -n 1 "$root/result.log")"
+          echo "clean: $clean"
+          echo "planted: exit=$planted_exit $planted"
+          echo "rule-stripped: exit=$stripped_exit $stripped"
+          case "$clean" in *"3 passed"*) ;; *) exit 1;; esac
+          case "$planted" in *"1 failed"*) ;; *) exit 1;; esac
+          case "$stripped" in *"1 failed"*) ;; *) exit 1;; esac
+          test "$planted_exit" = 1
+          test "$stripped_exit" = 1
+          CHECK
+        cwd: .
+    binds_ac:
+      - AC1
+    ac_bindings:
+      - label: AC1
+        criterion_hash: b9bca7ccb72e081d34b94165752a468d125aac4f7e94b7f29d01a129c24bac4f
+        proposed_by: lane=dod-closeout-bind-2026-10-04T0445Z-c0
+        accepted_by: lane=omn19965-acc
+        accepted_at: '2026-10-04T09:02:45Z'
+  - id: dod-omn19965-acc-ac2-live-permission
+    description: 'Executing AC2 replacement. Loads the pinned published plugin into two fresh Claude Code
+      profiles, invokes onex:delegate twice in one session in default permission mode, and executes the
+      real onex delegate command. A loopback model supplies tool requests only: Claude Code evaluates
+      permissions and supplies tool results. Removing the documented Bash rule must deny the same command.
+      The probe grades permission behavior independently of delegation service completion; dispatch refusals
+      are reported. This new binding is a draft, requiring another lane to re-run and accept it.'
+    source: manual
+    execution_scope: local_done_gate
+    checks:
+      - check_type: command
+        check_value: |-
+          python3 - <<'PY'
+          import io
+          import tarfile
+          import json
+          import os
+          import re
+          import shutil
+          import subprocess
+          import tempfile
+          import threading
+          import uuid
+          from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+          from pathlib import Path
+
+          omni = Path(os.environ.get('OMNI_HOME') or (Path.home() / 'Code/omni_home' if os.name == 'posix' and __import__('sys').platform == 'darwin' else '/data/omninode/omni_home'))
+          assert shutil.which('claude'), 'Claude Code unavailable'
+          onex = omni / 'omnibase_infra/scripts/onex'
+          assert onex.is_file(), 'onex entrypoint unavailable'
+          nonce = uuid.uuid4().hex
+          command = 'onex delegate "Reply with the single word ok. Permission probe ' + nonce + '" --task-type document --ticket OMN-19965 --timeout 15 --max-tokens 32'
+
+          class Handler(BaseHTTPRequestHandler):
+              def log_message(self, *args):
+                  pass
+              def do_POST(self):
+                  body = json.loads(self.rfile.read(int(self.headers['Content-Length'])))
+                  if 'count_tokens' in self.path:
+                      payload = json.dumps({'input_tokens': 100}).encode()
+                      self.send_response(200)
+                      self.send_header('Content-Type', 'application/json')
+                      self.send_header('Content-Length', str(len(payload)))
+                      self.end_headers()
+                      self.wfile.write(payload)
+                      return
+                  results = [b for m in body.get('messages', []) for b in m.get('content', []) if isinstance(b, dict) and b.get('type') == 'tool_result']
+                  turn = len(results)
+                  if turn < 4:
+                      block = {'type': 'tool_use', 'id': 'probe_' + str(turn), 'name': 'Skill' if turn % 2 == 0 else 'Bash', 'input': {'skill': 'onex:delegate', 'args': '--task-type document Reply with the single word ok. Permission probe ' + nonce} if turn % 2 == 0 else {'command': command, 'description': 'Execute the delegate skill command', 'timeout': 300000}}
+                      stop = 'tool_use'
+                  else:
+                      block = {'type': 'text', 'text': 'Permission probe complete.'}
+                      stop = 'end_turn'
+                  message = {'id': 'msg_' + uuid.uuid4().hex, 'type': 'message', 'role': 'assistant', 'model': 'claude-sonnet-4-6', 'content': [block], 'stop_reason': stop, 'stop_sequence': None, 'usage': {'input_tokens': 100, 'output_tokens': 50}}
+                  self.send_response(200)
+                  self.send_header('Content-Type', 'text/event-stream' if body.get('stream') else 'application/json')
+                  self.end_headers()
+                  if not body.get('stream'):
+                      self.wfile.write(json.dumps(message).encode())
+                      return
+                  start = dict(message, content=[], stop_reason=None, usage={'input_tokens': 100, 'output_tokens': 0})
+                  events = [('message_start', {'type': 'message_start', 'message': start}), ('content_block_start', {'type': 'content_block_start', 'index': 0, 'content_block': dict(block, input={}) if block['type'] == 'tool_use' else {'type': 'text', 'text': ''}}), ('content_block_delta', {'type': 'content_block_delta', 'index': 0, 'delta': {'type': 'input_json_delta', 'partial_json': json.dumps(block['input'])} if block['type'] == 'tool_use' else {'type': 'text_delta', 'text': block['text']}}), ('content_block_stop', {'type': 'content_block_stop', 'index': 0}), ('message_delta', {'type': 'message_delta', 'delta': {'stop_reason': stop, 'stop_sequence': None}, 'usage': {'output_tokens': 50}}), ('message_stop', {'type': 'message_stop'})]
+                  for kind, data in events:
+                      self.wfile.write(('event: ' + kind + '\ndata: ' + json.dumps(data) + '\n\n').encode())
+                  self.wfile.flush()
+
+          server = ThreadingHTTPServer(('127.0.0.1', 0), Handler)
+          thread = threading.Thread(target=server.serve_forever, daemon=True)
+          thread.start()
+          try:
+              with tempfile.TemporaryDirectory(prefix='omn19965-ac2-') as root:
+                  root = Path(root)
+                  pin = '0e1ba6dc453128aeed7329846594574c40ee1814'
+                  archive = subprocess.run(['gh', 'api', 'repos/OmniNode-ai/omniclaude/tarball/' + pin], check=True, capture_output=True).stdout
+                  with tarfile.open(fileobj=io.BytesIO(archive), mode='r:gz') as tar:
+                      top = tar.getnames()[0].split('/')[0]
+                      tar.extractall(root / 'source', filter='data')
+                  plugin = root / 'source' / top / 'plugins/onex-delegate'
+                  text = (plugin / 'skills/delegate/SKILL.md').read_text()
+                  rules = re.findall(r'`(Bash\(onex delegate:\*\))`', text)
+                  assert rules, 'documented permission rule missing'
+                  rule = rules[0]
+                  summaries = {}
+                  for arm in ('with_rule', 'without_rule'):
+                      work = root / arm / 'work'
+                      cfg = root / arm / 'config'
+                      work.mkdir(parents=True)
+                      cfg.mkdir()
+                      allow = ['Skill(onex:delegate)'] + ([rule] if arm == 'with_rule' else [])
+                      (cfg / 'settings.json').write_text(json.dumps({'permissions': {'allow': allow}}))
+                      env = {k: v for k, v in os.environ.items() if not k.startswith('ANTHROPIC')}
+                      env.update(ONEX_FLOOR_LOCK_WAIT_S='1', OMNI_HOME=str(omni), CLAUDE_CONFIG_DIR=str(cfg), ANTHROPIC_BASE_URL='http://127.0.0.1:' + str(server.server_port), ANTHROPIC_AUTH_TOKEN='permission-probe-loopback', CLAUDE_CODE_OAUTH_TOKEN='', CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC='1', PATH=str(onex.parent) + os.pathsep + env.get('PATH', ''))
+                      session = str(uuid.uuid4())
+                      proc = subprocess.run(['claude', '-p', '/onex:delegate --task-type document Reply with the single word ok. Permission probe ' + nonce, '--output-format', 'stream-json', '--verbose', '--permission-mode', 'default', '--setting-sources', 'user', '--strict-mcp-config', '--plugin-dir', str(plugin), '--session-id', session, '--max-turns', '8'], env=env, cwd=work, stdin=subprocess.DEVNULL, capture_output=True, text=True, timeout=900)
+                      events = [json.loads(line) for line in proc.stdout.splitlines() if line.startswith('{')]
+                      init = next((e for e in events if e.get('type') == 'system' and e.get('subtype') == 'init'), {})
+                      result = next((e for e in reversed(events) if e.get('type') == 'result'), {})
+                      uses = {}
+                      skills = {}
+                      for e in events:
+                          message = e.get('message')
+                          if not isinstance(message, dict) or not isinstance(message.get('content'), list):
+                              continue
+                          for b in message['content']:
+                              if e.get('type') == 'assistant' and b.get('type') == 'tool_use':
+                                  if b.get('name') == 'Bash' and b.get('input', {}).get('command') == command:
+                                      uses[b['id']] = None
+                                  if b.get('name') == 'Skill' and b.get('input', {}).get('skill') == 'onex:delegate':
+                                      skills[b['id']] = False
+                              if e.get('type') == 'user' and b.get('type') == 'tool_result' and b.get('tool_use_id') in skills:
+                                  skills[b['tool_use_id']] = not b.get('is_error')
+                              if e.get('type') == 'user' and b.get('type') == 'tool_result' and b.get('tool_use_id') in uses:
+                                  content = str(b.get('content', ''))
+                                  uses[b['tool_use_id']] = {'is_error': bool(b.get('is_error')), 'approval_denied': 'requires approval' in content.lower() or 'permission' in content.lower() and 'denied' in content.lower(), 'has_output': bool(content.strip()), 'onex_reported': 'delegate artifacts' in content.lower() or 'skill_name' in content, 'dispatch_refused': 'refused_before_dispatch' in content or 'venv is STALE' in content}
+                      summary = {'process_exit': proc.returncode, 'permission_mode': init.get('permissionMode'), 'session_id': init.get('session_id'), 'skill_calls': len(skills), 'skills_loaded': all(skills.values()), 'delegate_calls': len(uses), 'tool_results': list(uses.values()), 'permission_denials': len(result.get('permission_denials', [])), 'result_subtype': result.get('subtype')}
+                      summaries[arm] = summary
+                      print(json.dumps({'arm': arm, **summary}, sort_keys=True), flush=True)
+                  w, n = summaries['with_rule'], summaries['without_rule']
+                  checks = {'default_mode': w['permission_mode'] == n['permission_mode'] == 'default', 'two_skill_invocations': w['skill_calls'] == 2 and w['skills_loaded'], 'two_delegate_calls_in_same_profile': w['delegate_calls'] == 2 and bool(w['session_id']), 'both_commands_executed_without_approval': all(r and r['has_output'] and r['onex_reported'] and not r['approval_denied'] for r in w['tool_results']), 'no_permission_denials': w['permission_denials'] == 0 and w['result_subtype'] == 'success' and w['process_exit'] == 0, 'negative_control_denied': n['delegate_calls'] == n['permission_denials'] == 2 and all(r and r['approval_denied'] for r in n['tool_results'])}
+                  print(json.dumps({'checks': checks, 'delegation_successes': sum(r is not None and not r['is_error'] for r in w['tool_results'])}, sort_keys=True))
+                  assert all(checks.values()), 'live permission probe failed'
+          finally:
+              server.shutdown()
+              server.server_close()
+              thread.join(timeout=5)
+          PY
+        cwd: .
+    binds_ac:
+      - AC2
+    ac_bindings:
+      - label: AC2
+        criterion_hash: df45e4abf2c37624984e7d1a04e36b25fee57a0c4e34ca818b272861c0febbfc
+        proposed_by: lane=omn19965-acc
+    supersedes_ac_binding:
+      - item: dod-OmniNode-ai-omniclaude-pr-2408
+        label: AC2
+        reason: Source inspection or pinned transcript readback does not execute the current scratch-profile
+          permission behavior. Replaced by a live two-Skill/two-Bash probe with a rule-removal negative
+          control; the replacement binding remains a draft for independent acceptance.
+      - item: dod-OmniNode-ai-omniclaude-pr-2432
+        label: AC2
+        reason: Source inspection or pinned transcript readback does not execute the current scratch-profile
+          permission behavior. Replaced by a live two-Skill/two-Bash probe with a rule-removal negative
+          control; the replacement binding remains a draft for independent acceptance.
+      - item: dod-da-19965-ac2-second-call-no-permission
+        label: AC2
+        reason: Source inspection or pinned transcript readback does not execute the current scratch-profile
+          permission behavior. Replaced by a live two-Skill/two-Bash probe with a rule-removal negative
+          control; the replacement binding remains a draft for independent acceptance.
+      - item: dod-accept-1245z-19965-ac2-second-call-no-prompt
+        label: AC2
+        reason: Source inspection or pinned transcript readback does not execute the current scratch-profile
+          permission behavior. Replaced by a live two-Skill/two-Bash probe with a rule-removal negative
+          control; the replacement binding remains a draft for independent acceptance.
+      - item: dod-accept-1645z-19965-ac2-second-call-no-prompt
+        label: AC2
+        reason: Source inspection or pinned transcript readback does not execute the current scratch-profile
+          permission behavior. Replaced by a live two-Skill/two-Bash probe with a rule-removal negative
+          control; the replacement binding remains a draft for independent acceptance.
+      - item: dod-accept-2045z-19965-ac2-second-call-no-prompt
+        label: AC2
+        reason: Source inspection or pinned transcript readback does not execute the current scratch-profile
+          permission behavior. Replaced by a live two-Skill/two-Bash probe with a rule-removal negative
+          control; the replacement binding remains a draft for independent acceptance.
+      - item: dod-accept-0245z-19965-ac2-second-call-no-prompt
+        label: AC2
+        reason: Source inspection or pinned transcript readback does not execute the current scratch-profile
+          permission behavior. Replaced by a live two-Skill/two-Bash probe with a rule-removal negative
+          control; the replacement binding remains a draft for independent acceptance.
+      - item: dod-accept-0445z-19965-ac2-second-call-no-prompt
+        label: AC2
+        reason: Source inspection or pinned transcript readback does not execute the current scratch-profile
+          permission behavior. Replaced by a live two-Skill/two-Bash probe with a rule-removal negative
+          control; the replacement binding remains a draft for independent acceptance.
