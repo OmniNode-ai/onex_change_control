@@ -631,6 +631,47 @@ def _load_legacy_allowlist(path: Path | None) -> dict[str, str]:
     return entries
 
 
+_PRIMARY_LIMIT_MESSAGE_RE = re.compile(r"\brate limit exceeded\b", re.IGNORECASE)
+_SECONDARY_LIMIT_MESSAGE_RE = re.compile(r"secondary rate limit", re.IGNORECASE)
+_QUOTA_EXHAUSTED_PREFIX = "QUOTA_EXHAUSTED"
+
+
+@dataclass
+class _QuotaBreaker:
+    """Per-run memory of a spent GitHub quota (OMN-20503).
+
+    Run 37171017353 kept calling ``gh`` for 952 checks after the installation's
+    primary limit was spent; every call was a 403. Trips on the PRIMARY
+    rate-limit message only -- a secondary limit clears in minutes and a scope
+    denial is not a quota, so neither halts the run (same split as
+    ``commit_sha_resolver``).
+    """
+
+    first_message: str = ""
+    skipped: int = 0
+
+    @property
+    def tripped(self) -> bool:
+        return bool(self.first_message)
+
+    def observe(self, output: str) -> None:
+        """Trip on the FULL command output, not the 200-char detail snippet."""
+        if self.tripped:
+            return
+        if _PRIMARY_LIMIT_MESSAGE_RE.search(
+            output
+        ) and not _SECONDARY_LIMIT_MESSAGE_RE.search(output):
+            self.first_message = output.strip()[:200]
+
+    def print_summary(self) -> None:
+        if self.skipped:
+            print(
+                f"[SUMMARY] {self.skipped} {_QUOTA_EXHAUSTED_PREFIX} check(s) not "
+                "executed: GitHub API quota spent.",
+                flush=True,
+            )
+
+
 @dataclass(frozen=True)
 class _CheckContext:
     pr_number: int
@@ -642,6 +683,8 @@ class _CheckContext:
     #: OUTSIDE-ITS-OWN-DIFF rule. Empty means "not resolved" -- the rule is then
     #: reported as NOT EVALUATED rather than silently passing.
     changed_paths: frozenset[str] = dc_field(default_factory=frozenset)
+    #: Mutable on purpose: one breaker per run, shared by every check of it.
+    quota: _QuotaBreaker = dc_field(default_factory=_QuotaBreaker)
 
 
 # ---------------------------------------------------------------------------
@@ -1030,6 +1073,7 @@ def _check_command(  # noqa: PLR0913 -- one parameter per contract-check field
     ticket_id: str = "",
     contracts_dir: Path | None = None,
     cwd: Any = None,
+    quota: _QuotaBreaker | None = None,
 ) -> tuple[str, str]:
     """check_type=command: check_value is a shell command; exit 0 = pass.
 
@@ -1094,6 +1138,8 @@ def _check_command(  # noqa: PLR0913 -- one parameter per contract-check field
     )
     if rc == 0:
         return _RESULT_PASS, f"Command succeeded: {cmd_str[:80]}"
+    if quota is not None:
+        quota.observe(out + err)
     # OMN-18118: a token that is PRESENT but whose SCOPE is refused is invisible
     # to the preflight above -- only the failure output shows it. Classify that
     # as NOT_EVALUATED naming the scope; every other red stays a BLOCK.
@@ -1115,6 +1161,7 @@ def _check_test_passes(  # noqa: PLR0913 -- signature is _check_command's, exact
     ticket_id: str = "",
     contracts_dir: Path | None = None,
     cwd: Any = None,
+    quota: _QuotaBreaker | None = None,
 ) -> tuple[str, str]:
     """check_type=test_passes: an EXECUTED alias of ``check_type: command``.
 
@@ -1142,6 +1189,7 @@ def _check_test_passes(  # noqa: PLR0913 -- signature is _check_command's, exact
         ticket_id,
         contracts_dir,
         cwd,
+        quota,
     )
 
 
@@ -1232,6 +1280,15 @@ def _run_single_check(
         # OMN-16824: ONE dispatch for both, because they are one semantic --
         # execute check_value, honour the check's cwd. Two branches here is
         # exactly how the two readings drifted apart.
+        if context.quota.tripped and "gh" in _command_binaries(str(check_value)):
+            context.quota.skipped += 1
+            return (
+                check_type,
+                _RESULT_BLOCK,
+                f"{_QUOTA_EXHAUSTED_PREFIX} -- GitHub API quota for this token is "
+                "spent; gh check not executed. First: "
+                f"{context.quota.first_message}",
+            )
         result, detail = runner(
             check_value,
             workspace,
@@ -1240,6 +1297,7 @@ def _run_single_check(
             context.ticket_id,
             context.contracts_dir,
             check.get("cwd"),
+            context.quota,
         )
     else:
         result, detail = runner(check_value, workspace)
@@ -1599,13 +1657,10 @@ def run_compliance_check(
         flush=True,
     )
 
-    results = _run_dod_checks(
-        dod_evidence,
-        workspace,
-        _CheckContext(
-            pr_number, repo, ticket_id, contracts_dir, is_legacy, changed_paths
-        ),
+    context = _CheckContext(
+        pr_number, repo, ticket_id, contracts_dir, is_legacy, changed_paths
     )
+    results = _run_dod_checks(dod_evidence, workspace, context)
 
     total = len(results)
     passes = sum(1 for _, _, r, _ in results if r == _RESULT_PASS)
@@ -1619,6 +1674,7 @@ def run_compliance_check(
         f"{not_evaluated_summary}, {warns} WARN, {blocks} BLOCK",
         flush=True,
     )
+    context.quota.print_summary()
 
     # A contract with no check that can observe the product proves nothing about
     # it. The legacy corpus is grandfathered (it was authored against a runner
