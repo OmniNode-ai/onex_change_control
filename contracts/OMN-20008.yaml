@@ -1,0 +1,151 @@
+---
+schema_version: "1.0.0"
+ticket_id: "OMN-20008"
+title: "Measured savings provenance and totals"
+summary: "Append-only OCC evidence for the OmniMarket migration, OmniDash reader, and Infra vendor at
+  their exact PR heads."
+is_seam_ticket: false
+interface_change: false
+interfaces_touched: []
+requirements:
+  - id: "req-acceptance-criteria"
+    statement: |-
+      The acceptance criteria below are transcribed from the approved OMN-20008 specification. Each criterion is bound to behavior-running evidence; the exact product and infrastructure heads are pinned in the evidence checks.
+    acceptance:
+      - id: "AC1"
+        statement: |-
+          No customer-facing counterfactual savings figure is labelled verified; the source guard and rendered-page assertions fail if that label is introduced.
+      - id: "AC2"
+        statement: |-
+          Runs, Recent Runs, and Last Run render Basis directly from persisted usage_source; measured, estimated, unknown, and missing provenance remain distinct typed states with no savings_method or numeric fallback.
+      - id: "AC3"
+        statement: |-
+          The Overview savings headline names the served baseline model and explicitly states that the baseline never ran; an unresolved baseline is not rendered as zero.
+      - id: "AC4"
+        statement: |-
+          Measured monetary totals include only stored measured provenance; estimated and unknown runs remain visible through their exclusion counts and do not change measured totals.
+      - id: "AC5"
+        statement: |-
+          The forward migration remains append-only, preserves the projection contract and invoker security, and is behaviorally proven against real PostgreSQL with tenant isolation and provenance regressions.
+      - id: "AC6"
+        statement: |-
+          The exact source migration is vendored in Infra with the declared checksum, sequence, and byte-for-byte parity before the source migration can land.
+evidence_requirements:
+  - kind: "tests"
+    description: "OmniMarket behavior proof at the exact product head."
+    command: "uv run pytest tests/test_omn17426_savings_aggregate_views_per_tenant.py tests/test_omn20008_measured_savings_real_postgres.py
+      -q"
+  - kind: "tests"
+    description: "OmniDash provenance and rendered-route behavior proof at the exact reader head."
+    command: "npm run test:run -- --run src/pages/LocalDashboardPage.provenance.test.tsx tests/e2e/local-dashboard-contracts.spec.ts"
+  - kind: "tests"
+    description: "OmniBase Infra checksum, sequence, parity, and regression proof at the exact vendor
+      head."
+    command: "uv run pytest tests/integration/migrations/test_094_savings_overview_local_token_pct_omn20320.py
+      -q"
+  - kind: "ci"
+    description: "The three product PRs and the OCC companion are reachable at the pinned heads."
+    command: "gh pr checks 3361 --repo OmniNode-ai/omnimarket && gh pr checks 354 --repo OmniNode-ai/omnidash
+      && gh pr checks 4547 --repo OmniNode-ai/omnibase_infra"
+emergency_bypass:
+  enabled: false
+  justification: ""
+  follow_up_ticket_id: ""
+dod_evidence:
+  - id: "dod-deploy-probe-omnimarket-pr-3361"
+    description: "Deploy probe: the OmniMarket projection contract at the exact product head declares
+      measured provenance totals."
+    source: "manual"
+    checks:
+      - check_type: "command"
+        check_value: |-
+          deploy_probe=1; gh api repos/OmniNode-ai/omnimarket/contents/src/omnimarket/nodes/node_projection_savings/contract.yaml?ref=780970198b71222aadc64435cf2f307185c59110 --jq '.content' | base64 -d | grep -q 'measured_run_count'
+    binds_ac:
+      - "AC1"
+      - "AC4"
+      - "AC5"
+  - id: "dod-deploy-probe-omnidash-pr-354"
+    description: "Deploy probe: the OmniDash reader at the exact UI head reads persisted usage_source."
+    source: "manual"
+    checks:
+      - check_type: "command"
+        check_value: |-
+          deploy_probe=1; gh api repos/OmniNode-ai/omnidash/contents/src/pages/LocalDashboardPage.tsx?ref=9dfaaa54b0c85c00b1e0c46817d5480f67b68a65 --jq '.content' | base64 -d | grep -q 'usage_source'
+    binds_ac:
+      - "AC1"
+      - "AC2"
+      - "AC3"
+  - id: "dod-deploy-probe-omnibase-infra-pr-4547"
+    description: "Deploy probe: the vendored migration at the exact Infra head carries the measured provenance
+      column."
+    source: "manual"
+    checks:
+      - check_type: "command"
+        check_value: |-
+          deploy_probe=1; gh api repos/OmniNode-ai/omnibase_infra/contents/docker/migrations/forward/nodes/node_projection_savings/094_savings_overview_measured_provenance.sql?ref=535e94473d0ae7b717c466d5233ac4f039438646 --jq '.content' | base64 -d | grep -q 'token_provenance'
+    binds_ac:
+      - "AC5"
+      - "AC6"
+  - id: "dod-OmniNode-ai-omnimarket-pr-3361-ci"
+    description: "OmniMarket PR #3361 diff scope is present at the exact head."
+    source: "manual"
+    checks:
+      - check_type: "command"
+        check_value: "gh pr view 3361 --repo OmniNode-ai/omnimarket --json files,headRefOid"
+    binds_ac:
+      - "AC1"
+      - "AC4"
+      - "AC5"
+  - id: "dod-OmniNode-ai-omnidash-pr-354-ci"
+    description: "OmniDash PR #354 diff scope is present at the exact head."
+    source: "manual"
+    checks:
+      - check_type: "command"
+        check_value: "gh pr view 354 --repo OmniNode-ai/omnidash --json files,headRefOid"
+    binds_ac:
+      - "AC1"
+      - "AC2"
+      - "AC3"
+  - id: "dod-OmniNode-ai-omnibase-infra-pr-4547-ci"
+    description: "OmniBase Infra PR #4547 diff scope is present at the exact head."
+    source: "manual"
+    checks:
+      - check_type: "command"
+        check_value: "gh pr view 4547 --repo OmniNode-ai/omnibase_infra --json files,headRefOid"
+    binds_ac:
+      - "AC5"
+      - "AC6"
+  - id: "dod-omn20008-omnimarket-behavior"
+    description: "OmniMarket real-PostgreSQL provenance and measured-total behavior proof at PR #3361."
+    source: "manual"
+    checks:
+      - check_type: "test_passes"
+        check_value: "uv run pytest tests/test_omn17426_savings_aggregate_views_per_tenant.py tests/test_omn20008_measured_savings_real_postgres.py
+          -q"
+        cwd: "${OMNI_HOME}/omnimarket"
+    binds_ac:
+      - "AC1"
+      - "AC4"
+      - "AC5"
+  - id: "dod-omn20008-omnidash-behavior"
+    description: "OmniDash provenance component and native route behavior proof at PR #354."
+    source: "manual"
+    checks:
+      - check_type: "test_passes"
+        check_value: "npm run test:run -- --run src/pages/LocalDashboardPage.provenance.test.tsx tests/e2e/local-dashboard-contracts.spec.ts"
+        cwd: "${OMNI_HOME}/omnidash"
+    binds_ac:
+      - "AC1"
+      - "AC2"
+      - "AC3"
+  - id: "dod-omn20008-omnibase-infra-behavior"
+    description: "OmniBase Infra vendor parity and migration regression proof at PR #4547."
+    source: "manual"
+    checks:
+      - check_type: "test_passes"
+        check_value: "uv run pytest tests/integration/migrations/test_094_savings_overview_local_token_pct_omn20320.py
+          -q"
+        cwd: "${OMNI_HOME}/omnibase_infra"
+    binds_ac:
+      - "AC5"
+      - "AC6"
