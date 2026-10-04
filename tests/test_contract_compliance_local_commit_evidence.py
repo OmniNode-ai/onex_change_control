@@ -299,8 +299,8 @@ def test_quota_halt_still_governs_gh_items_and_is_never_consulted_for_local_ones
     shas = _make_repo(repo, 3, "occ")
     bench.monkeypatch.setenv("FAKE_GH_QUOTA", "1")
     gh_items = [
-        f"gh pr view 1 --repo {_REPO} --json state",
-        f"gh pr view 2 --repo {_REPO} --json state",
+        f"gh api repos/OmniNode-ai/omnimarket/commits/{sha} --jq .sha"
+        for sha in ("a" * 40, "b" * 40)
     ]
 
     rc = bench.run(repo, [gh_items[0], *[_commit_check(s) for s in shas], gh_items[1]])
