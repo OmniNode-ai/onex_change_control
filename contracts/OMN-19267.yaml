@@ -73,6 +73,53 @@ dod_evidence:
       - check_type: "test_passes"
         check_value: "uv run pytest tests/unit/delegation/test_prose_task_class_no_think_omn18967.py -q"
         cwd: "${OMNI_HOME}/omnimarket"
+  - id: "dod-OmniNode-ai-omnibase_infra-pr-4557"
+    description: "PR #4557 on OmniNode-ai/omnibase_infra — Evidence-Source autobind."
+    source: "generated"
+    checks:
+      - check_type: "command"
+        check_value: |-
+          gh api repos/OmniNode-ai/omnibase_infra/contents/src/omnibase_infra/cli/omnimarket_drift_guard.py?ref=02fef7402db8476f1834cc73a080fd27142622c7 --jq '.content' | base64 -d | grep -c 'def _clean_git_env'
+    binds_ac:
+      - "AC1"
+      - "AC2"
+      - "AC3"
+    ac_bindings:
+      - label: "AC1"
+        criterion_hash: "327d1a01cd3cb1d10804e529d59a2113ac4cd0fff9dc43360bd84c0921a1416a"
+        proposed_by: "occ-autobind"
+        accepted_by: "7a850ce1-f95e-431f-b4e3-62f7449f04c0"
+        accepted_at: "2026-09-23T15:21:31Z"
+      - label: "AC2"
+        criterion_hash: "c12e6a4744f21112e829689d2c4f9a23f85a57624ac96bd190120cfab013c302"
+        proposed_by: "occ-autobind"
+        accepted_by: "7a850ce1-f95e-431f-b4e3-62f7449f04c0"
+        accepted_at: "2026-09-23T15:21:31Z"
+      - label: "AC3"
+        criterion_hash: "b52f8b0101ea88f3b85b949a67c139a4d84f1776730c96171434683aacfb566e"
+        proposed_by: "occ-autobind"
+        accepted_by: "7a850ce1-f95e-431f-b4e3-62f7449f04c0"
+        accepted_at: "2026-09-23T15:21:31Z"
+  - id: "dod-OmniNode-ai-omnibase_infra-pr-4557-ci"
+    description: "PR #4557 on OmniNode-ai/omnibase_infra — product diff scope check (OMN-14425)."
+    source: "generated"
+    checks:
+      - check_type: "command"
+        check_value: "gh pr view 4557 --repo OmniNode-ai/omnibase_infra --json files"
+  - id: "occ-self-bind-pr-12796"
+    description: "OCC companion PR #12796 — self-bind for OMN-19267 (OMN-14650)."
+    source: "generated"
+    checks:
+      - check_type: "command"
+        check_value: "gh pr view 12796 --repo OmniNode-ai/onex_change_control --json number,state"
+  - id: "dod-occ-diff-derived-behavior-proof-pr-4557"
+    description: "PR #4557 on OmniNode-ai/omnibase_infra — diff-derived behavior proof (OMN-16434)."
+    source: "generated"
+    checks:
+      - check_type: "test_passes"
+        check_value: |-
+          uv run pytest tests/unit/cli/test_omnimarket_drift_guard_inherited_git_env_omn19267.py -q
+        cwd: "${OMNI_HOME}/omnibase_infra"
   - id: "occ-self-bind-pr-10946"
     description: "OCC companion PR #10946 — self-bind for OMN-19267 (OMN-14650)."
     source: "generated"
@@ -376,3 +423,89 @@ dod_evidence:
         reason: Replace this prior binding with a fresh execution and negative control of the same behavior.
           The new probe supplies its own inputs; the earlier checks and records remain unchanged.
     evidence_artifact: supersedes_dod_evidence:ac-falsifier-ac3
+  - id: dod-omn19267-acc-ac1
+    description: AC1 executing probe on the local tier. Submit a reasoning prompt through the deployed
+      dev lane (onex delegate --task-type reasoning --bus kafka --lane dev --locus deployed-lane), then
+      read the receipt and result.txt, and require an accepted local-tier attempt, a nonempty result and
+      no output_refusal. The verdict function turns red on the defect as measured in the ticket (empty
+      deliverable with an ambiguous_unmarked_deliverable refusal and no accepted attempt), asserted in
+      the same probe. Captured on the launching host, where the composed-environment drift guard passes.
+    source: generated
+    execution_scope: local_done_gate
+    checks:
+      - check_type: command
+        check_value: |-
+          python3 - <<'PY'
+          # Product under test: repos/OmniNode-ai/omnimarket/commits/4d7e6e68ad211e063117c79d1d32f4982ff7d448 (the dispatch venv runs this omnimarket).
+          import json, os, re, subprocess, tempfile
+          from pathlib import Path
+
+          PROMPT = (
+              "Reason step by step: if every bloop is a razzie and every razzie is a lazzie, "
+              "is every bloop a lazzie? State the conclusion."
+          )
+
+
+          def verdict(receipt, result_text):
+              """Return the list of AC1 failures for one delegation outcome."""
+              payload = receipt["receipt"]["result"]["terminal_payload"]["payload"]
+              attempts = payload.get("attempts") or []
+              accepted = [a for a in attempts if a.get("acceptance_decision") == "accept"]
+              failures = []
+              if not any(a.get("tier") == "local" for a in accepted):
+                  failures.append("no accepted local-tier attempt")
+              if not result_text.strip():
+                  failures.append("result.txt is empty")
+              refusal = payload.get("output_refusal")
+              if refusal:
+                  failures.append("output_refusal=" + json.dumps(refusal, sort_keys=True))
+              return failures
+
+
+          with tempfile.TemporaryDirectory(prefix="omn19267-ac1-") as state:
+              omni = os.environ["OMNI_HOME"]
+              run = subprocess.run(
+                  [omni + "/omnibase_infra/scripts/onex", "delegate", PROMPT,
+                   "--task-type", "reasoning", "--bus", "kafka", "--lane", "dev",
+                   "--locus", "deployed-lane", "--state-root", state],
+                  capture_output=True, text=True, timeout=330,
+              )
+              assert run.returncode == 0, "delegate exit %s: %s" % (run.returncode, (run.stdout + run.stderr)[-600:])
+              line = [l for l in (run.stdout + run.stderr).splitlines() if l.startswith("delegate artifacts:")][-1]
+              result_path, receipt_path = line.split(":", 1)[1].split()[:2]
+              receipt = json.loads(Path(receipt_path).read_text())
+              text = Path(result_path).read_text()
+              failures = verdict(receipt, text)
+              assert not failures, failures
+              payload = receipt["receipt"]["result"]["terminal_payload"]["payload"]
+              accepted = [a for a in payload["attempts"] if a.get("acceptance_decision") == "accept"][0]
+              print(json.dumps({"backend_id": receipt["backend_id"], "routing_tier": receipt["routing_tier"],
+                                "accepted_tier": accepted["tier"], "accepted_model": accepted["model_id"],
+                                "result_chars": len(text), "output_refusal": payload.get("output_refusal")}, sort_keys=True))
+
+          # Negative control: the defect as measured in the ticket (empty deliverable, ambiguous_unmarked_deliverable
+          # refusal, accepted attempt absent) must be refused by the same verdict function.
+          defect = {"receipt": {"result": {"terminal_payload": {"payload": {
+              "attempts": [{"tier": "local", "acceptance_decision": "reject"}],
+              "output_refusal": {"reason": "ambiguous_unmarked_deliverable"}}}}}}
+          red = verdict(defect, "")
+          assert len(red) == 3, red
+          print(json.dumps({"defect_shaped_outcome_refused": red}, sort_keys=True))
+          PY
+    binds_ac:
+      - AC1
+    ac_bindings:
+      - label: AC1
+        criterion_hash: 327d1a01cd3cb1d10804e529d59a2113ac4cd0fff9dc43360bd84c0921a1416a
+        proposed_by: occ-autobind
+        accepted_by: orchestrator-2a21-ac1
+        accepted_at: '2026-10-04T11:45:00Z'
+    supersedes_ac_binding:
+      - item: dod-OmniNode-ai-omnimarket-pr-2809
+        label: AC1
+        reason: Replace a source-text or PR-state binding with an executing criterion probe that fails
+          when the behavior is absent.
+      - item: dod-OmniNode-ai-omninode_infra-pr-1645
+        label: AC1
+        reason: Replace a source-text or PR-state binding with an executing criterion probe that fails
+          when the behavior is absent.
