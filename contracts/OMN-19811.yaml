@@ -346,3 +346,71 @@ dod_evidence:
         reason: Independent second-lane acceptance is appended here against the current AC4 criterion
           hash and a successful dev-201 chain-canary receipt log. The earlier unaccepted proposal is preserved
           byte-identically.
+  - id: dod-omn19811-closeout-2a21-ac4-c15-accepted
+    description: 'AC4 acceptance of the binding dod-c15-19811-ac4-deploy-window, proposed by lane fill-OMN-19811-2a21,
+      by lane closeout-local-gate-2a21, a lane other than its author. The binding''s proposer is kept,
+      the criterion hash is the current AC4 hash, and the acceptance re-runs the pinned dev chain-canary.yml
+      run 37193369383, job 111410052502 at product head 2ad2097757d61c1a9a4b6b70cb4d40494a3b01eb with
+      its negative controls. Cause: dod_verify local_done_gate reports AC_BINDING_SELF_ACCEPTED for dod-c15-19811-ac4-deploy-window:AC4
+      accepted_by=<none>, because dod-omn19811-33a1-ac4-deploy-window-accepted re-accepts only the binding
+      proposed by landing-L2149-h202 and the verifier matches an acceptance to a binding by proposer.
+      AC4''s text names host.docker.internal:8098; the pinned workflow resolves the agent from the dev-201
+      overlay (OMN-19894), and this acceptance treats http://192.168.86.201:8098 as the same deploy-agent
+      surface, as the earlier acceptance did, without claiming the obsolete alias was contacted. The earlier
+      proposals and acceptance stay unchanged.'
+    source: generated
+    execution_scope: local_done_gate
+    checks:
+      - check_type: command
+        check_value: |-
+          bash -eu <<'CHECK'
+          set -o pipefail
+          root="$(mktemp -d)"
+          trap 'rm -rf "$root"' EXIT
+          gh api repos/OmniNode-ai/omnibase_infra/actions/runs/37193369383 > "$root/run.json"
+          gh api repos/OmniNode-ai/omnibase_infra/actions/jobs/111410052502 > "$root/job.json"
+          gh api repos/OmniNode-ai/omnibase_infra/actions/jobs/111410052502/logs --allow-escape-sequences > "$root/job.log"
+          python3 - "$root" <<'PYPROBE'
+          import json, re, sys
+          from pathlib import Path
+          root = Path(sys.argv[1])
+          run = json.loads((root / "run.json").read_text())
+          job = json.loads((root / "job.json").read_text())
+          assert run["id"] == 37193369383
+          assert run["path"] == ".github/workflows/chain-canary.yml"
+          assert run["head_branch"] == "dev"
+          assert run["head_sha"] == "2ad2097757d61c1a9a4b6b70cb4d40494a3b01eb"
+          assert run["status"] == "completed" and run["conclusion"] == "success"
+          assert job["run_id"] == run["id"] and job["id"] == 111410052502
+          assert job["name"] == "Chain Canary (dev lane)" and job["conclusion"] == "success"
+          log = re.sub(r"^[0-9T:.Z-]+ ", "", (root / "job.log").read_text(), flags=re.M)
+          assert "lane dev-201 deploy agent: http://192.168.86.201:8098" in log
+          start = log.index("deploy window (OMN-19811):\n")
+          block = "\n".join(log[start:].splitlines()[:5])
+          def valid(value):
+              return all((
+                  value.startswith("deploy window (OMN-19811):\n"),
+                  "  - status: `not_needed`" in value,
+                  "  - deploy agent: http://192.168.86.201:8098" in value,
+                  "  - deploy job(s) in the first attempt's window: none" in value,
+                  re.search(r"  - pre-fire deploy: [0-9a-f-]{36}, queued 1 \(waited [1-9][0-9]*s, converged=True\)", value) is not None,
+              ))
+          assert valid(block)
+          assert not valid(block.replace("http://192.168.86.201:8098", "unreadable"))
+          assert not valid(block.replace("converged=True", "converged=False"))
+          assert not valid(block.replace("deploy window (OMN-19811):", "window absent:"))
+          assert "chain canary PROBE-GREEN" in log
+          print(json.dumps({key: run[key] for key in ("id", "path", "head_branch", "head_sha", "status", "conclusion")}, sort_keys=True))
+          print("job=" + str(job["id"]) + " runner=" + job["runner_name"])
+          print(block)
+          print("negative controls: missing agent, non-convergence and missing deploy-window block rejected")
+          PYPROBE
+          CHECK
+    binds_ac:
+      - AC4
+    ac_bindings:
+      - label: AC4
+        criterion_hash: 3b224f0d8d6ade694097f2c267a086720895ebc0e099b38eb74d56d61091f398
+        proposed_by: fill-OMN-19811-2a21
+        accepted_by: closeout-local-gate-2a21
+        accepted_at: '2026-10-04T13:33:04Z'
