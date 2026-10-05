@@ -77,3 +77,103 @@ dod_evidence:
       - label: "AC1"
         criterion_hash: "fcf17c60ca12fc08b2852ca80fb79cd4107c2df1fa6e4e4be9b42b4956ad841b"
         proposed_by: "lane=claude-de42d5d9"
+  - id: "dod-omn19995-ac1-lab-read-asserting-2026-10-04"
+    description: |-
+      AC1 dev-lane readback that can fail (claude-e72e9157 packaging the probe written by claude-b4a9c00f,
+      OMN-19995). It replaces the readback the 2026-10-03T22:45Z closeout refused because its exit status did not
+      depend on the criterion. The command pipes a read-only probe to python3 on the .201 host (locally when the
+      host holds omnibase-infra-postgres, otherwise over ssh jonah@192.168.86.201) and greps for the probe's single
+      verdict line. The probe reads GET /projections on the dev lane's Projection API (:3002), then every entry
+      once, with the entry's own page size and, for a tenant-scoped entry, the lane tenant
+      820272f9-4aaf-5add-a2df-0af942852ab2. The grep matches only when the catalogue answers 200 and lists at least
+      one entry marked ok, no entry marked ok answers 503, every entry marked ok returned an HTTP status, and at
+      least one entry not marked ok answers 503 (the positive control: the same read path can show a 503). So the
+      check is red on an empty catalogue, on an unreachable API or host, on an entry marked ok that answers 503, and
+      with the status filter inverted. Read-only: nothing is written on the host. Covers AC1's lab-read falsifier
+      only; the pytest falsifier is bound by dod-omn19995-ac1-catalogue-behavior-2026-10-03. Draft binding: no
+      accepted_by, because acceptance is a different lane's step.
+    source: "manual"
+    execution_scope: "local_done_gate"
+    checks:
+      - check_type: "command"
+        check_value: |-
+          if docker inspect omnibase-infra-postgres >/dev/null 2>&1; then lab_py="python3 -"; else lab_py="ssh -o BatchMode=yes -o ConnectTimeout=15 jonah@192.168.86.201 python3 -"; fi
+          $lab_py 3002 820272f9-4aaf-5add-a2df-0af942852ab2 <<'PROBE_19995' | grep -E '^AC1-OK catalogue_http=200 ok=[1-9][0-9]* ok_200=[0-9]+ ok_503=0 ok_unread=0 ok_other=[0-9]+ not_ok=[1-9][0-9]* not_ok_503=[1-9][0-9]*$'
+          """OMN-19995 AC1 lab check that can fail. Read-only. Run on the lab host: `python3 - <port> <tenant> < this`.
+
+          AC1: "No catalogue entry is marked ok while its read answers 503."
+
+          The 2026-10-03T22:45Z closeout refused the earlier readback because its exit status did not depend on the criterion:
+          with the status filter inverted it still exited 0, and an empty catalogue would have passed. This probe prints exactly
+          one verdict line, `AC1-OK ...` or `AC1-FAIL ...`, and the check greps for the OK line, so the check goes red when:
+
+            - an entry marked ok answers 503 (the criterion itself);
+            - an entry marked ok could not be read at all (no HTTP status came back: an unread entry proves nothing);
+            - the catalogue did not answer 200, or lists no entry marked ok (an empty catalogue proves nothing);
+            - no entry that is not marked ok answers 503 (the positive control: the same read path must be able to show a 503).
+
+          It reads GET /projections, then GET /projection/<topic> once per entry, with the entry's own page size and, for a
+          tenant-scoped entry, the lane tenant. Nothing is written anywhere.
+          """
+
+          import json
+          import sys
+          import urllib.error
+          import urllib.parse
+          import urllib.request
+
+
+          def fetch(url, timeout=60):
+              """(HTTP status, parsed body). Status 0 means no HTTP answer came back."""
+              try:
+                  with urllib.request.urlopen(url, timeout=timeout) as response:
+                      return response.status, json.loads(response.read() or b"{}")
+              except urllib.error.HTTPError as error:
+                  return error.code, {}
+              except Exception:
+                  return 0, {}
+
+
+          def verdict(api, tenant, get=fetch):
+              code, catalogue = get(api + "/projections")
+              entries = catalogue.get("topics") if isinstance(catalogue, dict) else None
+              entries = entries if isinstance(entries, list) else []
+
+              def read(entry):
+                  query = {"limit": str(entry.get("limit") or 50)}
+                  if entry.get("tenant_scoped"):
+                      query["tenant"] = tenant
+                  topic = urllib.parse.quote(str(entry.get("topic", "")), safe="")
+                  return get(api + "/projection/" + topic + "?" + urllib.parse.urlencode(query))[0]
+
+              ok = [read(entry) for entry in entries if entry.get("status") == "ok"]
+              not_ok = [read(entry) for entry in entries if entry.get("status") != "ok"]
+              counts = {
+                  "catalogue_http": code,
+                  "ok": len(ok),
+                  "ok_200": sum(status == 200 for status in ok),
+                  "ok_503": sum(status == 503 for status in ok),
+                  "ok_unread": sum(status == 0 for status in ok),
+                  "ok_other": sum(status not in (0, 200, 503) for status in ok),
+                  "not_ok": len(not_ok),
+                  "not_ok_503": sum(status == 503 for status in not_ok),
+              }
+              holds = (
+                  code == 200
+                  and counts["ok"] >= 1
+                  and counts["ok_503"] == 0
+                  and counts["ok_unread"] == 0
+                  and counts["not_ok_503"] >= 1
+              )
+              return ("AC1-OK" if holds else "AC1-FAIL") + "".join(f" {name}={value}" for name, value in counts.items())
+
+
+          if __name__ == "__main__":
+              print(verdict("http://127.0.0.1:" + sys.argv[1], sys.argv[2]))
+          PROBE_19995
+    binds_ac:
+      - "AC1"
+    ac_bindings:
+      - label: "AC1"
+        criterion_hash: "fcf17c60ca12fc08b2852ca80fb79cd4107c2df1fa6e4e4be9b42b4956ad841b"
+        proposed_by: "lane=claude-b4a9c00f"
