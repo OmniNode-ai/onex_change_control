@@ -591,7 +591,15 @@ def check_contract_ac_bindings(
     for index, item in enumerate(_items(contract)):
         item_id = _item_id(item, index)
         subject = f"{ticket_id} {item_id}"
-        findings.extend(_unknown_criteria(ticket_id, subject, item, known))
+        findings.extend(
+            _unknown_criteria(
+                ticket_id,
+                subject,
+                item,
+                known,
+                {label for target, label in retired if target == item_id},
+            )
+        )
         findings.extend(
             _stale_pins(
                 subject, item, known, re_accepted, retired=retired, item_id=item_id
@@ -654,13 +662,22 @@ def _labels_pinned_to_current_text(
 
 
 def _unknown_criteria(
-    ticket_id: str, subject: str, item: dict[str, object], known: dict[str, str]
+    ticket_id: str,
+    subject: str,
+    item: dict[str, object],
+    known: dict[str, str],
+    retired_labels: set[str],
 ) -> list[AcBindingFinding]:
-    """Claims naming a criterion the ticket does not have."""
+    """Claims naming a criterion the ticket does not have.
+
+    A retired ``(item, label)`` pair is not a claim: a criterion the ticket has
+    since dropped can only be withdrawn by a ``supersedes_ac_binding`` item,
+    because the merged item cannot be edited.
+    """
     findings: list[AcBindingFinding] = []
     for entry in _claims(item):
         label = canonical_ac_label(entry)
-        if not label or label in known:
+        if not label or label in known or label in retired_labels:
             continue
         findings.append(
             AcBindingFinding(
