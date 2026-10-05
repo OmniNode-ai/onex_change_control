@@ -1,0 +1,134 @@
+---
+schema_version: 1.0.0
+ticket_id: OMN-19971
+evidence_item_id: dod-omn19971-ac1-dev-lane-readback
+check_type: command
+check_value: |-
+  if docker inspect omnibase-infra-postgres >/dev/null 2>&1; then lab_py="python3 -"; else lab_py="ssh -o BatchMode=yes -o ConnectTimeout=15 jonah@192.168.86.201 python3 -"; fi
+  $lab_py <<'PY'
+  import json, subprocess, sys, time, urllib.error, urllib.request
+  from datetime import datetime, timezone
+  BASE = "http://localhost:3002"
+  TENANT = "820272f9-4aaf-5add-a2df-0af942852ab2"
+  DEC = "onex.snapshot.projection.delegation.decisions.v1"
+  t0 = time.time()
+  def get(path):
+      try:
+          r = urllib.request.urlopen(BASE + path, timeout=40)
+          return r.status, r.read()
+      except urllib.error.HTTPError as e:
+          return e.code, e.read()
+      except Exception as e:
+          return 0, repr(e).encode()
+  def ts(s):
+      d = datetime.fromisoformat(s)
+      return d if d.tzinfo else d.replace(tzinfo=timezone.utc)
+  bad = []
+  q = "select to_char(max(written_at) at time zone 'utc','YYYY-MM-DD HH24:MI:SS.US'), count(*) from public.delegation_events where tenant_id='" + TENANT + "'"
+  p = subprocess.run(["docker", "exec", "-e", "PGOPTIONS=-c default_transaction_read_only=on", "omnibase-infra-postgres", "psql", "-U", "postgres", "-d", "omnidash_analytics", "-At", "-F", "|", "-c", q], capture_output=True, text=True, timeout=60)
+  wmax, wn = (p.stdout.strip().split("|") + ["", "0"])[:2]
+  if p.returncode != 0 or not wmax or int(wn) == 0:
+      bad.append("writer read failed or empty: rc=%s out=%r err=%r" % (p.returncode, p.stdout.strip(), p.stderr.strip()[:200]))
+  st, body = get("/projections")
+  topics = json.loads(body)["topics"] if st == 200 else []
+  oks = [t["topic"] for t in topics if t.get("status") == "ok"]
+  scoped = {t["topic"] for t in topics if t.get("tenant_scoped")}
+  if st != 200 or not oks:
+      bad.append("GET /projections -> %s, ok exposures %d" % (st, len(oks)))
+  if DEC not in oks:
+      bad.append("delegation.decisions is not catalogued ok")
+  served = ""
+  for topic in oks:
+      if time.time() - t0 > 240:
+          bad.append("deadline exceeded before %s" % topic)
+          break
+      s, b = get("/projection/" + topic + ("?tenant=" + TENANT if topic in scoped else ""))
+      if s != 200:
+          bad.append("%s -> %s" % (topic, s))
+      elif topic == DEC:
+          rows = json.loads(b)["rows"]
+          served = max((r["written_at"] for r in rows), default="")
+  if not served:
+      bad.append("delegation.decisions served no rows for the tenant")
+  elif wmax and ts(served) < ts(wmax.replace(" ", "T")):
+      bad.append("delegation.decisions newest served %s lags writer newest %s" % (served, wmax))
+  print("catalogue ok=%d tenant=%s decisions served_newest=%s writer_newest=%s writer_rows=%s elapsed=%.0fs" % (len(oks), TENANT, served, wmax, wn, time.time() - t0))
+  for m in bad:
+      print("FAIL:", m)
+  print("AC1 readback", "FAILED" if bad else "PASSED")
+  sys.exit(1 if bad else 0)
+  PY
+contract_sha256: sha256:a4b07a4360e05a521f3a71ac2021ec4f6167a5871db0c74d6e40df6a2dd7bcef
+contract_entry_sha256: sha256:13c0782be71d2019e78544afde5e96d9f900828b55ec5bd9936e137cb1716b92
+status: PASS
+run_timestamp: '2026-10-05T03:26:38Z'
+commit_sha: fc9642e1913644ffeebda98722cfb7d9dc92f69f
+runner: landing-L2720@h202
+verifier: occ-probe-capture-v1
+probe_command: |-
+  if docker inspect omnibase-infra-postgres >/dev/null 2>&1; then lab_py="python3 -"; else lab_py="ssh -o BatchMode=yes -o ConnectTimeout=15 jonah@192.168.86.201 python3 -"; fi
+  $lab_py <<'PY'
+  import json, subprocess, sys, time, urllib.error, urllib.request
+  from datetime import datetime, timezone
+  BASE = "http://localhost:3002"
+  TENANT = "820272f9-4aaf-5add-a2df-0af942852ab2"
+  DEC = "onex.snapshot.projection.delegation.decisions.v1"
+  t0 = time.time()
+  def get(path):
+      try:
+          r = urllib.request.urlopen(BASE + path, timeout=40)
+          return r.status, r.read()
+      except urllib.error.HTTPError as e:
+          return e.code, e.read()
+      except Exception as e:
+          return 0, repr(e).encode()
+  def ts(s):
+      d = datetime.fromisoformat(s)
+      return d if d.tzinfo else d.replace(tzinfo=timezone.utc)
+  bad = []
+  q = "select to_char(max(written_at) at time zone 'utc','YYYY-MM-DD HH24:MI:SS.US'), count(*) from public.delegation_events where tenant_id='" + TENANT + "'"
+  p = subprocess.run(["docker", "exec", "-e", "PGOPTIONS=-c default_transaction_read_only=on", "omnibase-infra-postgres", "psql", "-U", "postgres", "-d", "omnidash_analytics", "-At", "-F", "|", "-c", q], capture_output=True, text=True, timeout=60)
+  wmax, wn = (p.stdout.strip().split("|") + ["", "0"])[:2]
+  if p.returncode != 0 or not wmax or int(wn) == 0:
+      bad.append("writer read failed or empty: rc=%s out=%r err=%r" % (p.returncode, p.stdout.strip(), p.stderr.strip()[:200]))
+  st, body = get("/projections")
+  topics = json.loads(body)["topics"] if st == 200 else []
+  oks = [t["topic"] for t in topics if t.get("status") == "ok"]
+  scoped = {t["topic"] for t in topics if t.get("tenant_scoped")}
+  if st != 200 or not oks:
+      bad.append("GET /projections -> %s, ok exposures %d" % (st, len(oks)))
+  if DEC not in oks:
+      bad.append("delegation.decisions is not catalogued ok")
+  served = ""
+  for topic in oks:
+      if time.time() - t0 > 240:
+          bad.append("deadline exceeded before %s" % topic)
+          break
+      s, b = get("/projection/" + topic + ("?tenant=" + TENANT if topic in scoped else ""))
+      if s != 200:
+          bad.append("%s -> %s" % (topic, s))
+      elif topic == DEC:
+          rows = json.loads(b)["rows"]
+          served = max((r["written_at"] for r in rows), default="")
+  if not served:
+      bad.append("delegation.decisions served no rows for the tenant")
+  elif wmax and ts(served) < ts(wmax.replace(" ", "T")):
+      bad.append("delegation.decisions newest served %s lags writer newest %s" % (served, wmax))
+  print("catalogue ok=%d tenant=%s decisions served_newest=%s writer_newest=%s writer_rows=%s elapsed=%.0fs" % (len(oks), TENANT, served, wmax, wn, time.time() - t0))
+  for m in bad:
+      print("FAIL:", m)
+  print("AC1 readback", "FAILED" if bad else "PASSED")
+  sys.exit(1 if bad else 0)
+  PY
+probe_stdout: |-
+  catalogue ok=21 tenant=820272f9-4aaf-5add-a2df-0af942852ab2 decisions served_newest=2026-10-05T03:25:09.549258+00:00 writer_newest=2026-10-05 03:25:09.549258 writer_rows=9957 elapsed=7s
+  AC1 readback PASSED
+actual_output: 'PASS: AC1 dev-lane readback re-run from lab host h202 through the capture invocation;
+  exit 0.'
+exit_code: 0
+pr_number: 12859
+branch: dev
+duration_ms: 7227
+artifact_sha256:
+  - sha256:f8de16e3a47f9dfaf05fe607d3746eacaa3c12014f636da6fc73a6b2781d3d13
+  - sha256:4eccc43b58984233335728df432dbdbe44cd64ada9543a37e8da9057c0647cb5
