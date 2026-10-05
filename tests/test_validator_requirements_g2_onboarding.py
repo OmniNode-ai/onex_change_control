@@ -25,14 +25,14 @@ from __future__ import annotations
 from pathlib import Path
 
 import pytest
-from omnibase_core.validation.hardcoded_topic.runtime_hardcoded_topic import (
-    main as hardcoded_topic_main,
+from omnibase_core.nodes.node_hardcoded_topic_check_compute import (
+    runtime_hardcoded_topic_check,
+)
+from omnibase_core.nodes.node_private_ip_check_compute.runtime_private_ip_check import (
+    main as private_ip_main,
 )
 from omnibase_core.validation.localhost_url.runtime_localhost_url import (
     main as localhost_url_main,
-)
-from omnibase_core.validation.private_ip.runtime_private_ip import (
-    main as private_ip_main,
 )
 from omnibase_core.validation.todo_marker.runtime_todo_marker import (
     main as todo_marker_main,
@@ -124,14 +124,14 @@ def test_localhost_url_validator_passes_clean_file(tmp_path: Path) -> None:
 def test_hardcoded_topic_validator_detects_planted_violation(tmp_path: Path) -> None:
     target = tmp_path / "planted_hardcoded_topic.py"
     target.write_text('BAD_TOPIC = "onex.synthetic.red.violation"\n')
-    assert hardcoded_topic_main([str(target)]) != 0
+    assert runtime_hardcoded_topic_check.main([str(target)]) != 0
 
 
 @pytest.mark.unit
 def test_hardcoded_topic_validator_passes_clean_file(tmp_path: Path) -> None:
     target = tmp_path / "clean_hardcoded_topic.py"
     target.write_text('GOOD = "not a topic"\n')
-    assert hardcoded_topic_main([str(target)]) == 0
+    assert runtime_hardcoded_topic_check.main([str(target)]) == 0
 
 
 @pytest.mark.unit
