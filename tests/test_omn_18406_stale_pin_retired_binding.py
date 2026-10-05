@@ -137,3 +137,21 @@ def test_retirement_on_another_item_does_not_excuse_this_items_stale_pin() -> No
     findings = _stale(check_contract_ac_bindings("OMN-19999", contract, _BODY))
 
     assert [f.subject for f in findings] == ["OMN-19999 dod-001"]
+
+
+def test_unknown_criterion_on_a_retired_binding_is_not_refused() -> None:
+    """A criterion the ticket dropped is withdrawn by retirement, not refused."""
+    unknown = {"label": "AC9", "criterion_hash": _STALE_PIN}
+    live = [_binding("AC1", _live_hash("AC1")), _binding("AC2", _live_hash("AC2"))]
+    contract = _contract(
+        [_item("old", [unknown]), _item("live", live), _retirement("old", "AC9")]
+    )
+    findings = check_contract_ac_bindings("OMN-19999", contract, _BODY)
+    assert not [f for f in findings if f.rule == "ac_binding_unknown_criterion"]
+
+
+def test_unknown_criterion_without_retirement_is_still_refused() -> None:
+    unknown = {"label": "AC9", "criterion_hash": _STALE_PIN}
+    contract = _contract([_item("old", [unknown])])
+    findings = check_contract_ac_bindings("OMN-19999", contract, _BODY)
+    assert [f for f in findings if f.rule == "ac_binding_unknown_criterion"]
