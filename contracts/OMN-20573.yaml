@@ -1,0 +1,68 @@
+---
+schema_version: "1.0.0"
+ticket_id: "OMN-20573"
+title: "Hook-chain health is probed on a schedule and the verdict is recorded"
+summary: "Adds a trigger effect that publishes the hook-chain probe command at most once per 900 seconds
+  from the node heartbeat, and a verdict effect that records the probe result. AC1 and AC2 are bound to
+  their tests. AC3 is a dev-202 bus readback and is not bound."
+is_seam_ticket: false
+interface_change: false
+interfaces_touched: []
+requirements:
+  - id: "req-hook-chain-probed-on-a-schedule-and-recorded"
+    statement: "The hook-chain probe runs on a schedule and its verdict is recorded. The criteria below
+      are transcribed from the ticket body; each id is the label a binding item claims through binds_ac.
+      AC3 is not bound here: it reads the dev-202 redpanda, which this repository's hosted check cannot
+      reach."
+    acceptance:
+      - id: "AC1"
+        statement: "AC1: a trigger effect on onex.evt.platform.node-heartbeat.v1 publishes the probe command
+          at most once per 900 seconds and nothing on a throttled heartbeat -- falsifier: uv run pytest
+          tests/test_hook_chain_probe_wiring.py -q in omnimarket"
+      - id: "AC2"
+        statement: "AC2: a verdict effect consuming the probe completed and failed events logs an error
+          for a broken chain and publishes onex.evt.omnimarket.hook-chain-health-recorded.v1 -- falsifier:
+          uv run pytest tests/test_golden_chain_hook_chain_probe_verdict_effect.py -q in omnimarket"
+evidence_requirements:
+  - kind: "tests"
+    description: "AC1 hosted probe. The wiring tests prove the trigger publishes the probe command at
+      most once per 900 seconds. They pass at the head and fail at the merge base, where the trigger effect
+      does not exist."
+    command: "env -u PYTHONPATH uv run pytest tests/test_hook_chain_probe_wiring.py -q"
+  - kind: "tests"
+    description: "AC2 hosted probe. The verdict effect golden chain proves an error is logged for a broken
+      chain and the health-recorded event is published. It passes at the head and fails at the merge base,
+      where the verdict effect does not exist."
+    command: "env -u PYTHONPATH uv run pytest tests/test_golden_chain_hook_chain_probe_verdict_effect.py
+      -q"
+emergency_bypass:
+  enabled: false
+  justification: ""
+  follow_up_ticket_id: ""
+dod_evidence:
+  - id: "dod-omn20573-ac1-probe-trigger-throttled"
+    description: "AC1 hosted probe. The wiring tests prove the trigger publishes the probe command at
+      most once per 900 seconds. They pass at the head and fail at the merge base, where the trigger effect
+      does not exist."
+    source: "manual"
+    checks:
+      - check_type: "test_passes"
+        check_value: "uv run pytest tests/test_hook_chain_probe_wiring.py -q"
+        cwd: "${OMNI_HOME}/omnimarket"
+    binds_ac: ["AC1"]
+  - id: "dod-omn20573-ac2-probe-verdict-recorded"
+    description: "AC2 hosted probe. The verdict effect golden chain proves an error is logged for a broken
+      chain and the health-recorded event is published. It passes at the head and fails at the merge base,
+      where the verdict effect does not exist."
+    source: "manual"
+    checks:
+      - check_type: "test_passes"
+        check_value: "uv run pytest tests/test_golden_chain_hook_chain_probe_verdict_effect.py -q"
+        cwd: "${OMNI_HOME}/omnimarket"
+    binds_ac: ["AC2"]
+  - id: "dod-OmniNode-ai-omnimarket-pr-3414-ci"
+    description: "PR #3414 on OmniNode-ai/omnimarket: hook-chain probe trigger and verdict effects."
+    source: "generated"
+    checks:
+      - check_type: "command"
+        check_value: "gh pr view 3414 --repo OmniNode-ai/omnimarket --json files"
