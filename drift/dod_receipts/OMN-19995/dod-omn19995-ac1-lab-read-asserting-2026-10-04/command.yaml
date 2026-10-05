@@ -1,0 +1,172 @@
+---
+schema_version: 1.0.0
+ticket_id: OMN-19995
+evidence_item_id: dod-omn19995-ac1-lab-read-asserting-2026-10-04
+check_type: command
+check_value: |-
+  if docker inspect omnibase-infra-postgres >/dev/null 2>&1; then lab_py="python3 -"; else lab_py="ssh -o BatchMode=yes -o ConnectTimeout=15 jonah@192.168.86.201 python3 -"; fi
+  $lab_py 3002 820272f9-4aaf-5add-a2df-0af942852ab2 <<'PROBE_19995' | grep -E '^AC1-OK catalogue_http=200 ok=[1-9][0-9]* ok_200=[0-9]+ ok_503=0 ok_unread=0 ok_other=[0-9]+ not_ok=[1-9][0-9]* not_ok_503=[1-9][0-9]*$'
+  """OMN-19995 AC1 lab check that can fail. Read-only. Run on the lab host: `python3 - <port> <tenant> < this`.
+
+  AC1: "No catalogue entry is marked ok while its read answers 503."
+
+  The 2026-10-03T22:45Z closeout refused the earlier readback because its exit status did not depend on the criterion:
+  with the status filter inverted it still exited 0, and an empty catalogue would have passed. This probe prints exactly
+  one verdict line, `AC1-OK ...` or `AC1-FAIL ...`, and the check greps for the OK line, so the check goes red when:
+
+    - an entry marked ok answers 503 (the criterion itself);
+    - an entry marked ok could not be read at all (no HTTP status came back: an unread entry proves nothing);
+    - the catalogue did not answer 200, or lists no entry marked ok (an empty catalogue proves nothing);
+    - no entry that is not marked ok answers 503 (the positive control: the same read path must be able to show a 503).
+
+  It reads GET /projections, then GET /projection/<topic> once per entry, with the entry's own page size and, for a
+  tenant-scoped entry, the lane tenant. Nothing is written anywhere.
+  """
+
+  import json
+  import sys
+  import urllib.error
+  import urllib.parse
+  import urllib.request
+
+
+  def fetch(url, timeout=60):
+      """(HTTP status, parsed body). Status 0 means no HTTP answer came back."""
+      try:
+          with urllib.request.urlopen(url, timeout=timeout) as response:
+              return response.status, json.loads(response.read() or b"{}")
+      except urllib.error.HTTPError as error:
+          return error.code, {}
+      except Exception:
+          return 0, {}
+
+
+  def verdict(api, tenant, get=fetch):
+      code, catalogue = get(api + "/projections")
+      entries = catalogue.get("topics") if isinstance(catalogue, dict) else None
+      entries = entries if isinstance(entries, list) else []
+
+      def read(entry):
+          query = {"limit": str(entry.get("limit") or 50)}
+          if entry.get("tenant_scoped"):
+              query["tenant"] = tenant
+          topic = urllib.parse.quote(str(entry.get("topic", "")), safe="")
+          return get(api + "/projection/" + topic + "?" + urllib.parse.urlencode(query))[0]
+
+      ok = [read(entry) for entry in entries if entry.get("status") == "ok"]
+      not_ok = [read(entry) for entry in entries if entry.get("status") != "ok"]
+      counts = {
+          "catalogue_http": code,
+          "ok": len(ok),
+          "ok_200": sum(status == 200 for status in ok),
+          "ok_503": sum(status == 503 for status in ok),
+          "ok_unread": sum(status == 0 for status in ok),
+          "ok_other": sum(status not in (0, 200, 503) for status in ok),
+          "not_ok": len(not_ok),
+          "not_ok_503": sum(status == 503 for status in not_ok),
+      }
+      holds = (
+          code == 200
+          and counts["ok"] >= 1
+          and counts["ok_503"] == 0
+          and counts["ok_unread"] == 0
+          and counts["not_ok_503"] >= 1
+      )
+      return ("AC1-OK" if holds else "AC1-FAIL") + "".join(f" {name}={value}" for name, value in counts.items())
+
+
+  if __name__ == "__main__":
+      print(verdict("http://127.0.0.1:" + sys.argv[1], sys.argv[2]))
+  PROBE_19995
+contract_sha256: sha256:666bd5fe2138ec11502868866474ccb38d81a3bab106dcfe66bae9b2f1d952ef
+contract_entry_sha256: sha256:5dd9dcf9e3051588d357763c34af92ae40973fb6409650d47827c8c37371825e
+status: PASS
+run_timestamp: '2026-10-05T18:10:48Z'
+commit_sha: 0b31094e2ada1594d5e4e2a2375b5bdb2c802069
+runner: occ12899-accept-de99@h201
+verifier: occ-probe-capture-v1
+probe_command: |-
+  if docker inspect omnibase-infra-postgres >/dev/null 2>&1; then lab_py="python3 -"; else lab_py="ssh -o BatchMode=yes -o ConnectTimeout=15 jonah@192.168.86.201 python3 -"; fi
+  $lab_py 3002 820272f9-4aaf-5add-a2df-0af942852ab2 <<'PROBE_19995' | grep -E '^AC1-OK catalogue_http=200 ok=[1-9][0-9]* ok_200=[0-9]+ ok_503=0 ok_unread=0 ok_other=[0-9]+ not_ok=[1-9][0-9]* not_ok_503=[1-9][0-9]*$'
+  """OMN-19995 AC1 lab check that can fail. Read-only. Run on the lab host: `python3 - <port> <tenant> < this`.
+
+  AC1: "No catalogue entry is marked ok while its read answers 503."
+
+  The 2026-10-03T22:45Z closeout refused the earlier readback because its exit status did not depend on the criterion:
+  with the status filter inverted it still exited 0, and an empty catalogue would have passed. This probe prints exactly
+  one verdict line, `AC1-OK ...` or `AC1-FAIL ...`, and the check greps for the OK line, so the check goes red when:
+
+    - an entry marked ok answers 503 (the criterion itself);
+    - an entry marked ok could not be read at all (no HTTP status came back: an unread entry proves nothing);
+    - the catalogue did not answer 200, or lists no entry marked ok (an empty catalogue proves nothing);
+    - no entry that is not marked ok answers 503 (the positive control: the same read path must be able to show a 503).
+
+  It reads GET /projections, then GET /projection/<topic> once per entry, with the entry's own page size and, for a
+  tenant-scoped entry, the lane tenant. Nothing is written anywhere.
+  """
+
+  import json
+  import sys
+  import urllib.error
+  import urllib.parse
+  import urllib.request
+
+
+  def fetch(url, timeout=60):
+      """(HTTP status, parsed body). Status 0 means no HTTP answer came back."""
+      try:
+          with urllib.request.urlopen(url, timeout=timeout) as response:
+              return response.status, json.loads(response.read() or b"{}")
+      except urllib.error.HTTPError as error:
+          return error.code, {}
+      except Exception:
+          return 0, {}
+
+
+  def verdict(api, tenant, get=fetch):
+      code, catalogue = get(api + "/projections")
+      entries = catalogue.get("topics") if isinstance(catalogue, dict) else None
+      entries = entries if isinstance(entries, list) else []
+
+      def read(entry):
+          query = {"limit": str(entry.get("limit") or 50)}
+          if entry.get("tenant_scoped"):
+              query["tenant"] = tenant
+          topic = urllib.parse.quote(str(entry.get("topic", "")), safe="")
+          return get(api + "/projection/" + topic + "?" + urllib.parse.urlencode(query))[0]
+
+      ok = [read(entry) for entry in entries if entry.get("status") == "ok"]
+      not_ok = [read(entry) for entry in entries if entry.get("status") != "ok"]
+      counts = {
+          "catalogue_http": code,
+          "ok": len(ok),
+          "ok_200": sum(status == 200 for status in ok),
+          "ok_503": sum(status == 503 for status in ok),
+          "ok_unread": sum(status == 0 for status in ok),
+          "ok_other": sum(status not in (0, 200, 503) for status in ok),
+          "not_ok": len(not_ok),
+          "not_ok_503": sum(status == 503 for status in not_ok),
+      }
+      holds = (
+          code == 200
+          and counts["ok"] >= 1
+          and counts["ok_503"] == 0
+          and counts["ok_unread"] == 0
+          and counts["not_ok_503"] >= 1
+      )
+      return ("AC1-OK" if holds else "AC1-FAIL") + "".join(f" {name}={value}" for name, value in counts.items())
+
+
+  if __name__ == "__main__":
+      print(verdict("http://127.0.0.1:" + sys.argv[1], sys.argv[2]))
+  PROBE_19995
+probe_stdout: AC1-OK catalogue_http=200 ok=21 ok_200=21 ok_503=0 ok_unread=0 ok_other=0 not_ok=48 not_ok_503=48
+actual_output: 'PASS: dev-lane (omnibase-infra on h201) readback run by a lane other than the proposer;
+  AC1-OK verdict line matched by the contract grep.'
+exit_code: 0
+pr_number: 12899
+branch: lakshman/OMN-19995-ac1-lab-read-check
+duration_ms: 8440
+artifact_sha256:
+  - sha256:cd6c4fcc74705d4656bebdc67d5deb4750895f426b7c7f002c9b20666244e765
+  - sha256:e691284edbd132cb53f4a9ed0ff80281c8f2fbfa258bd3b52e74d600f4af3f99
