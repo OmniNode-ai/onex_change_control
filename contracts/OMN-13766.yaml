@@ -1,0 +1,169 @@
+---
+schema_version: '1.0.0'
+ticket_id: OMN-13766
+title: "fix(OMN-13766): resolve omniweb build ownership — build against omniweb's own Dockerfile"
+summary: >
+  omninode_infra/.github/workflows/build-and-push-omniweb.yml has never succeeded: its "Copy Dockerfile
+  to omniweb context" step runs `cp omninode_infra/docker/omniweb/Dockerfile omniweb/`, but docker/omniweb/
+  has never existed in omninode_infra on any branch. Decision: build ownership belongs to omniweb, not
+  omninode_infra — omniweb has shipped its own multi-stage Dockerfile at its repo root since PR #6 (the
+  pnpm-monorepo/Next.js 15 migration), unlike omnidash/onex-api where omninode_infra genuinely owns the
+  docker/<service>/ build context. Fix deletes the broken copy step, points the build at omniweb's own
+  Dockerfile (the build step already targeted omniweb/Dockerfile), fixes the dead docker/omniweb/** trigger
+  path, and adds a repository_dispatch(omniweb-push) receiver so the workflow has a real firing trigger
+  once the sender is wired on the omniweb side (fast-follow OMN-13804).
+is_seam_ticket: false
+interface_change: false
+interfaces_touched: []
+evidence_requirements:
+  - kind: ci
+    description: >
+      docker/omniweb/ has never existed in omninode_infra — the broken copy step referenced a path with
+      zero commit history.
+    command: >
+      git log --all --oneline -- docker/omniweb/ | wc -l
+  - kind: ci
+    description: >
+      omniweb owns its own root Dockerfile with dedicated commit history going back to the original PHP
+      containerization commit, later rewritten for the pnpm-monorepo/Next.js 15 migration (PR #6) — confirming
+      build ownership belongs there, not in omninode_infra.
+    command: >
+      git -C omniweb log --oneline -- Dockerfile | tail -1
+  - kind: ci
+    description: >
+      Fixed workflow YAML is valid and passes all pre-commit hooks (yamllint, normalization-symmetry,
+      skip-gate-bypass, secret scan).
+    command: >
+      pre-commit run --files .github/workflows/build-and-push-omniweb.yml
+  - kind: ci
+    description: >
+      Full omninode_infra test suite (no -k filter) passes after the change.
+    command: >
+      uv run --with pytest pytest tests/ -v
+emergency_bypass:
+  enabled: false
+  justification: ''
+  follow_up_ticket_id: ''
+dod_evidence:
+  - id: dod-001
+    description: >
+      git log --all --oneline -- docker/omniweb/ in omninode_infra returns zero commits — the Dockerfile
+      the broken "Copy Dockerfile to omniweb context" step referenced was never committed, confirming
+      the workflow was born broken rather than regressed.
+    source: generated
+    checks:
+      - check_type: command
+        check_value: >
+          grep -q '^status: PASS$' "$CONTRACT_REPO_DIR/drift/dod_receipts/OMN-13766/dod-001/command.yaml"
+  - id: dod-002
+    description: >
+      omniweb's own repo history shows Dockerfile added at the repo root in PR #6 (pnpm-monorepo/Next.js
+      15 migration), confirming omniweb — not omninode_infra — owns the build context. The fix reuses
+      that Dockerfile directly instead of fabricating a duplicate copy in omninode_infra.
+    source: generated
+    checks:
+      - check_type: command
+        check_value: >
+          grep -q '^status: PASS$' "$CONTRACT_REPO_DIR/drift/dod_receipts/OMN-13766/dod-002/command.yaml"
+  - id: dod-003
+    description: >
+      build-and-push-omniweb.yml passes all pre-commit hooks (yamllint, normalization-symmetry, skip-gate
+      bypass rejection, secret scan) after removing the broken copy step and fixing the trigger path.
+    source: generated
+    checks:
+      - check_type: command
+        check_value: >
+          grep -q '^status: PASS$' "$CONTRACT_REPO_DIR/drift/dod_receipts/OMN-13766/dod-003/command.yaml"
+  - id: dod-004
+    description: >
+      Full omninode_infra test suite (34 tests, no -k filter) passes after the workflow fix — no regression
+      introduced by the change.
+    source: generated
+    checks:
+      - check_type: command
+        check_value: >
+          grep -q '^status: PASS$' "$CONTRACT_REPO_DIR/drift/dod_receipts/OMN-13766/dod-004/command.yaml"
+  - id: dod-005
+    description: >
+      Feature commit SHA: e1d24c980e967ef30434d55fad5833f619e22cc1 Branch: jonah/omn-13766-omniweb-build-ownership
+      Repo: OmniNode-ai/omninode_infra PR: 536
+    source: generated
+    checks:
+      - check_type: command
+        check_value: >
+          grep -q '^status: PASS$' "$CONTRACT_REPO_DIR/drift/dod_receipts/OMN-13766/dod-005/command.yaml"
+  - id: dod-occ-self
+    description: >
+      This onex_change_control PR carries the central OMN-13766 contract and PASS receipts required by
+      the downstream omninode_infra PR #536 Receipt Gate.
+    source: generated
+    checks:
+      - check_type: command
+        check_value: >
+          grep -q '^status: PASS$' "$CONTRACT_REPO_DIR/drift/dod_receipts/OMN-13766/dod-occ-self/command.yaml"
+  - id: dod-dev-pr-597-head-aab7dd6
+    description: >
+      Foreground Codex verification of omninode_infra PR #597 at head aab7dd6e982af46bee85b3543fca06042dac9bec.
+      The PR is the policy-valid replacement for #595 on an OMN-named branch and carries the exact same
+      two-line workflow repair: both build-and-push-omnidash.yml and build-and-push-omniweb.yml resolve
+      the local digest composite action through ./omninode_infra/.github/actions/resolve-ecr-digest, matching
+      the checkout path used by those workflows.
+    source: manual
+    status: verified
+    checks:
+      - check_type: command
+        check_value: >-
+          grep -q '^status: PASS$' drift/dod_receipts/OMN-13766/dod-dev-pr-597-head-aab7dd6/command.yaml
+          && grep -q '^pr_number: 597$' drift/dod_receipts/OMN-13766/dod-dev-pr-597-head-aab7dd6/command.yaml
+          && grep -q 'aab7dd6e982af46bee85b3543fca06042dac9bec' drift/dod_receipts/OMN-13766/dod-dev-pr-597-head-aab7dd6/command.yaml
+  - id: dod-main-hotfix-pr-598-head-2b5e1ef
+    description: >
+      Foreground Codex verification of omninode_infra PR #598 at head 2b5e1ef84d1136cbd2262931487addabefbd54fe.
+      The PR is the policy-valid main hotfix replacement for #596 on an OMN-named hotfix branch and carries
+      the exact same two-line workflow repair for the main-only digest-provenance step in the omnidash
+      and omniweb ECR build workflows.
+    source: manual
+    status: verified
+    checks:
+      - check_type: command
+        check_value: >-
+          grep -q '^status: PASS$' drift/dod_receipts/OMN-13766/dod-main-hotfix-pr-598-head-2b5e1ef/command.yaml
+          && grep -q '^pr_number: 598$' drift/dod_receipts/OMN-13766/dod-main-hotfix-pr-598-head-2b5e1ef/command.yaml
+          && grep -q '2b5e1ef84d1136cbd2262931487addabefbd54fe' drift/dod_receipts/OMN-13766/dod-main-hotfix-pr-598-head-2b5e1ef/command.yaml
+  - id: dod-hotfix-backmerge-pr-597-head-aab7dd6
+    description: >
+      Backmerge reference for the OMN-13766 main hotfix. omninode_infra PR #597 targets dev from the same
+      repaired workflow content and supplies the backmerge surface required by the main hotfix guard before
+      PR #598 can land to main.
+    source: manual
+    status: verified
+    checks:
+      - check_type: command
+        check_value: >-
+          grep -q '^status: PASS$' drift/dod_receipts/OMN-13766/dod-hotfix-backmerge-pr-597-head-aab7dd6/command.yaml
+          && grep -q '^pr_number: 597$' drift/dod_receipts/OMN-13766/dod-hotfix-backmerge-pr-597-head-aab7dd6/command.yaml
+          && grep -q 'aab7dd6e982af46bee85b3543fca06042dac9bec' drift/dod_receipts/OMN-13766/dod-hotfix-backmerge-pr-597-head-aab7dd6/command.yaml
+  - id: dod-main-hotfix-deploy-assessment-head-2b5e1ef
+    description: >
+      Deploy-surface assessment for omninode_infra PR #598 head 2b5e1ef84d1136cbd2262931487addabefbd54fe:
+      the diff is limited to two GitHub Actions workflow local-action path references. The validation
+      performed here does not dispatch a build, deploy, restart services, mutate AWS, mutate .201, or
+      change branch protection/admin settings.
+    source: manual
+    status: verified
+    checks:
+      - check_type: command
+        check_value: >-
+          grep -q '^status: PASS$' drift/dod_receipts/OMN-13766/dod-main-hotfix-deploy-assessment-head-2b5e1ef/command.yaml
+          && grep -qi 'no live deploy' drift/dod_receipts/OMN-13766/dod-main-hotfix-deploy-assessment-head-2b5e1ef/command.yaml
+  - id: dod-occ-digest-action-path-self
+    description: >
+      Self-binding for onex_change_control PR #4225, which appends OMN-13766 evidence for omninode_infra
+      #597 and #598 digest-action-path repairs. This companion does not change product code, dispatch
+      a build, deploy, restart services, mutate AWS, mutate .201, or change branch protection/admin settings.
+    source: manual
+    status: verified
+    checks:
+      - check_type: command
+        check_value: >-
+          gh api repos/OmniNode-ai/onex_change_control/pulls/4225 --jq .number | grep -q '^4225$'

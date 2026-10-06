@@ -1,0 +1,110 @@
+---
+schema_version: "1.0.0"
+ticket_id: "OMN-14466"
+title: "RT-7 fail-loud release/deploy drift monitor (omnibase_infra #2272)"
+summary: >
+  Independent-verifier DoD companion for omnibase_infra#2272 (RT-7, mechanical-release-trains plan §4).
+  The PR adds a scheduled, fail-loud release/deploy drift monitor: a pure evaluator (release_drift_monitor_lib.py),
+  an I/O shell (release_drift_monitor.py) that gathers PyPI / tag / main-dev / workflow facts via gh +
+  the PyPI JSON API and writes friction records into the EXISTING .onex_state/friction registry (consumed
+  by node_friction_triage_orchestrator -> Linear -- no new store), and a 6h-cron workflow that exits non-zero
+  (RED) on drift. The monitor's exists-but-WRONG behaviour was proven by the independent verifier BEHAVIOURALLY,
+  not just structurally: running scripts/release_drift_monitor.py --json against LIVE GitHub/PyPI on 2026-07-12
+  returned exit 1 / diverged:true with 13 findings, including the three P1s the design named -- PYPI_BEHIND_TAG
+  (omnibase-infra PyPI 0.36.1 < tag v0.38.3), RELEASE_WORKFLOW_FAILED (release.yml last run concluded
+  'failure' 2026-05-27), and MAIN_STALE_UV_OVERRIDE (onex_change_control main pins omnibase-core git rev=f325e759
+  that dev removed per OMN-13878). All three were independently confirmed against the live PyPI/gh surfaces
+  (not the PR's fixtures). A blind run (invalid token -> sibling probes fail, PyPI still readable, zero
+  findings) returned diverged:false/blind:true and exit 2 -- never a false green. The check_values below
+  are workspace-INDEPENDENT gh-api content reads at #2272's head, so they observe the product regardless
+  of the DoD runner's cwd (reference_dod_runner_workspace_mispointed); each is proven RED at the branch-point
+  parent e811995d where the monitor files do not yet exist, and each requires positive structure so a
+  GREEN is "checked and matched", not a vacuous green on absence.
+is_seam_ticket: false
+interface_change: false
+interfaces_touched: []
+evidence_requirements:
+  - kind: "manual"
+    description: "omnibase_infra#2272 head cfe726f8 carries a fail-loud scheduled drift monitor: pure
+      evaluator, friction-reuse shell, exit-code-propagating workflow"
+    command: "see dod_evidence check_values"
+emergency_bypass:
+  enabled: false
+  justification: ""
+  follow_up_ticket_id: ""
+dod_evidence:
+  - id: "dod-monitor-workflow-fail-loud"
+    description: >-
+      Asserts the release-drift-monitor.yml workflow at #2272's head (cfe726f8) is a SCHEDULED monitor
+      that PROPAGATES the monitor's real exit code -- so a drift run goes RED rather than silently green.
+      It requires four positive structures to co-exist: a cron: schedule, an actual invocation of release_drift_monitor.py,
+      a PIPESTATUS capture of the monitor's exit through the tee pipe, and a terminal `exit "$code"` that
+      re-raises that captured code. The failure this guards is the whole disease RT-7 exists to end --
+      a producer that "ran successfully" while producing nothing; a workflow that swallowed the exit (always
+      exit 0) would be green-and-unread like the six-week-stuck PyPI. RED PROVEN at the branch-point parent
+      e811995d, where the workflow file does not exist -> all four counts are 0 -> exit 1. GREEN is non-vacuous:
+      it demands the scheduled trigger AND the real invocation AND the exit propagation, none of which
+      an absent or exit-swallowing workflow satisfies.
+    source: "manual"
+    status: "verified"
+    checks:
+      - check_type: "command"
+        check_value: >-
+          C=$(gh api "repos/OmniNode-ai/omnibase_infra/contents/.github/workflows/release-drift-monitor.yml?ref=cfe726f88e91c350164e71a3af13823187f38ea9"
+          --jq .content 2>/dev/null | base64 -d 2>/dev/null); test "$(printf '%s' "$C" | grep -c 'cron:')"
+          -ge 1 && test "$(printf '%s' "$C" | grep -Fc 'release_drift_monitor.py')" -ge 1 && test "$(printf
+          '%s' "$C" | grep -Fc 'PIPESTATUS')" -ge 1 && test "$(printf '%s' "$C" | grep -Fc 'exit "$code"')"
+          -ge 1
+  - id: "dod-monitor-lib-pure-and-fail-loud"
+    description: >-
+      Asserts release_drift_monitor_lib.py at #2272's head is the REAL pure evaluator AND fail-loud: it
+      defines both evaluate_repo and exit_code_for (DEF >= 2), imports NO I/O module (subprocess/urllib/os/requests/httpx
+      == 0 -- the I/O lives only in the shell, which is what makes the decision unit-testable against
+      exists-but-WRONG facts), and carries the blind -> `return 2` mapping so a monitor that could not
+      see is never mistaken for clean. The naive form of a purity check ("no subprocess import") is a
+      VACUOUS GREEN -- it passes against an empty or absent file. This form requires the two evaluator
+      defs to EXIST (DEF >= 2) and the blind exit code to be present, so a green means the pure fail-loud
+      evaluator is really there. RED PROVEN at parent e811995d where the lib does not exist -> DEF ==
+      0 -> exit 1.
+    source: "manual"
+    status: "verified"
+    checks:
+      - check_type: "command"
+        check_value: >-
+          L=$(gh api "repos/OmniNode-ai/omnibase_infra/contents/scripts/release_drift_monitor_lib.py?ref=cfe726f88e91c350164e71a3af13823187f38ea9"
+          --jq .content 2>/dev/null | base64 -d 2>/dev/null); DEF=$(printf '%s' "$L" | grep -cE '^def
+          (evaluate_repo|exit_code_for)\('); IO=$(printf '%s' "$L" | grep -cE '^(import|from) (subprocess|urllib|os|requests|httpx)([
+          .]|$)'); B=$(printf '%s' "$L" | grep -c 'return 2'); test "$DEF" -ge 2 && test "$IO" -eq 0 &&
+          test "$B" -ge 1
+  - id: "dod-monitor-reuses-friction-no-new-store"
+    description: >-
+      Asserts the I/O shell (release_drift_monitor.py) at #2272's head REUSES the existing friction registry
+      rather than building a new store: it writes into .onex_state/friction and routes through node_friction_triage
+      (the platform's existing scheduled-drift -> Linear precedent, mirroring node_env_sync_alert_effect).
+      This is the design-deviation the independent verifier scrutinised: the monitor deliberately did
+      NOT feed pr_state (OMN-14375/14374), because release drift is not PR-scoped -- pr_state's schema
+      is wrong for it -- and the friction path is a real, wired, durable substrate (node_friction_triage_orchestrator
+      exists in omnimarket with a contract, handler, and Linear routing), not a stub. That is an honest,
+      defensible "no new store" call. RED PROVEN at parent e811995d where the shell does not exist ->
+      both counts 0 -> exit 1; GREEN requires BOTH the friction path and the triage routing to be present.
+    source: "manual"
+    status: "verified"
+    checks:
+      - check_type: "command"
+        check_value: >-
+          S=$(gh api "repos/OmniNode-ai/omnibase_infra/contents/scripts/release_drift_monitor.py?ref=cfe726f88e91c350164e71a3af13823187f38ea9"
+          --jq .content 2>/dev/null | base64 -d 2>/dev/null); test "$(printf '%s' "$S" | grep -c 'onex_state/friction')"
+          -ge 1 && test "$(printf '%s' "$S" | grep -c 'node_friction_triage')" -ge 1
+  - id: "dod-occ-self-14466"
+    description: >-
+      Self-bind item for THIS OCC PR. occ-preflight requires a PASS receipt bound to the PR under check.
+      Intentionally self-referential and legitimately so -- it asserts a fact ABOUT this OCC companion
+      PR (its branch). It is a binding item, NOT substantive evidence: the three entries above carry that,
+      and each is a workspace-independent gh-api content read at #2272's head, proven RED at the branch-point
+      parent where the monitor files do not exist.
+    source: "manual"
+    status: "verified"
+    checks:
+      - check_type: "command"
+        check_value: >-
+          grep -q 'jonah/omn-14466-rt7-occ-companion' drift/dod_receipts/OMN-14466/dod-occ-self-14466/command.yaml

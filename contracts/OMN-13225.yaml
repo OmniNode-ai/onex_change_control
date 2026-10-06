@@ -1,0 +1,83 @@
+---
+schema_version: '1.0.0'
+ticket_id: OMN-13225
+title: "feat(OMN-13225): reap disposable ghcr CI pr-* images by PR state in disk-gc (.201 disk-GC T1)"
+summary: >
+  Add a PR-state fast-path to disk_gc_plan.build_plan so ghcr tags matching pr-<N> are classified REMOVABLE
+  (bypassing age/generation window) when their associated PR is merged or closed. protect_running and
+  keep_image_tags always win. sha-* tags fall through to the existing age/generation path. Lookup is injectable;
+  unit tests mock it — no network in CI.
+is_seam_ticket: false
+interface_change: false
+interfaces_touched: []
+evidence_requirements:
+  - kind: tests
+    description: >
+      13 unit tests in tests/unit/scripts/test_disk_gc_pr_state.py — all pass locally (653 unit tests
+      in tests/unit/scripts/ pass).
+    command: >
+      uv run pytest tests/unit/scripts/test_disk_gc_pr_state.py tests/unit/scripts/test_disk_gc_plan.py
+      -q
+  - kind: ci
+    description: PR  #2025 in OmniNode-ai/omnibase_infra targeting dev
+    command: >
+      env -u GITHUB_TOKEN gh pr checks 2025 --repo OmniNode-ai/omnibase_infra
+emergency_bypass:
+  enabled: false
+  justification: ''
+  follow_up_ticket_id: ''
+dod_evidence:
+  - id: dod-001
+    description: >
+      Merged-PR pr-* tag is REMOVABLE: test_merged_pr_tag_is_removable asserts "sha-pr42" in plan["remove_image_ids"]
+      when pr_state_lookup returns PR_STATE_MERGED.
+    source: manual
+    status: verified
+    checks:
+      - check_type: command
+        check_value: >
+          grep -q '^status: PASS$' drift/dod_receipts/OMN-13225/dod-001/command.yaml && grep -q '^evidence_item_id:
+          "dod-001"$' drift/dod_receipts/OMN-13225/dod-001/command.yaml && grep -q 'test_merged_pr_tag_is_removable'
+          drift/dod_receipts/OMN-13225/dod-001/command.yaml
+  - id: dod-002
+    description: >
+      Running-lane image is KEPT even when PR is merged: test_running_lane_image_kept_even_when_pr_merged
+      asserts protect_running wins over PR-state reaping.
+    source: manual
+    status: verified
+    checks:
+      - check_type: command
+        check_value: >
+          grep -q '^status: PASS$' drift/dod_receipts/OMN-13225/dod-002/command.yaml && grep -q '^evidence_item_id:
+          "dod-002"$' drift/dod_receipts/OMN-13225/dod-002/command.yaml && grep -q 'test_running_lane_image_kept_even_when_pr_merged'
+          drift/dod_receipts/OMN-13225/dod-002/command.yaml
+  - id: dod-003
+    description: >
+      Dry-run plan correctness: test_dry_run_mixed_inventory_classifies_correctly feeds merged CI tag
+      + running lane + keep tag and asserts correct classification.
+    source: manual
+    status: verified
+    checks:
+      - check_type: command
+        check_value: >
+          grep -q '^status: PASS$' drift/dod_receipts/OMN-13225/dod-003/command.yaml && grep -q '^evidence_item_id:
+          "dod-003"$' drift/dod_receipts/OMN-13225/dod-003/command.yaml && grep -q 'test_dry_run_mixed_inventory_classifies_correctly'
+          drift/dod_receipts/OMN-13225/dod-003/command.yaml
+  - id: dod-004
+    description: Feature PR  #2025 open targeting dev in OmniNode-ai/omnibase_infra
+    source: manual
+    checks:
+      - check_type: command
+        check_value: >
+          test "$(env -u GITHUB_TOKEN gh pr view 2025 --repo OmniNode-ai/omnibase_infra --json state --jq
+          '.state')" = "MERGED"
+  - id: dod-occ-pr
+    description: >
+      This OCC PR carries the central OMN-13225 contract and receipts for omnibase_infra PR #2025.
+    source: manual
+    status: verified
+    checks:
+      - check_type: command
+        check_value: >
+          grep -q '^status: PASS$' drift/dod_receipts/OMN-13225/dod-occ-pr/command.yaml && grep -q '^pr_number:
+          2744$' drift/dod_receipts/OMN-13225/dod-occ-pr/command.yaml

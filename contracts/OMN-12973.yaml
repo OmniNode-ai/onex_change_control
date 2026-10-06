@@ -1,0 +1,74 @@
+---
+schema_version: "1.0.0"
+ticket_id: "OMN-12973"
+title: "P2.8: Prod migration-gate UNHEALTHY — classify idle-one-shot vs real; fix compose health semantics
+  + start-period floor ratchet"
+summary: >-
+  Classifies the prod migration-gate UNHEALTHY-then-self-resolved incident (2026-06-11) as idle-one-shot-mis-modeled
+  = NO: the gate is a correctly-modeled long-running sentinel (entrypoint `while true; sleep 3600`) whose
+  healthcheck continuously polls db_metadata.migrations_complete via check_migrations_complete.sh. It
+  flipped UNHEALTHY transiently because its healthcheck start_period (10s) was far shorter than the real
+  cold-volume migration window (~116s: prod gate started 09:35:22, intelligence-migration finished 09:37:18).
+  Past the 10s Docker grace window the still-failing probe was reported UNHEALTHY until migrations completed,
+  then self-resolved — no fault. Read-only .201 prod evidence (omnibase-infra-prod-migration-gate): Config.Healthcheck.StartPeriod=10000000000ns,
+  Config.Entrypoint=["sh","-c","while true; do sleep 3600; done"], now Up 7 hours (healthy) with FailingStreak:0.
+  Fix: raise migration-gate healthcheck start_period 10s -> 180s in both the authoritative catalog manifest
+  (docker/catalog/services/migration-gate.yaml, flows into the generated compose) and the hand-maintained
+  docker/docker-compose.infra.yml that scripts/deploy-runtime.sh applies to .201, so a still-applying
+  gate stays in `health: starting`. Ratchet (enforcement, not detection): new validator_healthcheck_start_period.py
+  asserts a 120s floor for migration-completion gates, wired into onex validate runtime (cmd_validate_runtime)
+  and backed by 8 unit tests that gate every PR via pre-commit + CI (including a regression-lock asserting
+  the shipped manifest meets the floor). A migration-completion gate is identified by BOTH a healthcheck
+  whose command polls migration completion AND a service_completed_successfully dependency, so ordinary
+  app services (e.g. intelligence-api, an HTTP liveness probe with a legitimately short 40s start_period)
+  are not swept into the floor. Prod probed read-only only; no prod mutation. Live prod application is
+  deploy_pending via the batched stability/prod rebuild.
+is_seam_ticket: false
+interface_change: false
+interfaces_touched: []
+emergency_bypass:
+  enabled: false
+  justification: ""
+  follow_up_ticket_id: ""
+dod_evidence:
+  - id: "dod-infra-pr-1950"
+    description: >-
+      omnibase_infra PR #1950 raises migration-gate healthcheck start_period 10s -> 180s in docker/catalog/services/migration-gate.yaml
+      and docker/docker-compose.infra.yml, adds src/omnibase_infra/docker/catalog/validator_healthcheck_start_period.py
+      (120s floor for migration-completion gates, wired into cmd_validate_runtime), and tests/unit/infra/test_catalog_healthcheck_start_period.py
+      (8 unit tests, pre-commit + CI gated, including the shipped-manifest regression lock and the intelligence-api
+      non-classification guard). Evidence anchor: omnibase_infra head commit c4ea3f9b77393b04408096ebc524a0e43c249386.
+    source: "manual"
+    status: "verified"
+    checks:
+      - check_type: "command"
+        check_value: >-
+          grep -q '^status: PASS$' "$CONTRACT_REPO_DIR/drift/dod_receipts/OMN-12973/dod-infra-pr-1950/command.yaml"
+          && grep -q '^ticket_id: "OMN-12973"$' "$CONTRACT_REPO_DIR/drift/dod_receipts/OMN-12973/dod-infra-pr-1950/command.yaml"
+          && grep -q '^pr_number: 1950$' "$CONTRACT_REPO_DIR/drift/dod_receipts/OMN-12973/dod-infra-pr-1950/command.yaml"
+  - id: "dod-deploy-assessment"
+    description: >-
+      Deploy assessment for omnibase_infra PR #1950: the start_period change reaches live prod only through
+      the normal post-merge batched stability/prod rebuild (deploy-runtime.sh). No live deploy, restart,
+      topic mutation, or .201 mutation is performed by this PR. Prod was probed read-only only.
+    source: "manual"
+    status: "verified"
+    checks:
+      - check_type: "command"
+        check_value: >-
+          grep -q '^status: PASS$' "$CONTRACT_REPO_DIR/drift/dod_receipts/OMN-12973/dod-deploy-assessment/command.yaml"
+          && grep -q '^ticket_id: "OMN-12973"$' "$CONTRACT_REPO_DIR/drift/dod_receipts/OMN-12973/dod-deploy-assessment/command.yaml"
+          && grep -q 'No live deploy' "$CONTRACT_REPO_DIR/drift/dod_receipts/OMN-12973/dod-deploy-assessment/command.yaml"
+  - id: "dod-occ-pr"
+    description: >-
+      Self-binding OCC eligibility receipt for PR #2504, which carries the central OMN-12973 contract
+      and the dod-infra-pr-1950 / dod-deploy-assessment receipts that the code PR's Receipt-Gate resolves
+      via Evidence-Source: OCC#2504. pr_number: 2504 binds the PASS receipt to this OCC PR.
+    source: "manual"
+    status: "verified"
+    checks:
+      - check_type: "command"
+        check_value: >-
+          grep -q '^status: PASS$' "$CONTRACT_REPO_DIR/drift/dod_receipts/OMN-12973/dod-occ-pr/command.yaml"
+          && grep -q '^ticket_id: "OMN-12973"$' "$CONTRACT_REPO_DIR/drift/dod_receipts/OMN-12973/dod-occ-pr/command.yaml"
+          && grep -q '^pr_number: 2504$' "$CONTRACT_REPO_DIR/drift/dod_receipts/OMN-12973/dod-occ-pr/command.yaml"

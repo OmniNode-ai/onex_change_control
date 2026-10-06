@@ -1,0 +1,77 @@
+---
+schema_version: "1.0.0"
+ticket_id: "OMN-14110"
+title: "feat(OMN-14110): per-tenant MSK IAM-ACL adapter + ARN-wildcard charset fix"
+summary: >-
+  omninode_infra PR #581 (Gateway P0B Option B) adds the MSK IAM-ACL adapter for the per-tenant broker-ACL
+  provisioning seam behind a new provider-neutral ProtocolBrokerACLProvisioner, and closes an ARN-scope
+  smuggling security bug on the same seam. Before the fix an emptiness-only tenant_slug check let a slug
+  of '*' (or '?', '/') flow into an IAM Resource ARN 'topic/<cluster>/<uuid>/tenant-*.*', which glob-matches
+  EVERY tenant's topics -- a full cross-tenant authorization bypass (safe for Redpanda's LITERAL Kafka-ACL
+  prefix matching, NOT safe for MSK's glob-wildcard IAM matching; the seam-parity trap). The fix adds
+  a shared fail-closed charset validator tenant_identity.validate_tenant_slug (pattern ^[a-z][a-z0-9-]{1,61}[a-z0-9]$;
+  rejects *, ?, /, whitespace, empty, consecutive hyphens, uppercase, and non-ASCII look-alikes) enforced
+  on BOTH ProtocolBrokerACLProvisioner impls -- Redpanda (kafka_acl_manager.ensure_tenant_kafka_acls)
+  and MSK (msk_acl_manager.build_tenant_resource_arns + MSKACLProvisioner.ensure_tenant_acls) -- as the
+  first executable statement, before any broker/AWS call and before the slug is embedded in any resource
+  identifier. All changes live under docker/onex-api/ and touch no runtime node, contract, or deploy surface.
+is_seam_ticket: true
+interface_change: true
+interfaces_touched:
+  - "protocols"
+  - "public_api"
+emergency_bypass:
+  enabled: false
+  justification: ""
+  follow_up_ticket_id: ""
+dod_evidence:
+  - id: "dod-omninode_infra-pr-581"
+    description: >-
+      Independent adversarial verification (a separate verifier, NOT the implementing agent) of omninode_infra
+      PR #581 head 1d2f6d476a35e9157d40698ed1dc4e65aa8cb6c9 in an isolated worktree with PYTHONPATH cleared.
+      (1) The validator is REAL and CALLED, not merely defined: grep confirms tenant_identity.validate_tenant_slug
+      is invoked as the FIRST executable statement of BOTH provisioner entry points -- Redpanda ensure_tenant_kafka_acls
+      (line 309, before the reserved-word check, before binding construction, and before the httpx.Client()
+      broker call) and MSK MSKACLProvisioner.ensure_tenant_acls (line 243, before self._client()/create_role)
+      -- and again inside build_tenant_resource_arns (line 112, before any ARN string is formatted). The
+      only app-wide non-test caller into the ACL path (main.py:1267 -> ensure_tenant_kafka_acls) routes
+      through the validated function; MSK is reachable only via get_acl_provisioner(), also guarded. No
+      unguarded caller of build_tenant_resource_arns / _role_name exists. (2) The conformance suite test_acl_provisioner_conformance.py
+      drives BOTH providers through a shared parametrized harness and asserts each rejects '*', '?', '/',
+      'tenant-*', 'a/../b', whitespace-only, internal-space, and internal-tab slugs -- proven via each
+      harness's own internal state staying EMPTY (provisioned_state_is_empty(): zero broker/AWS calls:
+      no Redpanda POST, no IAM create_role/put_role_policy), not merely that a ValueError was raised.
+      27 conformance tests pass (16 = 8 malicious slugs x 2 providers). (3) Independent adversarial edge-case
+      probe of validate_tenant_slug + build_tenant_resource_arns rejected 20 malicious inputs the parametrized
+      suite does not all enumerate -- Cyrillic 'a' (U+0430) and fullwidth 'a' (U+FF41) look-alikes (ASCII
+      [a-z] range), embedded null byte, internal newline, leading digit, leading/trailing hyphen, consecutive
+      hyphens, uppercase, 2-char (too short), 64-char (too long) -- while accepting valid slugs stripped,
+      and build_tenant_resource_arns('*') raised ValueError (fail-closed, no ARN minted). A valid slug
+      produced a correctly tenant-scoped ARN '.../tenant-acme.*' with no 'tenant-*' smuggling. (4) Full
+      ACL/MSK/identity regression suites green: 268 passed (test_acl_provisioner_conformance + test_msk_acl_manager
+      + test_kafka_acl_manager + test_validation_utils), 0 failed. (5) Live CI on #581: every real gate
+      GREEN (Python Tests, pytest, pre-commit, Bandit, Trivy, Scan-for-secrets, Contract Compliance, deploy-gate);
+      the only reds are the OCC evidence gate itself (verify / verify and occ-preflight/eligibility),
+      which this companion satisfies. No runtime node, contract, or deploy scope. Out-of-scope observation
+      (NOT a regression, pre-existing and identical in the already-merged Redpanda provider): the consumer-GROUP
+      ARN template uses a '-' delimiter ('tenant-{slug}-*'), so tenant 'acme' glob-matches tenant 'acme-foo'
+      groups; the topic namespace uses '.' (collision-safe since '.' is charset-rejected). Worth a follow-up
+      ticket; does not affect the wildcard-injection fix this ticket delivers.
+    source: "manual"
+    status: "verified"
+    checks:
+      - check_type: "command"
+        check_value: >-
+          grep -q '^status: PASS$' drift/dod_receipts/OMN-14110/dod-omninode_infra-pr-581/command.yaml
+          && grep -q '^pr_number: 581$' drift/dod_receipts/OMN-14110/dod-omninode_infra-pr-581/command.yaml
+  - id: "dod-occ-self"
+    description: >-
+      OCC companion self-binding: this onex_change_control PR carries the OMN-14110 contract and PASS
+      receipt for omninode_infra PR #581, binding itself to occ-preflight by commit_sha (contract commit
+      C1, a member of this PR's commit set), with no runtime or deploy scope.
+    source: "manual"
+    status: "verified"
+    checks:
+      - check_type: "command"
+        check_value: >-
+          grep -q '^status: PASS$' drift/dod_receipts/OMN-14110/dod-occ-self/command.yaml

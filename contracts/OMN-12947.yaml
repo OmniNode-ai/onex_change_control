@@ -1,0 +1,61 @@
+---
+schema_version: "1.0.0"
+ticket_id: "OMN-12947"
+title: "Ungate scorer RUNTIME mode in node_context_roi_compute"
+summary: >
+  Central OCC evidence for omnimarket PR #1159. node_context_roi_compute (the N-arm context-ROI scorer,
+  COMPUTE node) previously failed closed when fixture_mode=False (failure_class=runtime_mode_not_implemented),
+  gating runtime-observed scoring on the coordinated lane deploy. This change ungates runtime mode: with
+  fixture_mode=False the handler now consumes the same ModelArmRunRow rows the runner (OMN-12798) emits
+  and scores them through the identical deterministic aggregation path, classifying the bundle as RUNTIME_OBSERVED_ONLY
+  (REPLAY_PROVEN remains unchanged for fixture_mode=True). No schema change, no new model, no artifact-path
+  hardcoding; only the proof_class label on the result differs between modes. TDD: TestHandlerRuntimeMode
+  (8 tests, including a fixture-vs-runtime parity test) replaces the obsolete TestHandlerRuntimeModeGate.
+is_seam_ticket: false
+interface_change: false
+interfaces_touched: []
+evidence_requirements:
+  - kind: "tests"
+    description: >
+      TestHandlerRuntimeMode drives fixture_mode=False through the scorer: status ok, proof_class RUNTIME_OBSERVED_ONLY,
+      a parity test asserting identical arm_rows/arm_summary/preferred_arm vs fixture mode (only proof_class
+      differs), and invariant coverage (missing-required fails the row, absent-optional warns, negative-control
+      never preferred) in runtime mode. Full node suite is 80 passed.
+    command: "uv run pytest tests/nodes/node_context_roi_compute/ -q"
+emergency_bypass:
+  enabled: false
+  justification: ""
+  follow_up_ticket_id: ""
+dod_evidence:
+  - id: "dod-runtime-mode-ungated"
+    description: "omnimarket PR #1159 ungates fixture_mode=False: live ModelArmRunRow rows score through
+      the identical aggregation path to a RUNTIME_OBSERVED_ONLY bundle (REPLAY_PROVEN unchanged for fixture_mode=True),
+      proven by TestHandlerRuntimeMode including a fixture-vs-runtime parity test."
+    source: "manual"
+    status: "verified"
+    checks:
+      - check_type: "command"
+        check_value: "grep -q '^status: PASS$' drift/dod_receipts/OMN-12947/dod-runtime-mode-ungated/command.yaml
+          && grep -q 'TestHandlerRuntimeMode' drift/dod_receipts/OMN-12947/dod-runtime-mode-ungated/command.yaml
+          && grep -q 'RUNTIME_OBSERVED_ONLY' drift/dod_receipts/OMN-12947/dod-runtime-mode-ungated/command.yaml"
+  - id: "dod-deploy-runtime-observed-scoring"
+    description: >
+      Runtime-path change in node_context_roi_compute/handlers/handler_context_roi.py is additive and
+      deploy-safe (handler-only diff, no schema/topic/contract/model move); it rides the next coordinated
+      lane rebuild. The runtime-observation deploy method is rpk topic produce of the context-roi-score-requested
+      command on the rebuilt lane broker, driving the runner (OMN-12798) to emit real rows scored fixture_mode=False.
+    source: "manual"
+    status: "verified"
+    checks:
+      - check_type: "command"
+        check_value: "grep -q '^status: PASS$' drift/dod_receipts/OMN-12947/dod-deploy-runtime-observed-scoring/command.yaml
+          && grep -qi 'deploy' drift/dod_receipts/OMN-12947/dod-deploy-runtime-observed-scoring/command.yaml
+          && grep -q 'rpk topic produce' drift/dod_receipts/OMN-12947/dod-deploy-runtime-observed-scoring/command.yaml"
+  - id: "dod-occ-pr"
+    description: "onex_change_control PR carries the central OCC evidence (contract + PASS receipts) for
+      OMN-12947."
+    source: "manual"
+    status: "verified"
+    checks:
+      - check_type: "command"
+        check_value: "grep -q '^status: PASS$' drift/dod_receipts/OMN-12947/dod-occ-pr/command.yaml"

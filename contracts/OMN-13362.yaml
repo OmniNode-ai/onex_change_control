@@ -1,0 +1,43 @@
+---
+schema_version: "1.0.0"
+ticket_id: "OMN-13362"
+title: "Resolve dual delegation_events tables — drop the stale omnibase_infra decoy"
+summary: >-
+  delegation_events existed in TWO databases on .201: omnidash_analytics (live, canonical writer — node_projection_delegation)
+  and omnibase_infra (stale decoy, last write 2026-05-13, read by nothing). Querying the decoy produced
+  the 2026-06-19 Gate-Zero misdiagnosis. Forward migration 087 drops the decoy from the omnibase_infra
+  DB so omnidash_analytics is the single canonical delegation_events. The migration runs in the flat infra
+  sequence against POSTGRES_DB=omnibase_infra, so it can only hit the decoy, never the live copy in the
+  separate omnidash_analytics DB. Also re-vendors the omnimarket node-migration tree to clear pre-existing
+  capsule_store vendoring drift so the node-migration-sync gate is green. Proven by the omnibase_infra
+  migration-discovery suite (16 passing) plus the migration-sequence and node-migration-sync validators.
+is_seam_ticket: false
+interface_change: false
+interfaces_touched: []
+emergency_bypass:
+  enabled: false
+  justification: ""
+  follow_up_ticket_id: ""
+dod_evidence:
+  - id: "dod-infra-pr-2053"
+    description: >-
+      omnibase_infra PR #2053 (honest recreate of rename-closed #2051) migration-discovery + sentinel
+      unit tests green with the new flat migration 087 (DROP TABLE IF EXISTS on the stale decoy) and the
+      re-vendored node-migration tree.
+    source: "manual"
+    status: "verified"
+    checks:
+      - check_type: "command"
+        check_value: "uv run pytest tests/unit/migrations/test_node_migration_discovery.py -q"
+  - id: "dod-deploy"
+    description: >-
+      Deploy-gate evidence: 087 is an idempotent DROP TABLE IF EXISTS on the stale decoy in the omnibase_infra
+      DB; applied by the canonical forward-migration runner on the next redeploy. REQUIRED_PROJECTION_TABLES
+      checks target omnidash_analytics (the live table), so the drop does not break the migration gate.
+      The probe greps the forward migration file and proves the drop is guarded by IF EXISTS (idempotent,
+      re-runnable).
+    source: "manual"
+    status: "verified"
+    checks:
+      - check_type: "command"
+        check_value: "grep -ic 'DROP TABLE IF EXISTS' docker/migrations/forward/087_drop_stale_delegation_events_decoy.sql"

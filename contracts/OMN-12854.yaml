@@ -1,0 +1,63 @@
+---
+schema_version: "1.0.0"
+ticket_id: "OMN-12854"
+title: >-
+  HandlerGeneratedExecutor sandbox resolves from ONEX_STATE_ROOT (fail-fast, no relative default) — materialize
+  the generated node
+summary: >-
+  Close-loop blocker #7: the generated node was never written to disk because HandlerGeneratedExecutor._DEFAULT_SANDBOX
+  was a hardcoded relative '.onex_state/hackathon/generated' resolving against the runtime non-writable
+  CWD (Errno 13 Permission denied), so sandbox-invoke fired but had no artifact to import. Fix (CLAUDE.md
+  Rule 6/8 — no hardcoded paths, no silent defaults): resolve the sandbox dir from the runtime writable
+  state root (ONEX_STATE_DIR preferred, then ONEX_STATE_ROOT) and FAIL FAST when unset; remove the relative
+  default and its silent fallback. The stability-test compose already sets ONEX_STATE_ROOT/ONEX_STATE_DIR
+  to a rw volume for runtime + runtime-effects, so no compose change is needed.
+is_seam_ticket: false
+interface_change: false
+interfaces_touched: []
+evidence_requirements:
+  - kind: "tests"
+    description: >-
+      The executor resolves the sandbox from ONEX_STATE_DIR / ONEX_STATE_ROOT and raises a fail-fast RuntimeError
+      when neither is set (no relative default).
+    command: "uv run pytest tests/unit/nodes/node_generation_consumer/test_handler_generated_executor.py
+      -q"
+  - kind: "ci"
+    description: "CI pipeline green on omnimarket PR"
+    command: "gh pr checks <PR> --repo OmniNode-ai/omnimarket"
+emergency_bypass:
+  enabled: false
+  justification: ""
+  follow_up_ticket_id: ""
+dod_evidence:
+  - id: "dod-sandbox-failfast-tests"
+    description: >-
+      The executor sandbox dir resolves under ONEX_STATE_DIR (preferred) / ONEX_STATE_ROOT (fallback)
+      and raises RuntimeError when both are unset — no hardcoded relative default.
+    source: "manual"
+    status: "verified"
+    checks:
+      - check_type: "command"
+        check_value: >-
+          grep -q '^status: PASS$' "$CONTRACT_REPO_DIR/drift/dod_receipts/OMN-12854/dod-sandbox-failfast-tests/command.yaml"
+  - id: "dod-deploy-assessment"
+    description: >-
+      The fix touches a runtime path (handler_generated_executor.py); a stability-test rebuild + redeploy
+      + close-loop re-run is required after merge to prove generated-node-invoked reaches status=completed
+      with the materialized node. Records that assessment without claiming a live deploy in the OCC PR.
+    source: "manual"
+    status: "verified"
+    checks:
+      - check_type: "command"
+        check_value: >-
+          grep -q '^status: PASS$' "$CONTRACT_REPO_DIR/drift/dod_receipts/OMN-12854/dod-deploy-assessment/command.yaml"
+  - id: "dod-occ-pr"
+    description: >-
+      OCC PR binds the OMN-12854 contract and receipts to a mergeable onex_change_control evidence PR
+      paired with omnimarket PR #1133.
+    source: "manual"
+    status: "verified"
+    checks:
+      - check_type: "command"
+        check_value: >-
+          grep -q '^status: PASS$' "$CONTRACT_REPO_DIR/drift/dod_receipts/OMN-12854/dod-occ-pr/command.yaml"

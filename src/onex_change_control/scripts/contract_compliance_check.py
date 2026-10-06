@@ -1,0 +1,1984 @@
+#!/usr/bin/env python3
+# SPDX-FileCopyrightText: 2025 OmniNode.ai Inc.
+# SPDX-License-Identifier: MIT
+"""Contract compliance engine -- mandatory CI gate for ModelTicketContract DoD.
+
+OMN-14458: this is the CANONICAL, importable home of the check-execution
+engine. It used to live only at ``scripts/ci/run_contract_compliance_check.py``
+(a repo-root script, excluded from the built wheel), which meant no downstream
+consumer could import it -- every local preflight tool maintained its own
+forked copy of the check runners, and those copies silently diverged from
+this one (missing the OMN-14436 workspace binding, missing inert-check
+detection). ``scripts/ci/run_contract_compliance_check.py`` is now a thin
+wrapper that re-exports everything from this module so CI's existing
+invocation keeps working unchanged; omniclaude's ``dod_evidence_runner.py``
+imports the check runners and inert-check/demotion logic directly from here.
+
+Usage (CI):
+    python scripts/ci/run_contract_compliance_check.py \\
+        --pr 123 \\
+        --repo OmniNode-ai/omnimarket \\
+        --contracts-dir <path-to-onex_change_control/contracts>
+
+Usage (local):
+    python scripts/ci/run_contract_compliance_check.py \\
+        --pr 123 \\
+        --repo OmniNode-ai/omnimarket
+
+Exit codes:
+    0  All checks pass (or no contract found -- WARN only)
+    1  One or more BLOCK-level checks failed
+
+Emergency bypass:
+    Set EMERGENCY_BYPASS=<user>-<reason> env var.
+    Bypasses all checks. Bypass is logged and audited.
+
+Scope:
+    Reads ModelTicketContract YAML from contracts/<OMN-num>.yaml.
+    Runs each ModelDodCheck in each ModelDodEvidenceItem.
+    No Linear API calls; no Claude Code harness; stdlib + gh CLI only.
+"""
+
+from __future__ import annotations
+
+import argparse
+import hashlib
+import json
+import os
+import re
+import shlex
+import subprocess
+import sys
+from dataclasses import dataclass
+from dataclasses import field as dc_field
+from pathlib import Path
+from typing import Any
+
+from omnibase_core.validators.no_unguarded_git_subprocess import (
+    scrub_git_location_env,
+)
+from pydantic import ValidationError
+
+from onex_change_control.models.model_dod_check import ModelDodEvidenceItem
+from onex_change_control.validation.evidence_admissibility import (
+    EXECUTED_HERMETIC_COMMANDS,
+    LIVE_PROBE_COMMANDS,
+    AdmissibilityVerdict,
+    admissible_evidence_guidance,
+    classify_evidence_item,
+)
+
+_REPO_PATTERN = re.compile(r"^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$")
+
+# ---------------------------------------------------------------------------
+# Constants
+# ---------------------------------------------------------------------------
+
+_OMN_TICKET_PATTERN = re.compile(r"\b(OMN-\d+)\b", re.IGNORECASE)
+_RESULT_PASS = "PASS"  # noqa: S105
+_RESULT_WARN = "WARN"
+_RESULT_BLOCK = "BLOCK"
+_RESULT_NOT_EVALUATED = "NOT_EVALUATED"
+_EXECUTION_SCOPE_HOSTED_AND_LOCAL = "hosted_and_local"
+_EXECUTION_SCOPE_LOCAL_DONE_GATE = "local_done_gate"
+_EXECUTION_SCOPES = frozenset(
+    {_EXECUTION_SCOPE_HOSTED_AND_LOCAL, _EXECUTION_SCOPE_LOCAL_DONE_GATE}
+)
+_ALLOWLIST_FIELDS = 2  # each entry is 'OMN-1234 <sha256>'
+
+# OMN-15309 -- admissibility is decided by ONE predicate, shared with deploy-gate.
+#
+# Operator ruling 2026-07-29: the OMN-14505 deploy-gate falsifiability predicate
+# (EXECUTED, FALSIFIABLE, OUTSIDE ITS OWN DIFF) is THE admissibility rule for
+# evidence everywhere. It lives in
+# ``onex_change_control.validation.evidence_admissibility`` and is adopted from
+# ``omniclaude/.github/actions/deploy-gate/validate_pr_deploy_required.py``
+# (``classify_check_value``), which remains the cited source; the two are held
+# in parity by execution against a shared corpus (tests/data/
+# evidence_admissibility_cases.yaml, run against BOTH implementations by the
+# ``predicate-parity`` step of the contract-compliance CI job).
+#
+# History this replaces, and why the replacement is strictly larger:
+#   OMN-14436 introduced two regexes (``drift/dod_receipts/`` and
+#   ``contracts/OMN-``) to catch checks that could only observe the OCC store,
+#   after finding the runner's ``--workspace`` had been mis-pointed at the OCC
+#   clone so the receipt was the only file a check could reach (~32% of the
+#   corpus grepped exactly those paths). Those two regexes are the DENY half of
+#   the predicate and are preserved verbatim inside it. What they never caught,
+#   and the predicate does, is the rest of the same disease: a probe name
+#   appearing as *quoted text* beside a circular grep, an ``echo``/``true``
+#   whose exit status the author fixed by typing it, a ``test -f`` on a path the
+#   PR itself adds, and a grep whose every path operand is a file this same
+#   change writes. All of those "observe the product" under the old regexes and
+#   still prove nothing.
+#
+# The word INERT is retained for the verdict label and the demotion machinery
+# (see ``_demote`` / ``_has_effective_check``) so the ratchet's blast radius is
+# unchanged in SHAPE: an inadmissible check is reported loudly and demoted to
+# WARN so it can never gate, and it is never allowed to produce a PASS that
+# would launder a red PR into green evidence (the OMN-14391 /
+# omnibase_infra#2264 case). Legacy content-pinned contracts stay grandfathered;
+# a NEW or touched contract is held to the real bar from its first PR.
+#
+# This runner EXECUTES check_value, so its ALLOW vocabulary is the live-probe
+# set PLUS commands that genuinely run against the product checkout in CI. A
+# text-only consumer (deploy-gate, which never executes) passes the live set
+# alone. That single parameter is the ONLY difference between consumers -- the
+# DENY half and the command-position analysis are identical.
+_RUNNER_ADMISSIBLE_PROBES: frozenset[str] = (
+    LIVE_PROBE_COMMANDS | EXECUTED_HERMETIC_COMMANDS
+)
+
+
+def _classify_check(
+    check_value: Any,
+    changed_paths: frozenset[str] | None = None,
+    check_type: str = "command",
+) -> AdmissibilityVerdict:
+    """Apply the single admissibility predicate to one dod_evidence check."""
+    return classify_evidence_item(
+        check_type,
+        check_value,
+        admissible_probes=_RUNNER_ADMISSIBLE_PROBES,
+        changed_paths=changed_paths,
+    )
+
+
+def _is_inert_check(
+    check_value: Any,
+    changed_paths: frozenset[str] | None = None,
+    check_type: str = "command",
+) -> bool:
+    """True if the check is INADMISSIBLE under the OMN-15309 predicate.
+
+    Inadmissible means at least one of the three required properties is missing:
+    it does not execute, it cannot go RED, or everything it reads is authored by
+    this same change. Such a check is structurally incapable of saying anything
+    about the product repo the PR actually changes.
+    """
+    return not _classify_check(check_value, changed_paths, check_type).admissible
+
+
+# OMN-14051 -- non-hermetic check_value guard (reject at validation time).
+#
+# A dod_evidence check of check_type "command" has its check_value executed
+# verbatim by this runner inside the CI environment. CI runners have no ssh, no
+# route to the .201 Tailscale/LAN hosts, and no live docker/k8s daemon, so a
+# command that shells out to ssh/scp, a live container daemon, or network egress
+# to a non-loopback host can NEVER pass in CI -- it BLOCKs the PR with a cryptic
+# runtime error ("sh: 1: ssh: not found", exit 127) even when the underlying
+# work is real. Observed on OCC PR #3642 (OMN-14001): a `dod-deploy-scope` item
+# inlined `ssh jonah@100.109.203.94 "docker ps ..."` and produced
+# "3/4 PASS, 1 BLOCK".
+#
+# OMN-15309 CORRECTION -- this block used to prescribe exactly the shape the
+# same file unconditionally refuses to credit:
+#
+#   check_value: >-
+#     grep -q '^status: PASS$'
+#     "$CONTRACT_REPO_DIR/drift/dod_receipts/<TICKET>/<evidence-id>/command.yaml"
+#
+# Following that instruction produced a permanent WARN and could never produce a
+# PASS: the OMN-14051 guard rejected the inline live probe, and the OMN-14436
+# INERT rule demoted the receipt grep the guard told the author to write
+# instead. Three surfaces rejected the same shape on 2026-07-28 (deploy-gate's
+# annotation on omnimarket#1927, this evaluator's demotion, and this comment
+# prescribing it), which is why the contradiction was filed rather than patched.
+#
+# The admissible hermetic form for a fact this runner cannot probe live is a
+# CONTENT READ AT A PINNED REF against the product repo -- executed on any CI
+# runner, falsifiable, and outside the diff the evidence author writes:
+#
+#   check_value: >-
+#     gh api repos/OWNER/REPO/contents/<changed_path>?ref=<merge_sha>
+#     --jq .content | base64 -d | grep -q '<symbol the fix introduces>'
+#
+# `gh` is deliberately absent from the deny lists below for exactly this reason.
+# See ``admissible_evidence_guidance()`` in
+# ``onex_change_control.validation.evidence_admissibility`` for the full set of
+# admissible shapes per evidence class -- that function is the single author-
+# facing text, and it is what this runner prints on refusal.
+#
+# This guard rejects the non-hermetic form up front with that actionable
+# message, so the failure surfaces at authoring/validation time instead of as a
+# late, cryptic CI error. It is folded into the *existing* validator (no new
+# gate/workflow -- net-negative-surface) and is subject to the same OMN-14436
+# demotion rules as any other BLOCK: a grandfathered (content-pinned legacy)
+# contract is demoted to WARN -- so the pre-existing corpus of `docker exec`
+# runtime-proof checks is reported but not wedged -- while a NEW or touched
+# contract is enforced from its first PR.
+#
+# Detection is deliberately conservative (per the ticket: "start conservative,
+# expand as needed"). Known gap: a binary hidden inside a command substitution
+# (`$(ssh ...)`) is not yet detected; only command-position invocations are.
+_MAX_SNIPPET_LEN = 160
+
+# Shell tokens that begin a new command word (so the next token is in command
+# position). shlex emits these as standalone tokens when whitespace-separated.
+_SHELL_OPERATORS: frozenset[str] = frozenset(
+    {"|", "||", "&&", ";", ";;", "&", "|&", "(", ")", "{", "}"}
+)
+# Command wrappers whose *argument* is the real command; stay in command
+# position past them (and past `env FOO=bar` assignment tokens).
+_WRAPPER_BINS: frozenset[str] = frozenset(
+    {"sudo", "env", "time", "nice", "nohup", "command", "exec", "xargs", "then", "do"}
+)
+# Remote shell / remote copy: always non-hermetic.
+_REMOTE_SHELL_BINS: frozenset[str] = frozenset(
+    {"ssh", "scp", "sftp", "rsync", "telnet"}
+)
+# Container / orchestration: need a live daemon absent from CI runners.
+_DAEMON_BINS: frozenset[str] = frozenset(
+    {"docker", "docker-compose", "podman", "nerdctl", "kubectl"}
+)
+# Network fetch: non-hermetic only when the target host is not loopback.
+_NET_FETCH_BINS: frozenset[str] = frozenset({"curl", "wget", "nc", "ncat"})
+
+_ASSIGNMENT_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*=")
+# Full-octet IPv4 in the private / Tailscale-CGNAT ranges. Anchored to a
+# complete dotted quad so version strings ("10.2") never match.
+_LAN_IP_RE = re.compile(
+    r"\b("
+    r"192\.168\.\d{1,3}\.\d{1,3}"
+    r"|10\.\d{1,3}\.\d{1,3}\.\d{1,3}"
+    r"|172\.(?:1[6-9]|2\d|3[01])\.\d{1,3}\.\d{1,3}"
+    r"|100\.(?:6[4-9]|[7-9]\d|1[01]\d|12[0-7])\.\d{1,3}\.\d{1,3}"
+    r")\b"
+)
+_URL_HOST_RE = re.compile(r"https?://([^/\s]+)")
+_LOOPBACK_HOSTS: frozenset[str] = frozenset(
+    {"localhost", "127.0.0.1", "::1", "ip6-localhost"}
+)
+
+
+def _command_binaries(command: str) -> list[str]:
+    """Basenames of the binaries invoked in command position in ``command``.
+
+    Quote-aware via ``shlex`` so a binary name embedded in a quoted argument --
+    e.g. the word "docker" in ``grep -q 'no docker exec' file`` -- is NOT
+    reported; only tokens that actually start a command word are. Shell
+    operators (``;`` ``&&`` ``||`` ``|``) and wrappers (``sudo``, ``env VAR=x``)
+    keep the scan in command position.
+    """
+    try:
+        tokens = shlex.split(command, posix=True)
+    except ValueError:
+        # Unbalanced quotes etc. -- best-effort whitespace split rather than
+        # silently passing the guard on a malformed command.
+        tokens = command.split()
+    binaries: list[str] = []
+    expect_command = True
+    for token in tokens:
+        if token in _SHELL_OPERATORS:
+            expect_command = True
+            continue
+        if not expect_command:
+            continue
+        if _ASSIGNMENT_RE.match(token):
+            # `env FOO=bar cmd` -- leading assignments are not the command.
+            continue
+        binary = token.rsplit("/", 1)[-1]
+        if binary in _WRAPPER_BINS:
+            continue  # stay in command position; the next token is the command
+        binaries.append(binary)
+        expect_command = False
+    return binaries
+
+
+def _is_loopback_host(host: str) -> bool:
+    """True if ``host`` (optionally ``user@host:port``) is a loopback target."""
+    text = host.strip().strip("\"'[]").lower()
+    if "@" in text:
+        text = text.rsplit("@", 1)[1]
+    if text.startswith("127.") or text in _LOOPBACK_HOSTS:
+        return True
+    return text.split(":", 1)[0] in _LOOPBACK_HOSTS
+
+
+def _has_nonloopback_url(command: str) -> bool:
+    """True if ``command`` contains an http(s) URL whose host is not loopback."""
+    return any(not _is_loopback_host(h) for h in _URL_HOST_RE.findall(command))
+
+
+def _non_hermetic_message(reason: str, command: str) -> str:
+    """Actionable rejection message steering the author to the receipt pattern."""
+    snippet = (
+        command
+        if len(command) <= _MAX_SNIPPET_LEN
+        else command[:_MAX_SNIPPET_LEN] + "..."
+    )
+    return (
+        f"NON-HERMETIC check_value -- {reason}. A CI runner has no ssh, no route "
+        "to the .201/LAN/Tailscale hosts, and no live docker/k8s daemon, so this "
+        "command can never pass in CI (OMN-14051); it would BLOCK the PR with a "
+        "cryptic runtime error even when the work is real. Run the live probe out "
+        "of band, record it in a committed receipt "
+        "(drift/dod_receipts/<TICKET>/<evidence-id>/command.yaml with fields "
+        "probe_command, probe_stdout, exit_code, status: PASS), then set the "
+        "contract check to grep that receipt:\n"
+        "  check_value: >-\n"
+        "    grep -q '^status: PASS$'\n"
+        '    "$CONTRACT_REPO_DIR/drift/dod_receipts/<TICKET>'
+        '/<evidence-id>/command.yaml"\n'
+        f"  offending check_value: {snippet}"
+    )
+
+
+def _non_hermetic_reason(check: Any) -> str | None:
+    """Rejection message if ``check``'s command check_value is non-hermetic, else None.
+
+    "Non-hermetic" == the command depends on ssh/remote-copy, a live
+    docker/k8s daemon, or network egress to a non-loopback host -- none of which
+    exist on a CI runner. Returns ``None`` for a hermetic command (local file
+    assertions, receipt greps, pure compute, loopback probes) so those still run.
+
+    Only executed shell checks (``check_type: command`` and ``test_passes``)
+    are inspected. grep / file_exists / test_exists check_values are file/glob
+    assertions that may legitimately *contain* an IP or the word "docker"
+    (e.g. grepping a committed config), so scanning them would be a
+    false-positive machine.
+    """
+    if not isinstance(check, dict) or check.get("check_type") not in {
+        "command",
+        "test_passes",
+    }:
+        return None
+    command = str(check.get("check_value", ""))
+    if not command.strip():
+        return None
+
+    binaries = _command_binaries(command)
+    for binary in binaries:
+        if binary in _REMOTE_SHELL_BINS:
+            return _non_hermetic_message(
+                f"invokes the remote-access binary {binary!r}", command
+            )
+        if binary in _DAEMON_BINS:
+            return _non_hermetic_message(
+                f"invokes {binary!r}, which needs a live container/orchestration "
+                "daemon that CI runners do not have",
+                command,
+            )
+    lan_ip = _LAN_IP_RE.search(command)
+    if lan_ip is not None:
+        return _non_hermetic_message(
+            f"references the non-routable LAN/Tailscale host {lan_ip.group(1)!r}",
+            command,
+        )
+    for binary in binaries:
+        if binary in _NET_FETCH_BINS and _has_nonloopback_url(command):
+            return _non_hermetic_message(
+                f"performs network egress via {binary!r} to a non-loopback host",
+                command,
+            )
+    return None
+
+
+# OMN-18118 -- credential preflight and post-hoc denial classification.
+#
+# The gap this closes is NOT expressiveness. Measured against the
+# admissibility classifier (OMN-18118 comment eda02919), the ALLOW vocabulary
+# already carries a live-probe class, and three contracts -- OMN-15954,
+# OMN-17740, OMN-17809 -- ALREADY author `aws ssm get-command-invocation`
+# against i-06169517a92b45f86 inside an EXECUTED check_value. What blocks them
+# is one layer down: this runner's job environment is exactly two entries,
+# EMERGENCY_BYPASS and GH_TOKEN. An admissible live probe is therefore authored
+# green and runs red here.
+#
+# Running red is not the whole harm. It runs red INDISTINGUISHABLY from the
+# product being broken: `Command failed (exit 255): aws ssm ...` is an answer
+# to a different question wearing the check's name, and a reader cannot tell
+# "the fact is false" from "nobody could look". Telling those two apart is the
+# entire job of this block.
+#
+# So a check whose credential is absent reports NOT_EVALUATED and NAMES the
+# credential. NOT_EVALUATED is the right verdict and not a new one: the runner
+# already excludes it from the PASS count and folds it into
+# _nothing_proven_summary. It is fail-closed in the sense that matters -- it
+# can never be mistaken for proof -- without wedging every OCC PR that touches
+# one of those three contracts on a credential that is not provisioned yet.
+#
+# TWO HALVES, because one cannot see what the other can:
+#
+#   _credential_absent_reason  runs BEFORE execution. It catches the case where
+#       the credential is simply not in the environment. It is binary-position
+#       analysis, never substring matching -- `grep -c 'aws ssm' file` observes
+#       a committed file, needs no credential, and must keep running.
+#
+#   _credential_denial_reason  runs AFTER a failure. It catches the case the
+#       preflight structurally cannot: the token is PRESENT but its SCOPE is
+#       refused. OMN-15320's live instance is exactly this -- OCC PR #8863's
+#       own CI run (job 102709538516) got `Resource not accessible by
+#       integration (HTTP 403)` on every `repos/OmniNode-ai/omninode_infra/
+#       actions/...` probe while contents/commits/pulls probes in the SAME run
+#       succeeded. No preflight can see that; only the failure output can.
+#
+# MEASURED LIMIT, recorded here rather than discovered again later. A Linear
+# read over the API is admissible under classify_evidence_item but is rejected
+# by _non_hermetic_reason above, which refuses `curl` egress to any non-loopback
+# host -- so the Linear branch of this table cannot fire on the real path today
+# even once a key exists. Verified 2026-09-10 by calling _non_hermetic_reason
+# on the four candidate shapes: `aws ssm ...` -> None, `gh api .../actions/...`
+# -> None, `grep -c 'aws ssm' ...` -> None, `curl https://api.linear.app/...`
+# -> REJECTED. The entry is kept because the credential mapping is the same
+# either way and a half-table would read as an oversight; lifting the guard for
+# public routable hosts is a separate decision with its own blast radius, and
+# is NOT taken here. See test_linear_read_is_blocked_by_the_hermetic_guard.
+_CREDENTIAL_ABSENT_PREFIX = "CREDENTIAL ABSENT"
+
+#: Any one of these present means a usable AWS credential chain exists. The set
+#: is deliberately broad (static keys, SSO/session, OIDC web identity, ECS/EKS
+#: container providers) because a FALSE "absent" would silently retire a check
+#: that would have run -- the failure direction this whole block exists to
+#: prevent, pointed the other way.
+_AWS_CREDENTIAL_ENV_VARS: tuple[str, ...] = (
+    "AWS_ACCESS_KEY_ID",
+    "AWS_SESSION_TOKEN",
+    "AWS_PROFILE",
+    "AWS_WEB_IDENTITY_TOKEN_FILE",
+    "AWS_ROLE_ARN",
+    "AWS_CONTAINER_CREDENTIALS_FULL_URI",
+    "AWS_CONTAINER_CREDENTIALS_RELATIVE_URI",
+)
+
+_LINEAR_CREDENTIAL_ENV_VARS: tuple[str, ...] = ("LINEAR_API_KEY",)
+
+
+def _aws_credential_available() -> bool:
+    """True if ANY plausible AWS credential source is present.
+
+    Env vars alone are NOT sufficient to answer this, and assuming they were
+    was a real defect caught by this block's own positive control: an SSO or
+    named-profile credential resolves through the shared config files with none
+    of the variables above set, so an env-var-only test reports a FALSE
+    "absent" and silently declines a check that would have run. That is the
+    failure direction this whole block exists to prevent, pointed the other
+    way.
+
+    ``aws-actions/configure-aws-credentials`` does export the variables, so the
+    hosted CI path is covered by the first branch. The shared-config branch
+    covers the local preflight and node_dod_verify paths, where a profile
+    credential is ordinary.
+
+    Deliberately NOT a `sts get-caller-identity` call: that is a network round
+    trip per check, and being wrong in the permissive direction here is cheap.
+    A credential that looks present but is not still fails, and
+    ``_credential_denial_reason`` catches botocore's own authoritative
+    diagnosis after the fact.
+    """
+    if any(os.environ.get(name) for name in _AWS_CREDENTIAL_ENV_VARS):
+        return True
+    config = os.environ.get("AWS_CONFIG_FILE")
+    creds = os.environ.get("AWS_SHARED_CREDENTIALS_FILE")
+    candidates = [
+        Path(config) if config else Path.home() / ".aws" / "config",
+        Path(creds) if creds else Path.home() / ".aws" / "credentials",
+    ]
+    return any(path.exists() for path in candidates)
+
+
+#: Substrings that identify a credential-scope refusal rather than a product
+#: failure. Each is specific enough that an ordinary red cannot match it -- a
+#: bare "403" is deliberately NOT here, because a rate limit is not a scope
+#: problem and laundering it would hide a real outage.
+_GITHUB_SCOPE_DENIALS: tuple[str, ...] = ("Resource not accessible by integration",)
+_AWS_CREDENTIAL_DENIALS: tuple[str, ...] = (
+    "Unable to locate credentials",
+    "ExpiredToken",
+    "InvalidClientTokenId",
+    "The security token included in the request is invalid",
+    "NoCredentialProviders",
+)
+
+_ACTIONS_REPO_RE = re.compile(r"repos/([A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+)/actions/")
+
+_SSM_CREDENTIAL_NAME = "occ-compliance-ssm-readonly"
+_LINEAR_CREDENTIAL_NAME = "occ-compliance-linear-readonly"
+
+
+def _credential_absent_reason(command: str) -> str | None:
+    """Decline message if ``command`` needs a credential this job lacks, else None.
+
+    Binary-position analysis via ``_command_binaries``, never a substring scan:
+    a check that merely QUOTES ``aws ssm`` while grepping a committed file is a
+    real, credential-free check and must keep running.
+    """
+    if not command.strip():
+        return None
+    binaries = frozenset(_command_binaries(command))
+
+    if "aws" in binaries and not _aws_credential_available():
+        return (
+            f"{_CREDENTIAL_ABSENT_PREFIX} [{_SSM_CREDENTIAL_NAME}] -- this check "
+            "invokes the AWS CLI, and no AWS credential source is present in "
+            "this job's environment -- neither any of "
+            f"({', '.join(_AWS_CREDENTIAL_ENV_VARS)}) nor a shared AWS config "
+            "or credentials file. "
+            "The check was NOT executed, so this verdict says nothing about the "
+            "product either way -- it is not a PASS and not a product failure. "
+            f"Provision the read-only role '{_SSM_CREDENTIAL_NAME}' and assume it "
+            "in the job before this item can be re-verified here (OMN-18118)."
+        )
+
+    if (
+        binaries & _NET_FETCH_BINS
+        and "api.linear.app" in command
+        and not any(os.environ.get(name) for name in _LINEAR_CREDENTIAL_ENV_VARS)
+    ):
+        return (
+            f"{_CREDENTIAL_ABSENT_PREFIX} [{_LINEAR_CREDENTIAL_NAME}] -- this check "
+            "reads the Linear API and no Linear credential is present in this "
+            "job's environment. The check was NOT executed. Provision the "
+            f"read-only key '{_LINEAR_CREDENTIAL_NAME}' before this item can be "
+            "re-verified here (OMN-18118)."
+        )
+
+    return None
+
+
+def _credential_denial_reason(command: str, output: str) -> str | None:
+    """Decline message if a FAILED command failed on credential scope, else None.
+
+    Returning None means "this was a real failure" -- the default, and the
+    behaviour every check keeps unless its output carries one of the specific
+    refusal signatures above.
+    """
+    if not output:
+        return None
+
+    if any(marker in output for marker in _GITHUB_SCOPE_DENIALS):
+        match = _ACTIONS_REPO_RE.search(command)
+        if match is not None:
+            target = match.group(1)
+            return (
+                f"{_CREDENTIAL_ABSENT_PREFIX} [actions: read on {target}] -- the "
+                "GitHub App 'onexbot-occ-writer' token this job runs as carries "
+                "contents, metadata, pull_requests and workflows, but NOT "
+                "actions, so a workflow-run or job read on a private repo is "
+                "refused. The check was NOT executed against the product; this "
+                "is not a PASS and not a product failure. Granting the App "
+                "'actions: read' makes this item re-verifiable (OMN-18118, "
+                "OMN-15320)."
+            )
+
+    binaries = frozenset(_command_binaries(command))
+    if "aws" in binaries and any(
+        marker in output for marker in _AWS_CREDENTIAL_DENIALS
+    ):
+        return (
+            f"{_CREDENTIAL_ABSENT_PREFIX} [{_SSM_CREDENTIAL_NAME}] -- the AWS CLI "
+            "reported that it had no usable credential, so the check was NOT "
+            f"executed. Provision '{_SSM_CREDENTIAL_NAME}' (OMN-18118)."
+        )
+
+    return None
+
+
+def _contract_digest(contract_path: Path) -> str:
+    """sha256 of the contract file's exact bytes.
+
+    The grandfather is bound to CONTENT, not to a ticket id (see
+    _load_legacy_allowlist). Hashing the raw bytes means any edit at all --
+    appending an entry, tweaking a check_value -- changes the digest and
+    un-grandfathers the contract.
+    """
+    return hashlib.sha256(contract_path.read_bytes()).hexdigest()
+
+
+def _load_legacy_allowlist(path: Path | None) -> dict[str, str]:
+    """Load the OMN-14436 grandfather ratchet: ticket id -> contract digest.
+
+    Contracts that predate product-workspace execution still EXECUTE and are
+    REPORTED, but their failures are demoted BLOCK -> WARN so turning the runner
+    on does not wedge in-flight work on pre-existing debt. New tickets are NOT
+    in the list and are enforced from their first PR.
+
+    The grandfather is bound to the contract's CONTENT DIGEST, not merely to its
+    ticket id. A ticket-keyed allowlist would be a permanent laundering channel:
+    anyone could append a fresh circular dod_evidence entry under an old ticket
+    id and inherit its exemption forever. Binding to the digest means the moment
+    a grandfathered contract is MODIFIED it stops being grandfathered, and must
+    then carry at least one product-observing check or BLOCK. Frozen debt stays
+    frozen; touched debt must be paid.
+
+    This is a ratchet, not a paydown machine: the list may only shrink (pinned by
+    tests/test_dod_runner_ratchet.py). It is deliberately NOT expiry-dated -- an
+    expiry would manufacture paydown pressure on a corpus that RSD (OMN-14427) is
+    slated to delete outright.
+
+    Format: ``OMN-1234<whitespace><sha256>`` per line; ``#`` comments and blanks
+    ignored. A line with no digest is REJECTED -- a digest-less entry would
+    silently restore the ticket-keyed hole this binding exists to close.
+    """
+    if path is None:
+        return {}
+    if not path.exists():
+        # Fail loudly. A silently-absent allowlist would enforce the entire
+        # legacy corpus and wedge every repo -- the opposite of a safe default.
+        msg = f"legacy allowlist not found: {path}"
+        raise FileNotFoundError(msg)
+    entries: dict[str, str] = {}
+    for raw in path.read_text().splitlines():
+        line = raw.split("#", 1)[0].strip()
+        if not line:
+            continue
+        parts = line.split()
+        if len(parts) != _ALLOWLIST_FIELDS:
+            msg = (
+                f"malformed allowlist entry {line!r} in {path}: expected "
+                "'OMN-1234 <sha256>'. A digest-less entry would reopen the "
+                "ticket-keyed laundering hole (OMN-14436)."
+            )
+            raise ValueError(msg)
+        entries[parts[0].upper()] = parts[1].lower()
+    return entries
+
+
+_PRIMARY_LIMIT_MESSAGE_RE = re.compile(r"\brate limit exceeded\b", re.IGNORECASE)
+_SECONDARY_LIMIT_MESSAGE_RE = re.compile(r"secondary rate limit", re.IGNORECASE)
+_QUOTA_EXHAUSTED_PREFIX = "QUOTA_EXHAUSTED"
+
+
+@dataclass
+class _QuotaBreaker:
+    """Per-run memory of a spent GitHub quota (OMN-20503).
+
+    Run 37171017353 kept calling ``gh`` for 952 checks after the installation's
+    primary limit was spent; every call was a 403. Trips on the PRIMARY
+    rate-limit message only -- a secondary limit clears in minutes and a scope
+    denial is not a quota, so neither halts the run (same split as
+    ``commit_sha_resolver``).
+    """
+
+    first_message: str = ""
+    skipped: int = 0
+
+    @property
+    def tripped(self) -> bool:
+        return bool(self.first_message)
+
+    def observe(self, output: str) -> None:
+        """Trip on the FULL command output, not the 200-char detail snippet."""
+        if self.tripped:
+            return
+        if _PRIMARY_LIMIT_MESSAGE_RE.search(
+            output
+        ) and not _SECONDARY_LIMIT_MESSAGE_RE.search(output):
+            self.first_message = output.strip()[:200]
+
+    def print_summary(self) -> None:
+        if self.skipped:
+            print(
+                f"[SUMMARY] {self.skipped} {_QUOTA_EXHAUSTED_PREFIX} check(s) not "
+                "executed: GitHub API quota spent.",
+                flush=True,
+            )
+
+
+# OMN-20504 -- same-repo commit existence is answered by the checkout, not GitHub.
+#
+# 2,689 of the 2,847 checks in contracts/OMN-14888.yaml are exactly this shape,
+# and each spent one App REST call asking whether a commit exists in the very
+# repository the runner has checked out. ONLY this exact shape is intercepted
+# (full match after stripping surrounding whitespace); every other command --
+# another repo, another --jq filter, an extra pipeline stage, an uppercase or
+# short sha -- still executes through ``gh`` unchanged.
+_LOCAL_COMMIT_CHECK_RE = re.compile(
+    r"gh api repos/OmniNode-ai/onex_change_control/commits/([0-9a-f]{40}) --jq \.sha"
+)
+_GIT_UNKNOWN_REF_RE = re.compile(r"not our ref|couldn't find remote ref", re.IGNORECASE)
+#: Shas per ``git fetch`` invocation, bounded by argv length, not by the remote.
+_LOCAL_FETCH_CHUNK = 200
+_LOCAL_FETCH_TIMEOUT_SECONDS = 300
+_LOCAL_GIT_TIMEOUT_SECONDS = 60
+
+
+@dataclass
+class _LocalCommitEvidence:
+    """Answers same-repo commit-existence checks from the checkout (OMN-20504).
+
+    ``repo_dir`` is ``contracts_dir.parent``: the OCC checkout (full clone in OCC
+    CI, ``--depth=1`` clone elsewhere). A sha the checkout lacks is fetched in
+    ONE batched ``git fetch`` (git protocol, no REST quota) -- commits of deleted
+    auto branches are unreachable from any ref yet still served by sha. A sha
+    git cannot answer for (not a work tree, no origin, network or auth failure)
+    is simply never recorded in ``known``, so its check falls through to ``gh``
+    exactly as before; only a CLEAN "missing" is recorded as absent.
+    """
+
+    repo_dir: Path | None = None
+    #: sha -> exists. A sha absent from this map is answered by ``gh``.
+    known: dict[str, bool] = dc_field(default_factory=dict)
+    resolved_locally: int = 0
+    fetched: int = 0
+    missing: int = 0
+    fetch_invocations: int = 0
+
+    @staticmethod
+    def sha_of(check_value: Any) -> str | None:
+        match = _LOCAL_COMMIT_CHECK_RE.fullmatch(str(check_value).strip())
+        return match.group(1) if match else None
+
+    def _git(
+        self,
+        args: list[str],
+        stdin: str = "",
+        timeout: int = _LOCAL_GIT_TIMEOUT_SECONDS,
+    ) -> tuple[int, str, str]:
+        assert self.repo_dir is not None
+        env = scrub_git_location_env(os.environ)
+        env["GIT_TERMINAL_PROMPT"] = "0"
+        return _run_process(
+            ["git", "-C", str(self.repo_dir), *args],
+            timeout=timeout,
+            env=env,
+            stdin=stdin,
+        )
+
+    def _commits_present(self, shas: list[str]) -> dict[str, bool] | None:
+        """sha -> is-a-commit via one ``cat-file --batch-check``; None on git error."""
+        rc, out, _ = self._git(
+            ["cat-file", "--batch-check"],
+            "".join(f"{sha}^{{commit}}\n" for sha in shas),
+        )
+        lines = out.splitlines()
+        if rc != 0 or len(lines) != len(shas):
+            return None
+        return {
+            sha: line.split()[1:2] == ["commit"]
+            for sha, line in zip(shas, lines, strict=True)
+        }
+
+    def _fetch_chunk(self, shas: list[str], unanswered: set[str]) -> None:
+        rc, _, err = self._git(
+            [
+                "fetch",
+                "--no-tags",
+                "--depth=1",
+                "--no-write-fetch-head",
+                "origin",
+                *shas,
+            ],
+            timeout=_LOCAL_FETCH_TIMEOUT_SECONDS,
+        )
+        self.fetch_invocations += 1
+        if rc == 0:
+            return
+        if not _GIT_UNKNOWN_REF_RE.search(err):
+            # Not a clean "no such commit" (no origin, network, auth): git cannot
+            # answer, so these shas stay with gh.
+            unanswered.update(shas)
+        elif len(shas) > 1:
+            # One unknown sha refuses the whole want-set; split to find which.
+            mid = len(shas) // 2
+            self._fetch_chunk(shas[:mid], unanswered)
+            self._fetch_chunk(shas[mid:], unanswered)
+
+    def prime(self, shas: set[str]) -> None:
+        """Resolve every sha of the run up front: one read, then one batched fetch."""
+        pending = sorted(shas - self.known.keys())
+        if self.repo_dir is None or not pending:
+            return
+        rc, out, _ = self._git(["rev-parse", "--is-inside-work-tree"])
+        if rc != 0 or out.strip() != "true":
+            return
+        present = self._commits_present(pending)
+        if present is None:
+            return
+        for sha in (s for s in pending if present[s]):
+            self.known[sha] = True
+            self.resolved_locally += 1
+        lacking = [s for s in pending if not present[s]]
+        unanswered: set[str] = set()
+        for start in range(0, len(lacking), _LOCAL_FETCH_CHUNK):
+            self._fetch_chunk(lacking[start : start + _LOCAL_FETCH_CHUNK], unanswered)
+        after = self._commits_present(lacking) if lacking else {}
+        for sha in lacking:
+            if after is None or sha in unanswered:
+                continue
+            self.known[sha] = after[sha]
+            if after[sha]:
+                self.fetched += 1
+            else:
+                self.missing += 1
+
+    def verdict(self, check_value: Any) -> tuple[str, str] | None:
+        """(result, detail) for a same-repo commit check git answered, else None."""
+        sha = self.sha_of(check_value)
+        if sha is None or sha not in self.known:
+            return None
+        command = str(check_value)[:80]
+        if self.known[sha]:
+            return (
+                _RESULT_PASS,
+                f"Command succeeded: {command} (commit resolved from local git)",
+            )
+        return (
+            _RESULT_BLOCK,
+            f"Command failed (exit 1): {command}\n  commit {sha} not found in the "
+            "checkout or on origin (resolved from local git)",
+        )
+
+    def print_summary(self) -> None:
+        if self.resolved_locally or self.fetched or self.missing:
+            print(
+                f"[SUMMARY] local-git commit evidence: {self.resolved_locally} "
+                f"resolved locally, {self.fetched} fetched, {self.missing} missing",
+                flush=True,
+            )
+
+
+@dataclass(frozen=True)
+class _CheckContext:
+    pr_number: int
+    repo: str
+    ticket_id: str = ""
+    contracts_dir: Path | None = None
+    is_legacy: bool = False
+    #: Repo-relative paths this PR modifies, used by the OMN-15309 predicate's
+    #: OUTSIDE-ITS-OWN-DIFF rule. Empty means "not resolved" -- the rule is then
+    #: reported as NOT EVALUATED rather than silently passing.
+    changed_paths: frozenset[str] = dc_field(default_factory=frozenset)
+    #: Mutable on purpose: one breaker per run, shared by every check of it.
+    quota: _QuotaBreaker = dc_field(default_factory=_QuotaBreaker)
+    #: Mutable on purpose: primed once per run. Disabled (no repo_dir) by default.
+    local_commits: _LocalCommitEvidence = dc_field(default_factory=_LocalCommitEvidence)
+
+
+# ---------------------------------------------------------------------------
+# Helpers
+# ---------------------------------------------------------------------------
+
+
+def _run_process(
+    cmd: list[str],
+    timeout: int = 30,
+    cwd: Path | None = None,
+    env: dict[str, str] | None = None,
+    stdin: str | None = None,
+) -> tuple[int, str, str]:
+    """Run a subprocess and return (returncode, stdout, stderr)."""
+    try:
+        result = subprocess.run(  # noqa: S603
+            cmd,
+            input=stdin,
+            capture_output=True,
+            text=True,
+            timeout=timeout,
+            check=False,
+            cwd=cwd,
+            env=env,
+        )
+        return result.returncode, result.stdout.strip(), result.stderr.strip()
+    except subprocess.TimeoutExpired:
+        return 1, "", f"Command timed out after {timeout}s: {' '.join(cmd)}"
+    except FileNotFoundError as exc:
+        return 1, "", f"Command not found: {exc}"
+
+
+def _run(
+    cmd: list[str],
+    timeout: int = 30,
+    cwd: Path | None = None,
+    env: dict[str, str] | None = None,
+) -> tuple[int, str, str]:
+    """Run a contract check's subprocess (the seam the tests replace)."""
+    return _run_process(cmd, timeout, cwd, env)
+
+
+def _pr_changed_paths(pr_number: int, repo: str) -> frozenset[str]:
+    """Repo-relative paths this PR modifies, for the OUTSIDE-ITS-OWN-DIFF rule.
+
+    Returns an EMPTY set when the list cannot be resolved. Callers must treat
+    empty as "rule NOT EVALUATED" and say so out loud -- a silent skip that
+    prints nothing is a false green, which is the class of defect OMN-15309
+    exists to close.
+    """
+    rc, out, err = _run(
+        [
+            "gh",
+            "api",
+            f"repos/{repo}/pulls/{pr_number}/files",
+            "--paginate",
+            "--jq",
+            ".[].filename",
+        ],
+        timeout=60,
+    )
+    if rc != 0:
+        print(f"[WARN] Could not fetch PR file list: {err}", flush=True)
+        return frozenset()
+    return frozenset(line.strip() for line in out.splitlines() if line.strip())
+
+
+def _extract_ticket_id(pr_number: int, repo: str) -> str | None:
+    """Extract OMN ticket ID from PR title and branch via gh CLI."""
+    rc, out, err = _run(
+        [
+            "gh",
+            "pr",
+            "view",
+            str(pr_number),
+            "--repo",
+            repo,
+            "--json",
+            "title,headRefName,body",
+        ],
+        timeout=30,
+    )
+    if rc != 0:
+        print(f"[WARN] Could not fetch PR info: {err}", flush=True)
+        return None
+
+    try:
+        data = json.loads(out)
+    except json.JSONDecodeError:
+        print(f"[WARN] Could not parse PR JSON: {out[:200]}", flush=True)
+        return None
+
+    for field in ("title", "headRefName", "body"):
+        text = data.get(field) or ""
+        match = _OMN_TICKET_PATTERN.search(text)
+        if match:
+            return match.group(1).upper()
+    return None
+
+
+def _find_contracts_dir(
+    cli_contracts_dir: str | None,
+    script_path: Path,
+) -> Path:
+    """Locate the contracts directory.
+
+    Priority:
+      1. --contracts-dir flag
+      2. Sibling onex_change_control checkout
+      3. This script's own repo contracts/
+
+    OMN-14458: ``script_path`` is ``Path(__file__)`` as seen by ``main()``,
+    which now lives at ``src/onex_change_control/scripts/contract_compliance_check.py``
+    (moved from the repo-root ``scripts/ci/`` script so it is importable).
+    That is one directory deeper than before the move, hence 4 ``.parent``
+    hops to the repo root instead of 3.
+    """
+    if cli_contracts_dir:
+        return Path(cli_contracts_dir).resolve()
+
+    # When cloned as a sibling repo in CI
+    sibling = Path.cwd().parent / "onex_change_control" / "contracts"
+    if sibling.exists():
+        return sibling
+
+    # When running from within an onex_change_control worktree:
+    # contract_compliance_check.py -> scripts -> onex_change_control (package)
+    # -> src -> repo root.
+    local = script_path.parent.parent.parent.parent / "contracts"
+    if local.exists():
+        return local
+
+    return Path("contracts").resolve()
+
+
+# ---------------------------------------------------------------------------
+# Check runners -- one per ModelDodCheck check_type
+# ---------------------------------------------------------------------------
+
+
+def _check_test_exists(check_value: Any, workspace: Path) -> tuple[str, str]:
+    """check_type=test_exists: check_value is a glob pattern."""
+    pattern = str(check_value)
+    matches = list(workspace.glob(pattern))
+    if matches:
+        return _RESULT_PASS, f"Found {len(matches)} file(s) matching '{pattern}'"
+    return _RESULT_BLOCK, f"No files found matching glob '{pattern}'"
+
+
+def _check_file_exists(check_value: Any, workspace: Path) -> tuple[str, str]:
+    """check_type=file_exists: check_value is a glob pattern."""
+    pattern = str(check_value)
+    matches = list(workspace.glob(pattern))
+    if matches:
+        return _RESULT_PASS, f"Found file(s) matching '{pattern}'"
+    return _RESULT_BLOCK, f"No files found matching '{pattern}'"
+
+
+def _check_grep(check_value: Any, workspace: Path) -> tuple[str, str]:
+    """check_type=grep: check_value is dict with 'pattern' and 'path' keys."""
+    if not isinstance(check_value, dict):
+        return (
+            _RESULT_BLOCK,
+            f"grep check_value must be a dict, got: {type(check_value).__name__}",
+        )
+
+    pattern = check_value.get("pattern", "")
+    search_path = check_value.get("path") or check_value.get("file") or "."
+    if not pattern:
+        return _RESULT_BLOCK, "grep check_value missing 'pattern' key"
+
+    rc, out, _ = _run(
+        ["grep", "-rl", "--include=*.py", pattern, str(workspace / search_path)],
+        timeout=30,
+    )
+    if rc == 0 and out:
+        return (
+            _RESULT_PASS,
+            f"Pattern '{pattern}' found in {len(out.splitlines())} file(s)",
+        )
+    return _RESULT_BLOCK, f"Pattern '{pattern}' not found under '{search_path}'"
+
+
+def _substitute_tokens(
+    cmd: str,
+    pr_number: int,
+    repo: str,
+    ticket_id: str,
+) -> str:
+    """Substitute templating tokens in a check command.
+
+    Two complementary placeholder forms are supported so contract YAML can
+    pick whichever reads best:
+
+    * ``{pr}``, ``{repo}``, ``{ticket_id}`` — runner-level substitution that
+      happens before ``sh -c`` is invoked (safe in any shell context, including
+      single-quoted strings).
+    * ``${PR_NUMBER}``, ``${REPO}``, ``${TICKET_ID}`` — shell-style placeholders
+      that ALSO get pre-substituted here so they work in single-quoted strings
+      (where ``sh -c`` would not expand them). The same names are exported as
+      env vars by the caller, so unquoted ``${PR_NUMBER}`` references in
+      double-quoted strings keep working too.
+
+    Pre-substitution is preferred over relying solely on env-var expansion
+    because a contract author that writes ``'gh pr checks ${PR_NUMBER}'`` (with
+    single quotes) would otherwise see the literal token reach ``gh``.
+    """
+    return (
+        cmd.replace("{pr}", str(pr_number))
+        .replace("{repo}", repo)
+        .replace("{ticket_id}", ticket_id)
+        .replace("${PR_NUMBER}", str(pr_number))
+        .replace("${REPO}", repo)
+        .replace("${TICKET_ID}", ticket_id)
+    )
+
+
+def _validate_substitution_context(
+    cmd: str, pr_number: int, repo: str, ticket_id: str
+) -> str | None:
+    """Reject unsafe or incomplete values before shell substitution.
+
+    Placeholder values are inserted into a command before ``bash -c`` runs it.
+    The normal CI call supplies a positive integer PR, an ``org/repo`` slug and
+    an ``OMN-<number>`` ticket, so validating those shapes keeps the historical
+    placeholder contract while preventing shell metacharacters from entering
+    the command through runner context.
+    """
+    if ("${PR_NUMBER}" in cmd or "{pr}" in cmd) and (
+        not isinstance(pr_number, int) or pr_number <= 0
+    ):
+        return "Invalid PR number for command placeholder"
+    if ("${REPO}" in cmd or "{repo}" in cmd) and not _REPO_PATTERN.fullmatch(repo):
+        return "Invalid repository for command placeholder"
+    if ("${TICKET_ID}" in cmd or "{ticket_id}" in cmd) and not re.fullmatch(
+        r"OMN-[0-9]+", ticket_id
+    ):
+        return "Invalid ticket ID for command placeholder"
+    return None
+
+
+def _maybe_demote_precommit(cmd_str: str) -> tuple[str, str] | None:
+    """Return a (result, detail) WARN tuple if a pre-commit cmd should be
+    skipped because the binary is genuinely absent. Returns None to indicate
+    "do not demote — proceed with normal execution".
+    """
+    if not cmd_str.lstrip().startswith("pre-commit"):
+        return None
+    rc_which, _, _ = _run(["which", "pre-commit"], timeout=5)
+    if rc_which == 0:
+        return None  # binary present — enforce normally
+    in_ci = os.environ.get("CI", "").lower() in ("true", "1")
+    if in_ci:
+        msg = (
+            "[WARN] pre-commit check skipped (binary absent in CI). "
+            "Install pre-commit on the runner to enforce this check."
+        )
+        print(msg, flush=True)
+        return _RESULT_WARN, "pre-commit check skipped (binary absent in CI)"
+    print(
+        "[WARN] pre-commit check skipped (pre-commit not installed). "
+        "Run pre-commit locally to verify.",
+        flush=True,
+    )
+    return _RESULT_WARN, "pre-commit check skipped (pre-commit not installed)"
+
+
+def _build_command_env(
+    cmd_str: str,
+    pr_number: int,
+    repo: str,
+    ticket_id: str,
+    contracts_dir: Path | None = None,
+) -> dict[str, str] | None:
+    """Build the env overlay for a contract command.
+
+    PR_NUMBER / REPO / TICKET_ID are always exported when set so contract
+    authors can reference them as ``$VAR`` in double-quoted shell strings.
+    GH_REPO is additionally injected when the command shells out to ``gh``
+    because gh cannot infer the branch in detached-HEAD CI checkouts
+    (regression: OMN-8830).
+    """
+    overlay: dict[str, str] = {}
+    if pr_number:
+        overlay["PR_NUMBER"] = str(pr_number)
+    if repo:
+        overlay["REPO"] = repo
+        if "gh " in cmd_str:
+            overlay["GH_REPO"] = repo
+    if ticket_id:
+        overlay["TICKET_ID"] = ticket_id
+    if contracts_dir is not None:
+        overlay["CONTRACTS_DIR"] = str(contracts_dir)
+        overlay["CONTRACT_REPO_DIR"] = str(contracts_dir.parent)
+    if not overlay:
+        return None
+    return {**os.environ, **overlay}
+
+
+def _resolve_check_cwd(
+    cwd_template: Any,
+    workspace: Path,
+    pr_number: int,
+    repo: str,
+    ticket_id: str,
+) -> tuple[Path | None, str | None]:
+    """Resolve a check's declared ``cwd`` into a directory to execute in.
+
+    Returns ``(directory, None)`` when the check may run, or
+    ``(None, decline_reason)`` when it may not. ``cwd`` omitted resolves to
+    ``workspace`` -- the product checkout under test, the pre-OMN-16824
+    behaviour for every check.
+
+    OMN-16824. Before this, ``_check_command`` passed ``cwd=workspace``
+    unconditionally and never read the check's ``cwd`` at all, so a
+    cross-repo check silently resolved its paths against the wrong tree and
+    reported a verdict about a directory it was never pointed at. That is
+    worse than not running: it is an answer to a different question wearing
+    the contract entry's name.
+
+    A declared ``cwd`` this runner cannot resolve is therefore DECLINED, never
+    rerouted. The hosted gate checks out exactly one product repo; a ``cwd``
+    naming a sibling checkout (``${OMNI_HOME}/<other-repo>``) does not exist
+    here, and the honest report is that this gate did not evaluate the item --
+    which is what ``execution_scope: local_done_gate`` (OMN-15392) declares up
+    front.
+
+    Token substitution and containment mirror ``node_dod_verify``'s
+    ``_resolve_cwd`` (omnimarket) so both runners read the same field the same
+    way: ``${OMNI_HOME}``, ``${PR_NUMBER}``, ``${REPO}``, ``${TICKET_ID}``,
+    ``..`` rejected up front, and the resolved path must exist and be a
+    directory.
+    """
+    if cwd_template is None:
+        return workspace, None
+    if not isinstance(cwd_template, str) or not cwd_template.strip():
+        return None, (
+            "NOT-EVALUATED [cwd] -- 'cwd' must be a non-empty string, got "
+            f"{type(cwd_template).__name__}; refusing to guess a directory."
+        )
+
+    if ".." in Path(cwd_template).parts:
+        return None, (
+            f"NOT-EVALUATED [cwd] -- cwd path traversal not allowed: {cwd_template!r}"
+        )
+
+    substitutions = {
+        "OMNI_HOME": os.environ.get("OMNI_HOME", ""),
+        "PR_NUMBER": str(pr_number or os.environ.get("PR_NUMBER", "")),
+        "REPO": repo or os.environ.get("REPO", ""),
+        "TICKET_ID": ticket_id,
+    }
+    for token, value in substitutions.items():
+        if f"${{{token}}}" in cwd_template and not value:
+            return None, (
+                f"NOT-EVALUATED [cwd] -- cwd {cwd_template!r} references "
+                f"${{{token}}}, but that value is empty in this environment. "
+                "The hosted gate cannot execute this check; declare "
+                "execution_scope: local_done_gate (OMN-15392) so the local Done "
+                "gate owns it, or point cwd inside the checkout this PR changes."
+            )
+    rendered = cwd_template
+    for token, value in substitutions.items():
+        rendered = rendered.replace(f"${{{token}}}", value)
+
+    if "${" in rendered or not rendered.strip():
+        return None, (
+            f"NOT-EVALUATED [cwd] -- cwd {cwd_template!r} has unresolved template "
+            f"tokens in this environment (rendered {rendered!r}). The hosted gate "
+            "cannot execute this check; declare "
+            "execution_scope: local_done_gate (OMN-15392) so the local Done gate "
+            "owns it, or point cwd inside the checkout this PR changes."
+        )
+
+    candidate = Path(rendered)
+    if not candidate.is_absolute():
+        candidate = workspace / candidate
+    candidate = candidate.resolve()
+
+    if not candidate.is_dir():
+        return None, (
+            f"NOT-EVALUATED [cwd] -- cwd {cwd_template!r} resolves to {candidate}, "
+            "which does not exist in this checkout. The hosted gate checks out "
+            "one product repo and will NOT reroute the command to its own "
+            "workspace (that would answer a different question). Declare "
+            "execution_scope: local_done_gate (OMN-15392) so the local Done gate "
+            "owns this item, or point cwd inside the checkout this PR changes."
+        )
+    return candidate, None
+
+
+def _check_command(  # noqa: PLR0913 -- one parameter per contract-check field
+    _check_value: Any,
+    workspace: Path,
+    pr_number: int = 0,
+    repo: str = "",
+    ticket_id: str = "",
+    contracts_dir: Path | None = None,
+    cwd: Any = None,
+    quota: _QuotaBreaker | None = None,
+) -> tuple[str, str]:
+    """check_type=command: check_value is a shell command; exit 0 = pass.
+
+    The check's declared ``cwd`` is honoured (OMN-16824); when it cannot be
+    resolved the check is declined (NOT_EVALUATED), never rerouted to
+    ``workspace``. See ``_resolve_check_cwd``.
+
+    Supports both ``{pr}``/``{repo}``/``{ticket_id}`` and
+    ``${PR_NUMBER}``/``${REPO}``/``${TICKET_ID}`` placeholders so contract YAML
+    files don't hard-code PR numbers, repo names, or ticket IDs. Pre-substitutes
+    every token before invoking ``sh -c`` AND exports them as env vars so
+    ``$PR_NUMBER``-style references work in double-quoted shell strings too.
+
+    repo is validated against ^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$ before
+    substitution to prevent shell injection via adversarial --repo values.
+
+    pre-commit commands are demoted to WARN only when pre-commit binary is
+    genuinely absent AND the process is running in CI. Installing pre-commit
+    on the runner opts back in to full enforcement.
+    """
+    if repo and not _REPO_PATTERN.fullmatch(repo):
+        return (
+            _RESULT_BLOCK,
+            f"Invalid --repo '{repo}': must match org/repo (alphanumeric, -, _, .)",
+        )
+
+    run_cwd, decline = _resolve_check_cwd(cwd, workspace, pr_number, repo, ticket_id)
+    if decline is not None:
+        return _RESULT_NOT_EVALUATED, decline
+
+    raw_cmd = str(_check_value)
+    invalid_context = _validate_substitution_context(
+        raw_cmd, pr_number, repo, ticket_id
+    )
+    if invalid_context is not None:
+        return _RESULT_BLOCK, invalid_context
+    cmd_str = _substitute_tokens(raw_cmd, pr_number, repo, ticket_id)
+
+    demoted = _maybe_demote_precommit(cmd_str)
+    if demoted is not None:
+        return demoted
+
+    # OMN-18118: decline BEFORE executing when the credential this command needs
+    # is absent, so the report says "nobody could look" rather than a cryptic
+    # exit code that reads as "the product is broken".
+    absent = _credential_absent_reason(cmd_str)
+    if absent is not None:
+        return _RESULT_NOT_EVALUATED, absent
+
+    cmd_env = _build_command_env(cmd_str, pr_number, repo, ticket_id, contracts_dir)
+
+    # ``bash -o pipefail``, not ``sh -c``: under ``sh`` a pipeline reports only
+    # its LAST stage's exit code, so ``gh api ... | grep -q X`` passes when the
+    # ``gh`` call itself failed. node_dod_verify has executed check_values this
+    # way since OMN-15382; matching it here is part of the OMN-16824 single
+    # semantic -- the same contract entry must not mean two things.
+    rc, out, err = _run(
+        ["bash", "-o", "pipefail", "-c", cmd_str],
+        timeout=60,
+        cwd=run_cwd,
+        env=cmd_env,
+    )
+    if rc == 0:
+        return _RESULT_PASS, f"Command succeeded: {cmd_str[:80]}"
+    if quota is not None:
+        quota.observe(out + err)
+    # OMN-18118: a token that is PRESENT but whose SCOPE is refused is invisible
+    # to the preflight above -- only the failure output shows it. Classify that
+    # as NOT_EVALUATED naming the scope; every other red stays a BLOCK.
+    denial = _credential_denial_reason(cmd_str, out + err)
+    if denial is not None:
+        return _RESULT_NOT_EVALUATED, f"{denial}\n  Command: {cmd_str[:80]}"
+    output_snippet = (out + err)[:200]
+    return (
+        _RESULT_BLOCK,
+        f"Command failed (exit {rc}): {cmd_str[:80]}\n  {output_snippet}",
+    )
+
+
+def _check_test_passes(  # noqa: PLR0913 -- signature is _check_command's, exactly
+    check_value: Any,
+    workspace: Path,
+    pr_number: int = 0,
+    repo: str = "",
+    ticket_id: str = "",
+    contracts_dir: Path | None = None,
+    cwd: Any = None,
+    quota: _QuotaBreaker | None = None,
+) -> tuple[str, str]:
+    """check_type=test_passes: an EXECUTED alias of ``check_type: command``.
+
+    OMN-16824 -- this runner used to ignore ``check_value`` entirely and report
+    whether the PR's own CI was green. ``node_dod_verify`` (omnimarket) has
+    always executed ``check_value`` and honoured ``cwd``, so one contract entry
+    was a behaviour proof to one gate and a PR-status proxy to the other. Worse,
+    the PR-status reading could never go RED for the reason the entry claimed:
+    an entry asserting "the new test passes" returned PASS whenever unrelated CI
+    was green, including when the named test did not exist.
+
+    One semantic now: ``test_passes`` runs ``check_value`` and reads its exit
+    status, exactly like ``command``. The alias survives because it states the
+    author's intent (this command is a test run) and is what
+    ``derive_proof_tier`` and the OMN-15911 proof classifier key on; it is not a
+    different question. A contract that genuinely wants to assert PR CI state
+    must say so with an explicit ``check_type: command`` probe of ``gh pr
+    checks`` -- visible in the contract instead of hidden behind this name.
+    """
+    return _check_command(
+        check_value,
+        workspace,
+        pr_number,
+        repo,
+        ticket_id,
+        contracts_dir,
+        cwd,
+        quota,
+    )
+
+
+def _check_endpoint(check_value: Any, workspace: Path) -> tuple[str, str]:
+    """check_type=endpoint: check_value is a URL or local path."""
+    target = str(check_value)
+    if target.startswith(("http://", "https://")):
+        rc, _, err = _run(["curl", "-fsS", "--max-time", "10", target], timeout=15)
+        if rc == 0:
+            return _RESULT_PASS, f"Endpoint reachable: {target}"
+        return (
+            _RESULT_WARN,
+            f"Endpoint unreachable (non-blocking in CI): {target} -- {err}",
+        )
+    # Local path
+    resolved = workspace / target
+    if resolved.exists():
+        return _RESULT_PASS, f"Path exists: {target}"
+    return _RESULT_BLOCK, f"Path not found: {target}"
+
+
+# OMN-16824: check types whose check_value is shell text this runner EXECUTES,
+# honouring the check's ``cwd``. They share one signature and one dispatch
+# branch precisely so a future edit cannot give one of them a different meaning
+# without giving it to the other.
+_EXECUTED_COMMAND_CHECK_TYPES: frozenset[str] = frozenset({"command", "test_passes"})
+
+_CHECK_RUNNERS: dict[str, Any] = {
+    "test_exists": _check_test_exists,
+    "test_passes": _check_test_passes,
+    "file_exists": _check_file_exists,
+    "grep": _check_grep,
+    "command": _check_command,
+    "endpoint": _check_endpoint,
+}
+
+
+# ---------------------------------------------------------------------------
+# Contract loader
+# ---------------------------------------------------------------------------
+
+
+def _load_yaml(path: Path) -> dict[str, Any]:
+    """Load YAML using pyyaml (available in CI after pip install pyyaml)."""
+    try:
+        import yaml
+
+        with path.open() as f:
+            return yaml.safe_load(f) or {}
+    except ImportError:
+        pass
+
+    print(
+        "[WARN] pyyaml not installed; contract parsing skipped. "
+        "Install: pip install pyyaml",
+        flush=True,
+    )
+    return {}
+
+
+# ---------------------------------------------------------------------------
+# Main compliance runner
+# ---------------------------------------------------------------------------
+
+
+def _run_single_check(
+    check: dict[str, Any],
+    workspace: Path,
+    context: _CheckContext,
+) -> tuple[str, str, str]:
+    """Run a single ModelDodCheck and return (check_type, result, detail)."""
+    reason = _non_hermetic_reason(check)
+    if reason is not None:
+        # OMN-14051: reject an ssh/live-docker/network-egress check_value up
+        # front with an actionable message instead of executing it and surfacing
+        # a cryptic "command not found" BLOCK. _demote still applies the
+        # OMN-14436 grandfather downgrade, so the legacy corpus is reported, not
+        # wedged.
+        return str(check.get("check_type", "")), _RESULT_BLOCK, reason
+
+    check_type = check.get("check_type", "")
+    check_value = check.get("check_value", "")
+
+    runner = _CHECK_RUNNERS.get(check_type)
+    if runner is None:
+        return check_type, _RESULT_WARN, f"Unknown check_type '{check_type}'"
+    if check_type in _EXECUTED_COMMAND_CHECK_TYPES:
+        # OMN-16824: ONE dispatch for both, because they are one semantic --
+        # execute check_value, honour the check's cwd. Two branches here is
+        # exactly how the two readings drifted apart.
+        if check_type == "command" and check.get("cwd") is None:
+            # OMN-20504: answered by the checkout; never touches the quota breaker.
+            local = context.local_commits.verdict(check_value)
+            if local is not None:
+                return check_type, local[0], local[1]
+        if context.quota.tripped and "gh" in _command_binaries(str(check_value)):
+            context.quota.skipped += 1
+            return (
+                check_type,
+                _RESULT_BLOCK,
+                f"{_QUOTA_EXHAUSTED_PREFIX} -- GitHub API quota for this token is "
+                "spent; gh check not executed. First: "
+                f"{context.quota.first_message}",
+            )
+        result, detail = runner(
+            check_value,
+            workspace,
+            context.pr_number,
+            context.repo,
+            context.ticket_id,
+            context.contracts_dir,
+            check.get("cwd"),
+            context.quota,
+        )
+    else:
+        result, detail = runner(check_value, workspace)
+    return check_type, result, detail
+
+
+def _demote(
+    check: dict[str, Any],
+    result: str,
+    detail: str,
+    context: _CheckContext,
+) -> tuple[str, str, str]:
+    """Apply the OMN-14436 demotion rules to one check result.
+
+    Returns (result, detail, label). A BLOCK becomes a WARN when the check is
+    INADMISSIBLE under the OMN-15309 predicate (it does not execute, cannot go
+    RED, or reads only what this same change authors -- so its verdict says
+    nothing about the product) or when the ticket is grandfathered. Everything
+    else stands.
+    """
+    verdict = _classify_check(
+        check.get("check_value", ""),
+        context.changed_paths,
+        str(check.get("check_type", "command") or "command"),
+    )
+    if not verdict.admissible:
+        # Inadmissible checks are demoted whatever they returned: an inadmissible
+        # PASS is exactly the laundering this rule exists to stop.
+        return (
+            _RESULT_WARN,
+            f"INERT [{verdict.rule}] -- {verdict.reason}; proves nothing about "
+            f"{context.repo}. Original: {detail}",
+            "INERT",
+        )
+    if result == _RESULT_BLOCK and context.is_legacy:
+        return (
+            _RESULT_WARN,
+            f"GRANDFATHERED (OMN-14436 ratchet) -- would BLOCK. {detail}",
+            "GRANDFATHERED",
+        )
+    return result, detail, ""
+
+
+def _local_commit_shas(dod_evidence: list[Any], superseded: set[str]) -> set[str]:
+    """Every same-repo commit sha an executed item of this run will ask about."""
+    shas: set[str] = set()
+    for item in dod_evidence:
+        if (
+            not isinstance(item, dict)
+            or item.get("id") in superseded
+            or item.get("execution_scope") == _EXECUTION_SCOPE_LOCAL_DONE_GATE
+        ):
+            continue
+        checks = item.get("checks")
+        for check in checks if isinstance(checks, list) else []:
+            if (
+                isinstance(check, dict)
+                and check.get("check_type") == "command"
+                and check.get("cwd") is None
+                and (sha := _LocalCommitEvidence.sha_of(check.get("check_value")))
+            ):
+                shas.add(sha)
+    return shas
+
+
+def _run_dod_checks(
+    dod_evidence: list[Any],
+    workspace: Path,
+    context: _CheckContext,
+) -> list[tuple[str, str, str, str]]:
+    """Run all DoD checks and return (dod_id, check_type, result, detail) list."""
+    results: list[tuple[str, str, str, str]] = []
+    superseded = _superseded_dod_ids(dod_evidence)
+    disclosed_skips = _disclosed_skip_supersession_ids(dod_evidence)
+    context.local_commits.prime(_local_commit_shas(dod_evidence, superseded))
+    for dod_item in dod_evidence:
+        item_id = dod_item.get("id", "?") if isinstance(dod_item, dict) else "?"
+        item_desc = (
+            dod_item.get("description", "") if isinstance(dod_item, dict) else ""
+        )
+        print(f"\n[DoD {item_id}] {str(item_desc)[:80]}", flush=True)
+
+        validated_item, validation_error = _validate_dod_item(dod_item)
+        if validation_error is not None:
+            results.append(
+                (item_id, "dod_evidence_schema", _RESULT_BLOCK, validation_error)
+            )
+            print(f"  [X] dod_evidence_schema: {validation_error}", flush=True)
+            continue
+        assert validated_item is not None
+
+        checks = validated_item["checks"]
+        if not checks:
+            if item_id in disclosed_skips:
+                # OMN-15664 AC4: an item with no checks was previously always
+                # BLOCK, indistinguishable from an accidental omission. A
+                # disclosed skip (status "skipped", no checks, and an
+                # evidence_artifact supersession marker naming an earlier
+                # item) is an intentional, auditable statement that no check
+                # can exist (e.g. a universally-quantified claim no probe can
+                # falsify), not an omission. WARN, not BLOCK. See
+                # _disclosed_skip_supersession_ids for the exact honesty
+                # conditions (OMN-15413 AC6 incident: OCC#5975).
+                detail = (
+                    "DISCLOSED-SKIP SUPERSESSION -- dod_evidence item explicitly "
+                    "declares status='skipped' with no checks and "
+                    "evidence_artifact='supersedes_dod_evidence:<earlier-id>'; a "
+                    "disclosed, mechanically unprovable claim, not an omission."
+                )
+                results.append((item_id, "checks", _RESULT_WARN, detail))
+                print(f"  [~] checks: {detail}", flush=True)
+                continue
+            detail = (
+                "NO_EXECUTABLE_CHECKS -- dod_evidence item declares no checks; "
+                "an evidence requirement with no executable observation cannot "
+                "produce a gate result."
+            )
+            result = _RESULT_BLOCK
+            marker = "[X]"
+            if context.is_legacy:
+                result = _RESULT_WARN
+                marker = "[~]"
+                detail = "GRANDFATHERED (OMN-14436 content-pinned ratchet) -- " + detail
+            results.append((item_id, "checks", result, detail))
+            print(f"  {marker} checks: {detail}", flush=True)
+            continue
+
+        if item_id in superseded:
+            detail = (
+                "SUPERSEDED -- a later append-only dod_evidence item declares "
+                f"evidence_artifact='supersedes_dod_evidence:{item_id}'; old "
+                "evidence is preserved for audit but not re-executed against "
+                "the moved PR head."
+            )
+            results.append((item_id, "superseded", _RESULT_WARN, detail))
+            print(f"  [~] superseded: {detail}", flush=True)
+            continue
+
+        execution_scope = validated_item["execution_scope"]
+        if execution_scope == _EXECUTION_SCOPE_LOCAL_DONE_GATE:
+            detail = (
+                "NOT-EVALUATED [local_done_gate] -- hosted contract compliance "
+                "is not an authorized consumer; the local Done gate must execute "
+                "this item and persist its result."
+            )
+            results.append((item_id, "execution_scope", _RESULT_NOT_EVALUATED, detail))
+            print(f"  [-] execution_scope: {detail}", flush=True)
+            continue
+        for check in checks:
+            check_type, result, detail = _run_single_check(check, workspace, context)
+            result, detail, label = _demote(check, result, detail, context)
+            results.append((item_id, check_type, result, detail))
+            icon = {"PASS": "+", "WARN": "~", "BLOCK": "X"}.get(result, "?")
+            tag = f"{label} " if label else ""
+            print(f"  [{icon}] {tag}{check_type}: {detail}", flush=True)
+    return results
+
+
+def _validate_dod_item(
+    dod_item: Any,
+) -> tuple[dict[str, Any] | None, str | None]:
+    """Strictly validate one active item before any declared check can execute."""
+    if not isinstance(dod_item, dict):
+        return None, "INVALID_DOD_EVIDENCE_ITEM -- item must be a mapping"
+
+    execution_scope = dod_item.get("execution_scope", _EXECUTION_SCOPE_HOSTED_AND_LOCAL)
+    if not isinstance(execution_scope, str) or execution_scope not in _EXECUTION_SCOPES:
+        return None, (
+            f"UNKNOWN_EXECUTION_SCOPE {execution_scope!r} -- allowed values: "
+            f"{', '.join(sorted(_EXECUTION_SCOPES))}; refusing to execute with "
+            "an ambiguous evidence audience."
+        )
+
+    try:
+        validated = ModelDodEvidenceItem.model_validate(dod_item)
+    except ValidationError as exc:
+        locations = sorted(
+            {".".join(str(part) for part in error["loc"]) for error in exc.errors()}
+        )
+        return None, (
+            "INVALID_DOD_EVIDENCE_ITEM -- strict schema rejected field(s): "
+            f"{', '.join(locations)}"
+        )
+    return validated.model_dump(mode="json"), None
+
+
+def _superseded_dod_ids(dod_evidence: list[Any]) -> set[str]:
+    """Return dod_evidence ids explicitly superseded by later appended items."""
+    seen: set[str] = set()
+    superseded: set[str] = set()
+    for dod_item in dod_evidence:
+        if not isinstance(dod_item, dict):
+            continue
+        item_id = dod_item.get("id")
+        supersedes = _supersedes_marker(dod_item.get("evidence_artifact"))
+        if supersedes in seen:
+            superseded.add(supersedes)
+        if isinstance(item_id, str):
+            seen.add(item_id)
+    return superseded
+
+
+def _disclosed_skip_supersession_ids(dod_evidence: list[Any]) -> set[str]:
+    """Return dod_evidence ids that are honest, disclosed-skip terminal supersessions.
+
+    OMN-15664 AC4: an item with EMPTY ``checks`` previously always BLOCKed
+    (``NO_EXECUTABLE_CHECKS``), indistinguishable from an accidental
+    omission. A disclosed skip -- ``status: "skipped"``, no ``checks``, and
+    an ``evidence_artifact: "supersedes_dod_evidence:<id>"`` marker pointing
+    at an id already declared EARLIER in the list (same append-only ordering
+    rule as ``_superseded_dod_ids``) -- is not an omission: it is an
+    intentional, auditable statement that no executable check can exist for
+    this requirement (e.g. a universally-quantified claim no probe reachable
+    from the gate can falsify). Reported WARN, not BLOCK.
+
+    Any item missing ONE of these three conditions (no explicit "skipped"
+    status, non-empty checks, or a supersedes marker whose target was never
+    declared) is NOT in the returned set: fail closed, it still BLOCKs under
+    the normal NO_EXECUTABLE_CHECKS path.
+    """
+    seen: set[str] = set()
+    disclosed: set[str] = set()
+    for dod_item in dod_evidence:
+        if not isinstance(dod_item, dict):
+            continue
+        item_id = dod_item.get("id")
+        target = _supersedes_marker(dod_item.get("evidence_artifact"))
+        checks = dod_item.get("checks", [])
+        has_checks = isinstance(checks, list) and len(checks) > 0
+        if (
+            isinstance(item_id, str)
+            and target is not None
+            and target in seen
+            and dod_item.get("status") == "skipped"
+            and not has_checks
+        ):
+            disclosed.add(item_id)
+        if isinstance(item_id, str):
+            seen.add(item_id)
+    return disclosed
+
+
+def _supersedes_marker(value: object) -> str | None:
+    if not isinstance(value, str):
+        return None
+    prefix = "supersedes_dod_evidence:"
+    if not value.startswith(prefix):
+        return None
+    superseded = value[len(prefix) :].strip()
+    return superseded or None
+
+
+def _has_effective_check(
+    dod_evidence: list[Any], changed_paths: frozenset[str] | None = None
+) -> bool:
+    """True if any check is ADMISSIBLE under the OMN-15309 predicate.
+
+    A contract whose every check is inadmissible carries zero proof about the
+    code it claims to certify. Before OMN-14436 that was the norm, because the
+    runner only ever showed authors the receipt store -- so the legacy corpus is
+    grandfathered. A NEW ticket gets no such pass.
+    """
+    superseded = _superseded_dod_ids(dod_evidence)
+    for dod_item in dod_evidence:
+        if not isinstance(dod_item, dict):
+            continue
+        validated_item, validation_error = _validate_dod_item(dod_item)
+        if validation_error is not None or validated_item is None:
+            continue
+        if validated_item["id"] in superseded:
+            continue
+        if validated_item["execution_scope"] != _EXECUTION_SCOPE_HOSTED_AND_LOCAL:
+            continue
+        for check in validated_item["checks"]:
+            if not isinstance(check, dict):
+                continue
+            check_type = str(check.get("check_type", "") or "")
+            if check_type not in _CHECK_RUNNERS:
+                continue
+            if not _is_inert_check(
+                check.get("check_value", ""), changed_paths, check_type
+            ):
+                return True
+    return False
+
+
+def _outside_diff_state(changed_paths: frozenset[str]) -> str:
+    """One-line report of whether the OUTSIDE-ITS-OWN-DIFF rule could run.
+
+    An unresolved PR file list must be SAID OUT LOUD. A rule that silently does
+    not run is a false green -- the class OMN-15309 exists to close.
+    """
+    if changed_paths:
+        return f"ENFORCED ({len(changed_paths)} changed path(s))"
+    return (
+        "NOT EVALUATED -- PR file list unresolved; a check whose every path "
+        "operand is authored by this same PR will NOT be caught on this run"
+    )
+
+
+def _nothing_proven_summary(warns: int, not_evaluated: int, total: int) -> str:
+    """The line printed when no check FAILED but none PROVED anything either.
+
+    Do not call this "all checks satisfied" -- nothing was proven, and saying so
+    is the declaration-in-place-of-verification the ratchet exists to remove.
+    OMN-16824 folded NOT_EVALUATED into this branch: a contract whose every
+    check DECLINED (an unresolvable cross-repo ``cwd``) proved exactly as little
+    as one whose every check WARNed, and previously printed "All executable DoD
+    checks satisfied."
+    """
+    parts = [f"{warns}/{total} were WARN"]
+    if not_evaluated:
+        parts.append(f"{not_evaluated}/{total} were NOT_EVALUATED")
+    return (
+        f"[PASS] No enforceable DoD check failed, but {', '.join(parts)} "
+        "and 0 proved anything about the product."
+    )
+
+
+def run_compliance_check(
+    pr_number: int,
+    repo: str,
+    contracts_dir: Path,
+    workspace: Path,
+    legacy_tickets: dict[str, str] | None = None,
+) -> int:
+    """Run all contract compliance checks. Returns exit code (0=pass, 1=block)."""
+    ticket_id = _extract_ticket_id(pr_number, repo)
+    if not ticket_id:
+        print(
+            f"[WARN] No OMN ticket ID in PR #{pr_number} title/branch/body. "
+            "Skipping contract check.",
+            flush=True,
+        )
+        return 0
+
+    print(f"[INFO] Ticket: {ticket_id}, PR: #{pr_number}, Repo: {repo}", flush=True)
+
+    contract_path = contracts_dir / f"{ticket_id}.yaml"
+    if not contract_path.exists():
+        print(
+            f"[WARN] No contract at {contract_path}. "
+            "Backfill pending (OMN-8637). PR not blocked.",
+            flush=True,
+        )
+        return 0
+
+    print(f"[INFO] Contract: {contract_path}", flush=True)
+
+    contract = _load_yaml(contract_path)
+    if not contract:
+        print("[WARN] Contract file is empty or unreadable. Skipping.", flush=True)
+        return 0
+
+    dod_evidence = contract.get("dod_evidence", [])
+    if not dod_evidence:
+        print("[INFO] No dod_evidence checks in contract.", flush=True)
+        print("[PASS] No executable DoD checks. Contract acknowledged.", flush=True)
+        return 0
+
+    allow = legacy_tickets or {}
+    recorded = allow.get(ticket_id.upper())
+    actual = _contract_digest(contract_path)
+    is_legacy = recorded is not None and recorded == actual
+    if recorded is not None and not is_legacy:
+        print(
+            f"[INFO] {ticket_id} is in the grandfather allowlist but its contract "
+            "has been MODIFIED since the cutoff -- exemption REVOKED. A touched "
+            "contract must carry at least one product-observing check.",
+            flush=True,
+        )
+    changed_paths = _pr_changed_paths(pr_number, repo)
+    outside_diff_state = _outside_diff_state(changed_paths)
+    print(
+        f"[INFO] Workspace (product under test): {workspace}\n"
+        f"[INFO] Grandfathered (OMN-14436 ratchet): {is_legacy}\n"
+        f"[INFO] Admissibility predicate (OMN-15309): EXECUTED + FALSIFIABLE + "
+        f"OUTSIDE-ITS-OWN-DIFF\n"
+        f"[INFO] OUTSIDE-ITS-OWN-DIFF rule: {outside_diff_state}",
+        flush=True,
+    )
+
+    context = _CheckContext(
+        pr_number,
+        repo,
+        ticket_id,
+        contracts_dir,
+        is_legacy,
+        changed_paths,
+        local_commits=_LocalCommitEvidence(contracts_dir.parent),
+    )
+    results = _run_dod_checks(dod_evidence, workspace, context)
+
+    total = len(results)
+    passes = sum(1 for _, _, r, _ in results if r == _RESULT_PASS)
+    warns = sum(1 for _, _, r, _ in results if r == _RESULT_WARN)
+    blocks = sum(1 for _, _, r, _ in results if r == _RESULT_BLOCK)
+    not_evaluated = sum(1 for _, _, r, _ in results if r == _RESULT_NOT_EVALUATED)
+
+    not_evaluated_summary = f", {not_evaluated} NOT_EVALUATED" if not_evaluated else ""
+    print(
+        f"\n[SUMMARY] {ticket_id}: {passes}/{total} PASS"
+        f"{not_evaluated_summary}, {warns} WARN, {blocks} BLOCK",
+        flush=True,
+    )
+    context.quota.print_summary()
+    context.local_commits.print_summary()
+
+    # A contract with no check that can observe the product proves nothing about
+    # it. The legacy corpus is grandfathered (it was authored against a runner
+    # that only ever showed it the receipt store); a new ticket is not.
+    if not _has_effective_check(dod_evidence, changed_paths):
+        if is_legacy:
+            print(
+                "[WARN] Every check is INADMISSIBLE under the OMN-15309 predicate. "
+                "Grandfathered under the OMN-14436 ratchet -- reported, not enforced.",
+                flush=True,
+            )
+        else:
+            print(
+                f"[BLOCK] {ticket_id}: no hosted-and-local effective check exists "
+                f"-- every hosted check is INADMISSIBLE or every evidence item is "
+                f"reserved for another execution scope. Not one hosted check is "
+                f"EXECUTED, FALSIFIABLE, and OUTSIDE ITS OWN DIFF, so this contract "
+                f"cannot certify the code it claims to about {repo}.\n"
+                f"{admissible_evidence_guidance(repo)}",
+                flush=True,
+            )
+            return 1
+
+    if blocks > 0:
+        print(
+            f"[BLOCK] {blocks} check(s) failed. PR cannot merge until resolved.",
+            flush=True,
+        )
+        return 1
+
+    if (warns or not_evaluated) and not passes:
+        print(_nothing_proven_summary(warns, not_evaluated, total), flush=True)
+        return 0
+
+    print("[PASS] All executable DoD checks satisfied.", flush=True)
+    return 0
+
+
+# ---------------------------------------------------------------------------
+# Entry point
+# ---------------------------------------------------------------------------
+
+
+def main() -> int:
+    """CLI entry point."""
+    parser = argparse.ArgumentParser(description="Contract compliance CI gate")
+    parser.add_argument("--pr", required=True, type=int, help="PR number")
+    parser.add_argument("--repo", required=True, help="GitHub repo (org/name)")
+    parser.add_argument("--contracts-dir", default=None, help="Path to contracts dir")
+    parser.add_argument(
+        "--workspace",
+        default=None,
+        help=(
+            "Product checkout the DoD checks run against (default: CWD). "
+            "This MUST be the repo the PR changes -- pointing it at the "
+            "onex_change_control clone is the OMN-14436 defect."
+        ),
+    )
+    parser.add_argument(
+        "--legacy-allowlist",
+        default=None,
+        help=(
+            "Path to the OMN-14436 grandfather ratchet (one OMN ticket id per "
+            "line). Listed tickets still execute and report, but their failures "
+            "are demoted BLOCK -> WARN. Omit to enforce every ticket."
+        ),
+    )
+    args = parser.parse_args()
+
+    # Emergency-bypass toggle resolves from the integration contract + overlay
+    # (descriptor.emergency_bypass bound to ${env.EMERGENCY_BYPASS}, OMN-13563);
+    # empty string == disabled. Lazy import keeps this standalone CI script's
+    # module load free of the package import.
+    from onex_change_control.integrations import contract_descriptor
+
+    bypass_env = contract_descriptor.emergency_bypass()
+    if bypass_env:
+        print(
+            f"[EMERGENCY_BYPASS] Bypass activated by: {bypass_env}. "
+            "All contract checks skipped. This action is audited.",
+            flush=True,
+        )
+        print(f"[AUDIT] repo={args.repo} pr={args.pr} bypass={bypass_env}", flush=True)
+        return 0
+
+    script_path = Path(__file__).resolve()
+    contracts_dir = _find_contracts_dir(args.contracts_dir, script_path)
+    workspace = Path(args.workspace).resolve() if args.workspace else Path.cwd()
+    legacy_path = Path(args.legacy_allowlist) if args.legacy_allowlist else None
+    legacy_tickets = _load_legacy_allowlist(legacy_path)
+
+    return run_compliance_check(
+        pr_number=args.pr,
+        repo=args.repo,
+        contracts_dir=contracts_dir,
+        workspace=workspace,
+        legacy_tickets=legacy_tickets,
+    )
+
+
+if __name__ == "__main__":
+    sys.exit(main())

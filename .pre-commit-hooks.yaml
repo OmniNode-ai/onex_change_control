@@ -1,0 +1,101 @@
+---
+- id: cosmetic-lint
+  name: Cosmetic lint (OmniNode standards)
+  description: Cross-repo cosmetic linter enforcing OmniNode platform standards.
+  language: python
+  entry: cosmetic-lint check
+  types: [file]
+  pass_filenames: false
+  always_run: true
+  stages: [pre-commit]
+
+- id: no-untyped-metadata
+  name: No untyped metadata dict fields
+  description: Block dict[str, Any] metadata fields without ONEX_EXCLUDE comment.
+  language: python
+  entry: check-no-untyped-metadata
+  types: [python]
+  exclude: ^tests/|^examples/|^scripts/
+  stages: [pre-commit]
+
+- id: no-hardcoded-topics
+  name: No hardcoded ONEX topic strings
+  description: Reject hardcoded onex.evt.*/onex.cmd.* topic strings outside approved constant files.
+  language: python
+  entry: check-hardcoded-topics
+  types_or: [python, yaml, ts, javascript]
+  stages: [pre-commit]
+
+- id: no-bare-feature-flags
+  name: No bare ENABLE_*/*_ENABLED env var checks
+  description: Reject bare feature flag env var reads — use contract-declared flags.
+  language: python
+  entry: check-bare-feature-flags
+  types_or: [python, ts, javascript]
+  stages: [pre-commit]
+
+- id: check-ts-stubs
+  name: ONEX TypeScript Stub Detector
+  description: >
+    Grep-based detection of forbidden stub markers (// stub:) in TS/JS files. Allows // stub-ok: <reason>
+    and // intentional-skip: <reason> as escape hatches.
+  language: script
+  entry: scripts/check_ts_stubs.sh
+  pass_filenames: true
+  types_or: [ts, tsx, javascript, jsx]
+  exclude: ^(node_modules/|dist/|\.next/)
+  stages: [pre-commit]
+
+- id: no-untracked-todos
+  name: No untracked TODO/FIXME/HACK comments
+  description: Require all TODO/FIXME/HACK comments to reference a Linear ticket (OMN-XXXX).
+  language: python
+  entry: check-todo-format
+  types: [python]
+  stages: [pre-commit]
+
+- id: check-migration-conflicts
+  name: Check migration conflicts
+  description: Detect conflicting CREATE TABLE definitions across repositories.
+  language: python
+  entry: check-migration-conflicts
+  pass_filenames: false
+  always_run: true
+  stages: [pre-push]
+
+- id: no-required-anthropic-key
+  name: Block ANTHROPIC_API_KEY as required (OMN-7467)
+  description: >
+    Claude Code uses OAuth, not API keys. Block new code that treats ANTHROPIC_API_KEY as required. This
+    regression has occurred 6+ times. Suppress with: # anthropic-key-ok: <reason>
+  language: python
+  entry: check-anthropic-key-guard
+  types_or: [python, markdown, yaml, ts, javascript]
+  exclude: ^(tests/|examples/|docs/)
+  stages: [pre-commit]
+
+- id: check-bot-authored-authz-guard
+  name: Reject bot-authored authz changes (OMN-14919 / OMN-15008)
+  description: >
+    Pre-commit mirror of the check-bot-authored-authz-guard CI gate (OMN-14919): rejects a staged change
+    touching grants/** or allowlists/** whose commit identity is a known machine identity. Same evaluate()
+    decision core as the CI gate; local mode substitutes the in-progress commit's `git var GIT_AUTHOR_IDENT`/`GIT_COMMITTER_IDENT`
+    identity for the merged-PR author/committer history (no pr-author-login/type facts exist locally —
+    weaker but real defense-in-depth).
+  language: python
+  entry: check-bot-authored-authz-guard --staged
+  files: ^(grants/|allowlists/)
+  pass_filenames: false
+  stages: [pre-commit]
+
+- id: check-env-var-contract
+  name: Env var contract enforcement
+  description: >
+    Validates required env var reads against env_contract.yaml allowlist. Blocked vars (ANTHROPIC_API_KEY)
+    always fail. Unlisted vars warn. Suppress with: # env-contract-ok: <reason>
+  language: python
+  entry: check-env-var-contract
+  types_or: [python, markdown, yaml, ts, javascript]
+  exclude: ^(tests/|examples/|docs/)
+  stages: [pre-commit]
+  additional_dependencies: ['pyyaml']

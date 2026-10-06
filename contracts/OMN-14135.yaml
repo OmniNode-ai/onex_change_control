@@ -1,0 +1,142 @@
+---
+schema_version: "1.0.0"
+ticket_id: "OMN-14135"
+title: "OCC companion for omnibase_infra#2285 — handler dispatch-entrypoint gate"
+summary: >
+  OCC evidence companion for OmniNode-ai/omnibase_infra#2285 (OMN-14135). The product PR ships the fail-closed
+  wiring-time guard OMN-14135 asks for: a handler can be contract-declared, auto-wired, instantiated,
+  boot clean and GREEN in CI while exposing NO dispatch entrypoint at all. _make_dispatch_callback resolves
+  handle_async then handle; finding neither it binds _missing_handle, which raises ModelOnexError on the
+  FIRST real dispatch. Registration and routing do NOT imply executability — the dispatcher still registers
+  and the payload still routes to it, so contract validation, auto-wiring, boot, and the dispatch-selection
+  oracle all stay green. That is exactly why the OMN-14488 route-coverage gates are blind to it: a dispatcher
+  bound to _missing_handle registers and routes normally, and that gate's fake handler HAS a handle. Contract
+  tests prove INGRESS and never prove DISPATCH. HandlerA2ATask shipped this way (OMN-14489/#2280, merged):
+  declared, wired, ingress-valid, CI-green, exposing only submit()/watch(). A platform census found 40
+  of 153 distinct contract-declared handlers have no entrypoint. The gate is a canonical validator that
+  reuses the EXACT auto-wiring predicate, wired BOTH as a required CI step and a pre-commit hook (detection
+  without enforcement gets ignored), with a shrink-only YAML baseline that additionally fails when a FIXED
+  handler is left listed, so the ratchet can never go stale. HandlerA2ATask is deliberately NOT baselined
+  and a test asserts it can never be granted an exemption — evidence asserts the desired end state, never
+  the current broken one.
+is_seam_ticket: true
+interface_change: false
+interfaces_touched: []
+evidence_requirements:
+  - kind: "manual"
+    description: "omnibase_infra#2285 head ships a fail-closed dispatch-entrypoint gate wired as CI +
+      pre-commit, RED against EXISTS-but-WRONG."
+    command: "see dod_evidence check_values"
+emergency_bypass:
+  enabled: false
+  justification: ""
+  follow_up_ticket_id: ""
+dod_evidence:
+  - id: "dod-verify-2285-runtime-predicate"
+    description: >-
+      Product-observing check against omnibase_infra#2285 head 29c92ef28da5aa753c00388d64a2722382458a86.
+      Reads the shipped validator and asserts it tests the DISPATCH BIND using the EXACT predicate auto-wiring
+      uses — callable handle_async OR callable handle, the same resolution order as _make_dispatch_callback
+      — rather than validating a contract. A gate that only drove contract/ingress validation would reproduce
+      the precise blindness that let HandlerA2ATask ship: it would ask a question the defect does not
+      answer. The check also asserts the validator names _missing_handle, i.e. it is written against the
+      real runtime failure mode.
+    source: "manual"
+    status: "verified"
+    checks:
+      - check_type: "command"
+        check_value: >-
+          t="$(mktemp)" && gh api "repos/OmniNode-ai/omnibase_infra/contents/src/omnibase_infra/validators/handler_dispatch_entrypoint.py?ref=29c92ef28da5aa753c00388d64a2722382458a86"
+          --jq .content | base64 -d > "$t" && grep -F -- 'def has_dispatch_entrypoint' "$t" && grep -F
+          -- 'callable(getattr(cls, "handle_async", None)) or callable(' "$t" && grep -F -- 'getattr(cls,
+          "handle", None)' "$t" && grep -F -- '_missing_handle' "$t"
+  - id: "dod-verify-2285-enforcement-ci-precommit"
+    description: >-
+      Product-observing check against the PR head. Asserts the gate is ENFORCEMENT, not detection (CLAUDE.md
+      rule 5): the same validator module is invoked BOTH as a step in the already-required ci.yml lint
+      job AND as a pre-commit hook id handler-dispatch-entrypoint. Deliberately not pytest-only — the
+      governed change-aware test selector could narrow a pytest gate away on the very PR that adds an
+      entrypointless handler, which is the one PR it must catch. The pre-commit hook is additionally scoped
+      to (py|yaml) so a contract.yaml that declares an entrypointless handler trips it even when no Python
+      changes.
+    source: "manual"
+    status: "verified"
+    checks:
+      - check_type: "command"
+        check_value: >-
+          c="$(mktemp)" && p="$(mktemp)" && gh api "repos/OmniNode-ai/omnibase_infra/contents/.github/workflows/ci.yml?ref=29c92ef28da5aa753c00388d64a2722382458a86"
+          --jq .content | base64 -d > "$c" && gh api "repos/OmniNode-ai/omnibase_infra/contents/.pre-commit-config.yaml?ref=29c92ef28da5aa753c00388d64a2722382458a86"
+          --jq .content | base64 -d > "$p" && grep -F -- 'omnibase_infra.validators.handler_dispatch_entrypoint'
+          "$c" && grep -F -- 'id: handler-dispatch-entrypoint' "$p" && grep -F -- 'omnibase_infra.validators.handler_dispatch_entrypoint'
+          "$p"
+  - id: "dod-verify-2285-red-exists-but-wrong"
+    description: >-
+      Product-observing check against the PR head. Asserts the gate goes RED against the EXISTS-but-WRONG
+      state rather than against absence (a gate that only fires when a handler is MISSING is vacuous).
+      Two mechanisms are asserted: (1) HandlerA2ATask — the victim that exposed this defect class, which
+      exists, is contract-declared and wires cleanly — is NOT in the frozen baseline, and test_a2a_task_is_not_baselined
+      asserts it can never be granted an exemption; (2) the shrink-only ratchet additionally FAILS when
+      a handler that has GAINED an entrypoint is left listed in the baseline, so the list can never go
+      stale. Together these forbid encoding the gap as a passing check: no assertion in this PR is green
+      BECAUSE the system is broken.
+    source: "manual"
+    status: "verified"
+    checks:
+      - check_type: "command"
+        check_value: >-
+          b="$(mktemp)" && v="$(mktemp)" && g="$(mktemp)" && gh api "repos/OmniNode-ai/omnibase_infra/contents/config/validation/handler_dispatch_entrypoint_baseline.yaml?ref=29c92ef28da5aa753c00388d64a2722382458a86"
+          --jq .content | base64 -d > "$b" && gh api "repos/OmniNode-ai/omnibase_infra/contents/src/omnibase_infra/validators/handler_dispatch_entrypoint.py?ref=29c92ef28da5aa753c00388d64a2722382458a86"
+          --jq .content | base64 -d > "$v" && gh api "repos/OmniNode-ai/omnibase_infra/contents/tests/unit/runtime/auto_wiring/test_handler_dispatch_entrypoint_coverage_omn14489.py?ref=29c92ef28da5aa753c00388d64a2722382458a86"
+          --jq .content | base64 -d > "$g" && ! grep -F -- 'handler: HandlerA2ATask' "$b" && grep -F --
+          'def test_a2a_task_is_not_baselined' "$g" && grep -F -- 'stale = sorted(baseline - live)' "$v"
+          && grep -F -- 'def test_baseline_is_shrink_only_and_never_stale' "$g"
+  - id: "dod-verify-2285-non-vacuity"
+    description: >-
+      Product-observing check against the PR head. Asserts the gate cannot pass vacuously. (1) A collapsed
+      contract scan fails CLOSED: the validator enforces a MIN_EXPECTED_DECLARED_HANDLERS floor and returns
+      1 rather than reporting success over an empty set. (2) The predicate is proven to DISCRIMINATE:
+      test_entrypoint_predicate_discriminates asserts a submit()-only class (the exact HandlerA2ATask
+      shape) is rejected while def-B handle and handle_async classes are accepted — without which a predicate
+      that returned True unconditionally would make every other assertion vacuously green. (3) The pytest
+      gate imports the shipped validator instead of re-implementing the scan, and drives its main() entrypoint,
+      so the tests exercise THE ARTIFACT THAT RUNS in CI and pre-commit — a test carrying its own copy
+      of the predicate could stay green while the shipped validator was broken.
+    source: "manual"
+    status: "verified"
+    checks:
+      - check_type: "command"
+        check_value: >-
+          v="$(mktemp)" && g="$(mktemp)" && gh api "repos/OmniNode-ai/omnibase_infra/contents/src/omnibase_infra/validators/handler_dispatch_entrypoint.py?ref=29c92ef28da5aa753c00388d64a2722382458a86"
+          --jq .content | base64 -d > "$v" && gh api "repos/OmniNode-ai/omnibase_infra/contents/tests/unit/runtime/auto_wiring/test_handler_dispatch_entrypoint_coverage_omn14489.py?ref=29c92ef28da5aa753c00388d64a2722382458a86"
+          --jq .content | base64 -d > "$g" && grep -F -- 'MIN_EXPECTED_DECLARED_HANDLERS' "$v" && grep
+          -F -- 'vacuity guard' "$v" && grep -F -- 'def test_entrypoint_predicate_discriminates' "$g"
+          && grep -F -- 'from omnibase_infra.validators.handler_dispatch_entrypoint import' "$g" && grep
+          -F -- 'def test_validator_cli_passes_on_current_tree' "$g"
+  - id: "dod-rebind-2285-head-c0798e63"
+    description: >-
+      Product-head rebind for omnibase_infra#2285 after the product PR advanced from the originally evidenced
+      head 29c92ef28da5aa753c00388d64a2722382458a86 to live head c0798e63ebcd059ab514a1c6fe8585282fc24277.
+      The delta is an empty rerun commit whose subject is "chore(OMN-14135): fresh SHA to re-run occ-preflight
+      after Evidence-Source body edit"; there is no file diff between the two SHAs. This item does not
+      replace the substantive product evidence above; it binds the current merge candidate SHA so Receipt
+      Gate does not rely on evidence for a stale product head.
+    source: "manual"
+    status: "verified"
+    checks:
+      - check_type: "command"
+        check_value: >-
+          test "$(gh pr view 2285 --repo OmniNode-ai/omnibase_infra --json headRefOid --jq .headRefOid)"
+          = "c0798e63ebcd059ab514a1c6fe8585282fc24277" && gh api "repos/OmniNode-ai/omnibase_infra/compare/29c92ef28da5aa753c00388d64a2722382458a86...c0798e63ebcd059ab514a1c6fe8585282fc24277"
+          --jq '((.files | length) == 0) and ((.commits | length) == 1) and (.commits[0].sha == "c0798e63ebcd059ab514a1c6fe8585282fc24277")'
+          | grep -Fx true
+  - id: "dod-occ-self-commit"
+    description: >-
+      Self-bind item for this OCC companion PR. It asserts a fact about this companion branch so validator_occ_merge_eligibility
+      can bind a PASS receipt to the OCC PR under check via commit_sha before a PR number exists. Product-observing
+      evidence is carried by the four entries above; this item is binding only.
+    source: "manual"
+    status: "verified"
+    checks:
+      - check_type: "command"
+        check_value: >-
+          grep -q 'jonah/omn-14135-occ-infra-2285-dispatch-entrypoint-gate' drift/dod_receipts/OMN-14135/dod-occ-self-commit/command.yaml

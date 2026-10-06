@@ -1,0 +1,51 @@
+---
+schema_version: "1.0.0"
+ticket_id: "OMN-13535"
+title: "Propagate per-tier metered cost across escalation to the delegation projection"
+summary: >
+  On an escalated delegation the metered tier's cost_usd never reached the delegation_events projection:
+  each attempted tier was recorded into escalation_history without its tokens/cost and workflow.inference_*
+  was reset for the next tier, so the terminal reported only the FINAL accepted tier. When a metered cheap_cloud
+  tier ran, was rejected by the quality gate, and escalation landed on a free tier, the terminal recorded
+  cost_usd=0 despite a real multi-thousand-token metered call. The fix prices each attempted tier once
+  (the same recompute_actual_cost_and_savings the projection uses), stamps the cost into escalation_history
+  before the inference reset, accumulates non-terminal attempt spend (banked only on escalation branches
+  so the terminal attempt is not double-counted), and reports final_tier_cost + cumulative_prior_attempt_cost.
+  The projection re-derives the same total. Net: an escalated metered delegation now produces a row with
+  tokens>0 and cost_usd>0.
+is_seam_ticket: false
+interface_change: false
+interfaces_touched: []
+evidence_requirements:
+  - kind: "tests"
+    description: "Escalation metered-cost projection unit suite passes (the metered->free escalation DoD
+      rows)."
+    command: "uv run pytest tests/unit/delegation/test_escalation_metered_cost_reaches_projection_omn13535.py
+      -q"
+emergency_bypass:
+  enabled: false
+  justification: ""
+  follow_up_ticket_id: ""
+dod_evidence:
+  - id: "dod-omnimarket-pr-1362"
+    description: "omnimarket PR #1362 carries the orchestrator + projection per-tier metered cost fix
+      and the new escalation unit suite."
+    source: "manual"
+    checks:
+      - check_type: "command"
+        check_value: "gh pr view ${PR_NUMBER} --repo ${REPO} --json headRefOid -q .headRefOid"
+  - id: "dod-deploy-no-runtime-impact"
+    description: "Orchestrator + projection handler source and unit tests only; no live deploy, broker
+      mutation, or schema migration required before merge."
+    source: "manual"
+    checks:
+      - check_type: "command"
+        check_value: "echo 'deploy-gate: OMN-13535 changes orchestrator/projection handler logic and unit
+          tests only; no live deploy required before merge'"
+  - id: "dod-occ-pr-self"
+    description: "OCC self-binding receipt for the central evidence PR carrying the OMN-13535 contract
+      and receipts."
+    source: "manual"
+    checks:
+      - check_type: "command"
+        check_value: "gh pr view ${PR_NUMBER} --repo ${REPO} --json headRefOid -q .headRefOid"

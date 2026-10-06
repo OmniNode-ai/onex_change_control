@@ -1,0 +1,98 @@
+---
+schema_version: "1.0.0"
+ticket_id: "OMN-13156"
+title: "Bump omnimarket sibling pins to dev tips (unblock dev redeploy) — OMN-12977 ratchet drift"
+summary: >-
+  The OMN-12977 sibling-lock-pin preflight (omnibase_infra/scripts/runtime_build/check_sibling_lock_pins.py)
+  correctly BLOCKS the dev-lane workspace build because omnimarket origin/dev uv.lock pinned OLDER sibling
+  versions than the sibling repos' dev tips (5 forward-drifts: omnibase_infra 0.38.1->0.38.3, omnibase_core
+  0.44.0->0.44.2, omnibase_spi 0.20.6->0.22.0, omnibase_compat 0.5.1->0.5.4, onex_change_control 0.5.0->0.5.1).
+  ALLOW_SIBLING_PIN_DRIFT=1 is the wrong remediation (operator-approval override, not available). The
+  canonical fix is a durable lock bump to the dev tips. omnimarket PR #1222 (branch jonah/omn-13156-bump-sibling-pins-dev-tips,
+  base=dev, head fb1e059965a27c1157b80a203c7425b89c7f9f1d) bumps the 5 sibling pins in pyproject.toml
+  (project.dependencies constraints, [tool.uv.sources] git revs, [tool.uv] override-dependencies) + uv
+  lock to the dev-tip versions/SHAs. Notable: omnibase-spi constraint widened >=0.20.6,<0.22.0 -> >=0.22.0,<0.23.0
+  (dev tip is the new 0.22.0 minor). After the bump the OMN-12977 preflight reports "All 5 sibling pins
+  match uv.lock" (was 5 DRIFT/forward, exit 1 -> exit 0), unblocking the dev redeploy that bakes omnimarket
+  origin/dev HEAD 9298fcec (OMN-13140 escalation emit). Lock + pyproject change only — no source change,
+  no DDL, no migration, no live deploy, no .201 mutation by this PR.
+is_seam_ticket: false
+interface_change: false
+interfaces_touched: []
+emergency_bypass:
+  enabled: false
+  justification: ""
+  follow_up_ticket_id: ""
+dod_evidence:
+  - id: "dod-omnimarket-pr"
+    description: >-
+      omnimarket PR #1222 (branch jonah/omn-13156-bump-sibling-pins-dev-tips, base=dev, head fb1e059965a27c1157b80a203c7425b89c7f9f1d)
+      bumps the 5 sibling pins to the dev tips. uv lock re-resolved cleanly: omnibase_infra 0.38.3 (649b233a),
+      omnibase_core 0.44.2 (35fce1b6), omnibase_spi 0.22.0, omnibase_compat 0.5.4 (6db82516), onex_change_control
+      0.5.1 (1c95c63b). The OMN-12977 sibling-pin preflight now reports "All 5 sibling pins match uv.lock"
+      (exit 0; was exit 1). ruff check + ruff format --check clean; mypy src/omnimarket --strict clean
+      (2349 source files, spi 0.22.0 compat confirmed at type level); full suite 7412 passed / 68 skipped
+      / 9 deselected, 0 failed (pytest -m "not kafka", NO -k filter); pre-commit all hooks pass on changed
+      files. No real sibling incompatibility.
+    source: "manual"
+    status: "verified"
+    checks:
+      - check_type: "command"
+        check_value: >-
+          grep -q '^status: PASS$' "$CONTRACT_REPO_DIR/drift/dod_receipts/OMN-13156/dod-omnimarket-pr/command.yaml"
+          && grep -q '^ticket_id: "OMN-13156"$' "$CONTRACT_REPO_DIR/drift/dod_receipts/OMN-13156/dod-omnimarket-pr/command.yaml"
+          && grep -q '^pr_number: 1222$' "$CONTRACT_REPO_DIR/drift/dod_receipts/OMN-13156/dod-omnimarket-pr/command.yaml"
+  - id: "dod-deploy-assessment"
+    description: >-
+      Deploy assessment: deploy_pending = true at PR time. This is a lock/pyproject pin bump only; it
+      carries no runtime code change of its own. It UNBLOCKS the dev-lane redeploy (OMN-13119 sequence)
+      that bakes omnimarket origin/dev HEAD 9298fcec. The redeploy itself is a separate live-deploy step
+      recorded in docs/evidence/2026-06-14-final-aligned/identity/dev.json. This PR performs no live deploy,
+      restart, topic mutation, or .201 mutation. Do not claim deployed from this PR.
+    source: "manual"
+    status: "verified"
+    checks:
+      - check_type: "command"
+        check_value: >-
+          grep -q '^status: PASS$' "$CONTRACT_REPO_DIR/drift/dod_receipts/OMN-13156/dod-deploy-assessment/command.yaml"
+          && grep -q '^ticket_id: "OMN-13156"$' "$CONTRACT_REPO_DIR/drift/dod_receipts/OMN-13156/dod-deploy-assessment/command.yaml"
+          && grep -q 'No live deploy' "$CONTRACT_REPO_DIR/drift/dod_receipts/OMN-13156/dod-deploy-assessment/command.yaml"
+  - id: "dod-occ-pr"
+    description: >-
+      This OCC PR carries the central OMN-13156 contract and the dod-omnimarket-pr / dod-deploy-assessment
+      receipts that the omnimarket PR #1222 Receipt-Gate resolves via Evidence-Source: OCC#<pr>.
+    source: "manual"
+    status: "verified"
+    checks:
+      - check_type: "command"
+        check_value: >-
+          grep -q '^status: PASS$' "$CONTRACT_REPO_DIR/drift/dod_receipts/OMN-13156/dod-occ-pr/command.yaml"
+          && grep -q '^ticket_id: "OMN-13156"$' "$CONTRACT_REPO_DIR/drift/dod_receipts/OMN-13156/dod-occ-pr/command.yaml"
+  - id: "dod-infra-pin-pr1223"
+    description: >-
+      Follow-up omnimarket PR #1223 (branch jonah/omn-13156-bump-infra-pin-fix1, base=dev, head 94942bb1f122095a491aa7374ee49ae4406151ad)
+      corrects the infra pin from 649b233a (#1984, stale clone read) to a96fb355 (#1985, OMN-13150 FIX-1).
+      Both version 0.38.3 — a one-commit SHA freshness correction so the dev redeploy bakes FIX-1 and
+      the runtime image revision advances 649b233a -> a96fb355. sibling-pin preflight clean; ruff + ruff
+      format clean; mypy src/omnimarket --strict clean (2349 files); full suite 7412 passed / 68 skipped
+      / 9 deselected, 0 failed (pytest -m "not kafka", NO -k filter).
+    source: "manual"
+    status: "verified"
+    checks:
+      - check_type: "command"
+        check_value: >-
+          grep -q '^status: PASS$' "$CONTRACT_REPO_DIR/drift/dod_receipts/OMN-13156/dod-infra-pin-pr1223/command.yaml"
+          && grep -q '^ticket_id: "OMN-13156"$' "$CONTRACT_REPO_DIR/drift/dod_receipts/OMN-13156/dod-infra-pin-pr1223/command.yaml"
+          && grep -q '^pr_number: 1223$' "$CONTRACT_REPO_DIR/drift/dod_receipts/OMN-13156/dod-infra-pin-pr1223/command.yaml"
+  - id: "dod-occ-pr-fix1"
+    description: >-
+      This follow-up OCC PR #2639 carries the dod-infra-pin-pr1223 receipt that the omnimarket PR #1223
+      Receipt-Gate resolves via Evidence-Source: OCC#2639; PR-bound to OCC PR #2639 for the merge-eligibility
+      validator.
+    source: "manual"
+    status: "verified"
+    checks:
+      - check_type: "command"
+        check_value: >-
+          grep -q '^status: PASS$' "$CONTRACT_REPO_DIR/drift/dod_receipts/OMN-13156/dod-occ-pr-fix1/command.yaml"
+          && grep -q '^ticket_id: "OMN-13156"$' "$CONTRACT_REPO_DIR/drift/dod_receipts/OMN-13156/dod-occ-pr-fix1/command.yaml"

@@ -1,0 +1,41 @@
+---
+schema_version: "1.0.0"
+ticket_id: "OMN-16863"
+evidence_item_id: "dod-omn-16863-ac4-cross-tenant-negative-live"
+check_type: "command"
+check_value: |-
+  gh api repos/OmniNode-ai/omninode_infra/actions/jobs/101884148344/logs | awk '/existing: provider=/{n++; if ($0 ~ /cred_af432b87/) leak++} END{exit !(n==1 && (leak+0)==0)}'
+contract_sha256: "sha256:ad67d45c61eb8a34cda01642becacd91ffa63bc3fbbe9c9112ab9564b1a77926"
+contract_entry_sha256: "sha256:3d83b1807393371b715c77cb7920a110102f37b836f3ded6b72c443c5f670e04"
+status: PASS
+run_timestamp: "2026-09-08T01:15:00Z"
+commit_sha: "73be20139d52781fee64227e3bfd186aa70af97e"
+runner: "beta-proof-omn16863"
+verifier: "staging-readonly-readback"
+probe_command: |-
+  gh api repos/OmniNode-ai/omninode_infra/commits/73be20139d52781fee64227e3bfd186aa70af97e --jq '.sha'  # authority pin for this receipt's commit_sha
+  gh api repos/OmniNode-ai/omninode_infra/actions/jobs/101884148344/logs | awk '/existing: provider=/{n++; if ($0 ~ /cred_af432b87/) leak++} END{exit !(n==1 && (leak+0)==0)}'
+probe_stdout: |
+  rows=1 leak=0
+  GREEN job=101884148344 exit=0 (deploy run 34168455641, log line 4375, 2026-09-07T23:19:43.3015942Z)
+  RED   job=101667713188 exit=1 rows=0 (deploy run 34097642948, log line 4111, 2026-09-07T08:25:46.3824185Z)
+  db_readback_as_of=2026-09-08T01:03:05.069395Z instance=i-06169517a92b45f86 pod=onex-api-69bcbf5d9b-pqvvj
+  TOTAL_ROWS=2 tenant af432b87-4390-4c76-af97-ee9e158936e7=1 active, tenant 91c74442-1233-4c97-b191-911a10346fdf=1 active
+  to_regclass(public.tenant_inference_credentials)=tenant_inference_credentials; to_regclass(public.zzz_does_not_exist)=None
+  consumer group onex-dev.omnimarket-projections.tenant-credentials-writer.consume.v1 STATE=Stable MEMBERS=1 committed offset 2
+actual_output: |-
+  PASS: AC4's cross-tenant negative is proven on the deployed staging surface. A second
+  tenant (91c74442-1233-4c97-b191-911a10346fdf), authenticated with its own gateway key, issued
+  GET /v1/tenants/me/inference-credentials against the deployed onex-api and its response
+  enumerated exactly one row - its own glm credential - with the other tenant's
+  cred_af432b87-..._openrouter_... absent, at a moment the relation provably contained both rows.
+  POSITIVE CONTROL on the zero: the same call on the earlier job enumerated zero rows and then
+  returned that tenant's own row 12.6s later, so an always-empty endpoint, an unreachable relation
+  and a broken query are all excluded. RED control: the same probe exits 1 on job 101667713188.
+  The same pass also discharged AC3's real-row half: the tenant-credentials-writer consumer group
+  reads STATE=Stable, MEMBERS=1 with committed offset 2 on onex.evt.omnimarket.credential-registered.v1
+  (offset 2 == 2 rows, so the rows arrived through the consumer, not by hand), with a nonexistent
+  group id absent among TOTAL_GROUPS=765 as the control. AC2 was re-verified live in the same
+  session (to_regclass non-NULL, with to_regclass('public.zzz_does_not_exist')=None as the negative
+  control proving the probe discriminates).
+exit_code: 0

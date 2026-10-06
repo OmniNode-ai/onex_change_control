@@ -1,0 +1,77 @@
+---
+schema_version: "1.0.0"
+ticket_id: "OMN-16363"
+title: "Runner disk-admission gate breaks the ENOSPC write-amplification loop"
+summary: >
+  Structural fix for the .201 runner-fleet ENOSPC write-amplification loop (OMN-16360 incident, recurred
+  twice on 2026-08-22). Adds a pre-job disk-admission gate to docker/runners/runner-job-started.sh that
+  fails a job BEFORE any write-heavy step when free disk is below a floor, plus a consecutive-failure
+  self-pause escalation and a host-side guarded restore script/timer, for OmniNode-ai/omnibase_infra PR
+  #2842.
+is_seam_ticket: false
+interface_change: false
+interfaces_touched: []
+evidence_requirements:
+  - kind: "ci"
+    description: "PR #2842 CI checks green"
+    command: "gh pr checks ${PR_NUMBER} --repo ${REPO}"
+emergency_bypass:
+  enabled: false
+  justification: ""
+  follow_up_ticket_id: ""
+dod_evidence:
+  - id: "dod-OmniNode-ai-omnibase_infra-pr-2842"
+    description: "PR #2842 on OmniNode-ai/omnibase_infra — Evidence-Source binding."
+    source: "generated"
+    checks:
+      - check_type: "command"
+        check_value: "gh pr view 2842 --repo OmniNode-ai/omnibase_infra --json number,state,headRefOid"
+      - check_type: "command"
+        check_value: "gh pr view 2842 --repo OmniNode-ai/omnibase_infra --json files"
+  - id: "dod-deploy-probe-disk-admission-gate-live-content"
+    description: >
+      Falsifiable content probe (OMN-15309 admissibility predicate, no-live-deploy variant per OMN-14051):
+      reads the ACTUAL merged/pushed file content from GitHub at PR #2842's head SHA and asserts the disk-admission
+      gate function and its call site both landed. Not a receipt/self-grep — this fetches the live repository
+      object via the GitHub contents API and greps real bytes.
+    source: "generated"
+    checks:
+      - check_type: "command"
+        check_value: >-
+          gh api "repos/OmniNode-ai/omnibase_infra/contents/docker/runners/runner-job-started.sh?ref=3dadc94fc5482c5af5af98ab55ae8c377e66ae3b"
+          --jq '.content' | base64 -d | grep -c "^disk_admission_gate() {"
+      - check_type: "command"
+        check_value: >-
+          gh api "repos/OmniNode-ai/omnibase_infra/contents/docker/runners/runner-job-started.sh?ref=3dadc94fc5482c5af5af98ab55ae8c377e66ae3b"
+          --jq '.content' | base64 -d | grep -c "^disk_admission_gate || exit 1"
+      - check_type: "command"
+        check_value: >-
+          gh api "repos/OmniNode-ai/omnibase_infra/contents/scripts/runner-disk-admission-restore.sh?ref=3dadc94fc5482c5af5af98ab55ae8c377e66ae3b"
+          --jq '.content' | base64 -d | grep -c "slope-plus-canary"
+  - id: "dod-occ-evidence-admissibility-validator"
+    description: "Hosted OCC evidence admissibility validator (OMN-15247)."
+    source: "generated"
+    evidence_artifact: "supersedes_dod_evidence:dod-OmniNode-ai-omnibase_infra-pr-2842"
+    checks:
+      - check_type: "command"
+        check_value: "uv run pytest tests/test_evidence_admissibility.py -q"
+  - id: "dod-OmniNode-ai-omnibase_infra-pr-2849"
+    description: >
+      PR #2849 on OmniNode-ai/omnibase_infra -- Evidence-Source binding. Follow-up docs-only PR formalizing
+      Layer 0 (tune2fs filesystem-reserve fix) on the same OMN-16363 ticket as the already-evidenced functional
+      PR #2842; needs its own PASS receipt bound to PR #2849's own number/commit or occ-preflight returns
+      pr_ticket_mismatch (same pattern as the omnimarket#2126/OCC#6905 self-bind precedent).
+    source: "generated"
+    checks:
+      - check_type: "command"
+        check_value: "gh pr view 2849 --repo OmniNode-ai/omnibase_infra --json number,state,headRefOid"
+  - id: "occ-self-bind-pr-6907"
+    description: >
+      OCC companion PR #6907 -- self-bind for OMN-16363. Required by the receipt gate: without a PASS
+      receipt bound to this PR, occ-preflight returns pr_ticket_mismatch (same pattern as occ-self-bind-pr-6905;
+      #6907's own title cites OMN-16363, so it needs its own self-bind receipt independent of the omnibase_infra#2849
+      companion entry it carries).
+    source: "generated"
+    checks:
+      - check_type: "command"
+        check_value: "gh pr view 6907 --repo OmniNode-ai/onex_change_control --json number,state"

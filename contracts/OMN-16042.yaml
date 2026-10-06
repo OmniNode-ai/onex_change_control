@@ -1,0 +1,86 @@
+---
+schema_version: 1.0.0
+ticket_id: OMN-16042
+title: Persistent gateway session store + authoritative cross-replica readback
+summary: "OCC companion for OmniNode-ai/omninode_infra PR #899. Gateway sessions existed only in per-process
+  heaps — an in-process dict in the attach node and a process-wide correlation registry in onex-api —
+  with no schema in the cloud database at all, so the canary had no surface to read a session back from
+  and a shared consumer group stranded correlation waiters on non-publishing replicas. This companion
+  binds the evidence that the session projection tables exist with a paired rollback, that the migration
+  is wired into the CI migration chain in the same change (the acl_state lesson), and that multi-replica
+  convergence is enforced by a monotonic UPSERT rather than by session affinity.\n"
+is_seam_ticket: true
+interface_change: true
+interfaces_touched:
+  - public_api
+evidence_requirements:
+  - kind: ci
+    description: 'PR #899 CI checks green'
+    command: gh pr checks ${PR_NUMBER} --repo ${REPO}
+dod_evidence:
+  - id: dod-OmniNode-ai-omninode_infra-pr-899
+    description: 'PR #899 on OmniNode-ai/omninode_infra carries the persistent session store.'
+    source: generated
+    checks:
+      - check_type: command
+        check_value: gh pr view 899 --repo OmniNode-ai/omninode_infra --json number,state
+  - id: dod-migration-wired-into-ci-chain
+    description: "The forward migration is applied by the onex-api-tests chain at the PR head — the merged-but-unwired
+      defect class this ticket must not repeat."
+    source: generated
+    checks:
+      - check_type: command
+        check_value: gh api repos/OmniNode-ai/omninode_infra/contents/.github/workflows/onex-api-tests.yml?ref=f869ac1306d73a0270e0788af8fff5660a4b09f0
+          --jq '.content' | base64 -d | grep -c 'apply db/migrations/20260813_gateway_sessions.sql'
+  - id: dod-forward-and-rollback-migrations-present
+    description: Both the forward migration and its paired rollback exist at the PR head.
+    source: generated
+    checks:
+      - check_type: command
+        check_value: gh api repos/OmniNode-ai/omninode_infra/contents/db/migrations/rollback/20260813_gateway_sessions_rollback.sql?ref=f869ac1306d73a0270e0788af8fff5660a4b09f0
+          --jq '.name'
+  - id: dod-monotonic-upsert-guard-present
+    description: Multi-replica convergence is enforced by a monotonicity guard inside the UPSERT, not
+      by session affinity or a read-then-write.
+    source: generated
+    checks:
+      - check_type: command
+        check_value: gh api repos/OmniNode-ai/omninode_infra/contents/docker/onex-api/gateway_session_store.py?ref=f869ac1306d73a0270e0788af8fff5660a4b09f0
+          --jq '.content' | base64 -d | grep -c 'EXCLUDED.last_event_at >= public.gateway_sessions.last_event_at'
+  - id: occ-self-bind-pr-6470
+    description: 'Binds OMN-16042 to OCC companion PR #6470 (self-bind).'
+    source: generated
+    checks:
+      - check_type: command
+        check_value: gh pr view 6470 --repo OmniNode-ai/onex_change_control --json number,state
+  - id: dod-migrate-image-pin-carries-gateway-sessions
+    description: "The deploy half of AC1. PR #899 created the migration and wired it into the CI chain,
+      but the migrate Job runs from a baked image that is built only on push to main plus workflow_dispatch,
+      so the deploy that followed #899 reported applied=0 skipped=35 and never saw the file. This check
+      reads the migrate manifest back from the product PR head and asserts the initContainer is pinned
+      to the digest of the image built from dev HEAD 9f8a010 — the first image that contains 20260813_gateway_sessions.sql.
+      Falsified both directions before this receipt was minted: exit 0 at the PR head 8812cb2, exit 1
+      at the base 9f8a010, so the check cannot pass on the unfixed tree. Content of the two images verified
+      by digest, not tag: sha256:8f6f811 lists 36 .sql and contains gateway_sessions, the prior pin sha256:9cc0237
+      lists 35 and does not.\n"
+    source: generated
+    checks:
+      - check_type: command
+        check_value: body="$(gh api 'repos/OmniNode-ai/omninode_infra/contents/k8s/migrations/omninode-cloud-migrate.yaml?ref=8812cb2bc8bc2cf2a0b06466893c13e2d93e5599'
+          --jq .content | base64 -d)" && printf '%s' "$body" | grep -qF 'omninode-cloud-migrate:9f8a0103db3b327fa7928611c715c7988e48ece6@sha256:8f6f811ea2abd1512999101d62790074c79a062a09b79622d2e7ddf076fa56a7'
+  - id: dod-OmniNode-ai-omninode_infra-pr-902
+    description: 'PR #902 on OmniNode-ai/omninode_infra carries the migrate-image repin.'
+    source: generated
+    checks:
+      - check_type: command
+        check_value: gh pr view 902 --repo OmniNode-ai/omninode_infra --json number,state
+  - id: occ-self-bind-pr-6486
+    description: 'Binds OMN-16042 to OCC companion PR #6486 (self-bind) for the migrate-image repin.'
+    source: generated
+    checks:
+      - check_type: command
+        check_value: gh pr view 6486 --repo OmniNode-ai/onex_change_control --json number,state
+emergency_bypass:
+  enabled: false
+  justification: ''
+  follow_up_ticket_id: ''

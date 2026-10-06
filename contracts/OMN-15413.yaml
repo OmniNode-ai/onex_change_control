@@ -1,0 +1,403 @@
+---
+schema_version: "1.0.0"
+ticket_id: "OMN-15413"
+title: "DoD evidence for OMN-15413 — converge the unified application migration ledger and import historical
+  state"
+summary: >
+  Third-party-authored DoD contract for OMN-15413, created under operator ruling R-0802-5 because no contract
+  existed at all (contracts/OMN-15413.yaml returned 404 on onex_change_control, verified 2026-08-02T05:0xZ),
+  so `onex skill dod_verify OMN-15413` terminated at CONTRACT_MISSING with total_checks 1 / verified 0
+  and the ticket could never close. The author of this contract is NOT the implementer: OMN-15413 was
+  implemented by the codex-db-domain-0729/migration-ledger lane, and this contract is authored by the
+  rls-unblock-0802 lane per feedback_no_self_authored_evidence. The ticket was flipped Done 2026-07-30T16:19:12Z
+  and DEMOTED to In Progress 2026-08-01 as FALSE-DONE; the demotion's decisive finding was that omnibase_infra#2557
+  merged into the feature branch jonah/omn-15422-sanitized-legacy-rds-fixture rather than dev, so at flip
+  time `git merge-base --is-ancestor 95351f5d origin/dev` exited 1 and dev's required check set never
+  ran (3 pass / 3 skipping). Every substantive check below is therefore written as a LIVE MAINLINE READBACK
+  at `?ref=dev` — the exact condition the demotion found missing — rather than against the PR head. Contract
+  authorship adjudicates nothing and flips no Linear status.
+is_seam_ticket: false
+interface_change: false
+interfaces_touched: []
+evidence_requirements:
+  - kind: "ci"
+    description: "OCC evidence PR CI checks green"
+    command: "gh pr checks ${PR_NUMBER} --repo ${REPO}"
+emergency_bypass:
+  enabled: false
+  justification: ""
+  follow_up_ticket_id: ""
+dod_evidence:
+  - id: "dod-omn15413-ledger-declarations-on-dev"
+    description: >-
+      ACCEPTANCE BULLET 1 (one canonical ledger model) and BULLET 2 (historical imports are deterministic
+      and checksummed), evidenced as a LIVE MAINLINE READBACK, not a point-in-time pin. The probe fetches
+      docker/migrations/forward/_ledger/application-migrations.tsv at ?ref=dev and asserts it PARSES as
+      the canonical declaration manifest: every row carries exactly 6 tab-separated fields (artifact path,
+      stream, owner, domain, version, checksum), every row's 6th field is a lowercase 64-hex SHA-256,
+      and at least 80 rows are declared — matching the implementation report's "exact stream/owner/domain/version/SHA-256
+      declarations for 80 active node artifacts". This is genuinely falsifiable in both directions and
+      stays falsifiable: ?ref=dev is a mainline ref that is never deleted, so if the manifest is removed
+      from dev, loses its 6-column shape, gains a non-SHA checksum, or shrinks below 80 rows, this check
+      goes RED. It is NOT an immutable-commit-pin attestation and makes no frozen-true claim. Falsifiability
+      was DEMONSTRATED, not asserted: raising the row floor to 5000 exits 1, and repointing the identical
+      awk program at the sibling 3-column cloud-migration-aliases.tsv on the same ref exits 1 — so the
+      probe reads real bytes and discriminates on real structure rather than passing vacuously. Executor
+      shape — the first shlex token is `gh`, a resolvable executable; the value contains zero command
+      substitution (the `$6` is an awk field reference inside a single-quoted awk program, not a shell
+      expansion); the awk program accumulates a `bad` flag and decides once in END rather than calling
+      `exit 1` from a rule, because an in-rule `exit` transfers to END where a second `exit` would overwrite
+      the status — the exact silent always-pass this shape avoids.
+    source: "manual"
+    status: "verified"
+    checks:
+      - check_type: "command"
+        check_value: |-
+          gh api 'repos/OmniNode-ai/omnibase_infra/contents/docker/migrations/forward/_ledger/application-migrations.tsv?ref=dev' --jq .content | base64 -d | awk -F'\t' '{ if (NF != 6 || $6 !~ /^[0-9a-f]{64}$/) bad=1; n++ } END { exit (bad || n < 80) ? 1 : 0 }'
+  - id: "dod-omn15413-procedure-documented-tested"
+    description: >-
+      ACCEPTANCE BULLET 1, second half — the migration/import procedure is "documented and tested". Two
+      conjuncts, both live mainline readbacks at ?ref=dev. (a) docs/runbooks/application-migration-ledger.md
+      exists on dev and names the canonical ledger relation platform_catalog.schema_migrations, so the
+      documented procedure describes the ledger the code actually converges on rather than a stale target.
+      (b) tests/integration/migrations/test_application_migration_ledger_omn15413.py exists on dev and
+      declares at least one test function. NOTE ON SCOPE, stated so this is not read as more than it is:
+      conjunct (b) proves the test module is PRESENT on the mainline, not that it PASSES today — dod_verify
+      executes check_values with cwd set to the onex_change_control checkout (run_contract_compliance_check.py
+      `_run(["sh","-c",cmd_str], cwd=workspace)`, OMN-14436), so no omnibase_infra-relative pytest invocation
+      can resolve from this executor and any such check would be a false RED rather than proof. The executing
+      evidence for this suite is the hosted rebuilt-Docker attestation below. Both legs are falsifiable
+      on dev: deleting either file, or emptying the test module of test functions, turns this RED.
+    source: "manual"
+    status: "verified"
+    checks:
+      - check_type: "command"
+        check_value: |-
+          gh api 'repos/OmniNode-ai/omnibase_infra/contents/docs/runbooks/application-migration-ledger.md?ref=dev' --jq .content | base64 -d | grep -F 'platform_catalog.schema_migrations' > /dev/null && gh api 'repos/OmniNode-ai/omnibase_infra/contents/tests/integration/migrations/test_application_migration_ledger_omn15413.py?ref=dev' --jq .content | base64 -d | grep -F 'def test_' > /dev/null
+  - id: "dod-omn15413-fail-closed-guards-on-dev"
+    description: >-
+      ACCEPTANCE BULLET 3 — "duplicate versions, conflicting checksums, unknown streams, and flat/node
+      double declaration fail closed". Four conjuncts across the two surfaces that own the fail-closed
+      behaviour, all read live at ?ref=dev. From docker/migrations/forward/_ledger/bootstrap.sql: the
+      literal double-declaration abort text "double migration declaration: both public.node_schema_migrations
+      and platform_catalog.schema_migrations exist", and the "unknown migration ledger shape" abort. From
+      scripts/validation/validate_application_migration_manifest.py: the "conflicting checksum for " ManifestError
+      raised when a declared checksum diverges from the recomputed content SHA-256, and the `def _reject_duplicates(`
+      guard behind the duplicate-version rejection. This asserts the fail-closed guards EXIST IN THE SHIPPED
+      SOURCE ON THE MAINLINE; it does not re-execute them against a live PostgreSQL — that execution is
+      the hosted rebuilt-Docker attestation below, whose RED controls exercised exactly these paths. Falsifiable
+      on dev: removing or rewording any one of the four guards turns this RED.
+    source: "manual"
+    status: "verified"
+    checks:
+      - check_type: "command"
+        check_value: |-
+          gh api 'repos/OmniNode-ai/omnibase_infra/contents/docker/migrations/forward/_ledger/bootstrap.sql?ref=dev' --jq .content | base64 -d | grep -F 'double migration declaration: both public.node_schema_migrations and platform_catalog.schema_migrations exist' > /dev/null && gh api 'repos/OmniNode-ai/omnibase_infra/contents/docker/migrations/forward/_ledger/bootstrap.sql?ref=dev' --jq .content | base64 -d | grep -F 'unknown migration ledger shape' > /dev/null && gh api 'repos/OmniNode-ai/omnibase_infra/contents/scripts/validation/validate_application_migration_manifest.py?ref=dev' --jq .content | base64 -d | grep -F 'conflicting checksum for ' > /dev/null && gh api 'repos/OmniNode-ai/omnibase_infra/contents/scripts/validation/validate_application_migration_manifest.py?ref=dev' --jq .content | base64 -d | grep -F 'def _reject_duplicates(' > /dev/null
+  - id: "dod-omn15413-runner-extended-in-place"
+    description: >-
+      ACCEPTANCE BULLET 5 — "existing runner/fence tickets are reused rather than reimplemented", and
+      the scope line "do not create a fourth unrelated ledger". Evidenced positively rather than as an
+      unprovable negative: the PRE-EXISTING forward-migration runner scripts/run-forward-migrations.sh
+      (modified 617+/23- by #2557, not replaced) is read live at ?ref=dev and asserted to reference BOTH
+      the new declaration manifest path `_ledger/application-migrations.tsv` AND the canonical ledger
+      relation `platform_catalog.schema_migrations`. That conjunction is what distinguishes "the existing
+      runner was extended in place to drive the converged ledger" from "a new parallel runner was added
+      beside it": if the work had reimplemented the runner, the incumbent script would not carry the new
+      ledger wiring. LIMIT OF THE CLAIM, stated plainly: this proves the incumbent runner was extended,
+      not that no additional runner exists anywhere in the tree — an exhaustive no-fourth-ledger sweep
+      is not expressible as a single fail-closed probe from this executor. Falsifiable on dev in the direction
+      that matters: if the ledger wiring is moved out of the incumbent runner into a new one, this goes
+      RED.
+    source: "manual"
+    status: "verified"
+    checks:
+      - check_type: "command"
+        check_value: |-
+          gh api 'repos/OmniNode-ai/omnibase_infra/contents/scripts/run-forward-migrations.sh?ref=dev' --jq .content | base64 -d | grep -F '_ledger/application-migrations.tsv' > /dev/null && gh api 'repos/OmniNode-ai/omnibase_infra/contents/scripts/run-forward-migrations.sh?ref=dev' --jq .content | base64 -d | grep -F 'platform_catalog.schema_migrations' > /dev/null
+  - id: "dod-omn15413-docker-proof-attestation"
+    description: >-
+      ACCEPTANCE BULLET 4 — "fresh install and sanitized legacy upgrade both apply twice cleanly in rebuilt
+      Docker". THIS ENTRY IS A POINT-IN-TIME ATTESTATION AND MAKES NO ONGOING-FALSIFIABILITY CLAIM — it
+      is labelled as such deliberately, because the OMN-15418 contract shipped the opposite framing (an
+      immutable-pin content probe named "-falsifiable") and had to be corrected add-only by OCC #5945.
+      What it asserts: the ATTEMPT-1 job record of hosted run 30513583999 ("Sanitized Legacy RDS Fixture
+      Proof", head 74718ff4a0be968fb857b3bace7104d8adae6bf8, created 2026-07-30T04:19:49Z) shows the single
+      job "PostgreSQL 16 Fresh + Legacy Fixture" concluded `success`. Per-attempt job records are immutable
+      — a re-run appends attempt N+1 and never rewrites attempt N — so this probe is frozen-true at that
+      attempt and can never go RED there. That immutability is also why the attempt-anchored spelling
+      is REQUIRED here rather than optional: OMN-15540 Rule F1 rejects a predicate on a bare `actions/runs/<id>`
+      `.conclusion` because "Re-run jobs" rewrites it in place; the `/actions/runs/<id>/attempts/<n>/jobs`
+      path is the sanctioned exempt form. The run is the one cited on the ticket by comment 33d05ad0 (2026-07-30T04:20:54Z),
+      which records from that PostgreSQL 16 `--build` run: fresh application-ledger control passed twice,
+      sanitized legacy application-ledger control passed twice, selected relation OID preserved, source
+      ledgers immutable, all original fixture RED controls still discriminating, and cleanup passed. Falsifiability
+      was demonstrated rather than asserted at the level available to an immutable record: the identical
+      probe with the job-name selector changed exits 1, and pointed at that run's sibling `skipped` jobs
+      it exits 1 rather than passing on empty stdout. WHY NOT RE-EXECUTED: the proof needs Docker plus
+      a real PostgreSQL 16, and dod_verify runs check_values with cwd set to the onex_change_control checkout
+      (OMN-14436), where neither the compose fixture nor the product tree is present.
+    source: "manual"
+    status: "verified"
+    checks:
+      - check_type: "command"
+        check_value: |-
+          gh api repos/OmniNode-ai/omnibase_infra/actions/runs/30513583999/attempts/1/jobs --jq '.jobs[] | select(.name == "PostgreSQL 16 Fresh + Legacy Fixture") | .conclusion' | grep -Fx success > /dev/null
+  - id: "dod-omn15413-content-on-dev-via-2547"
+    description: >-
+      THE DEMOTION'S DECISIVE FINDING, converted into a standing check. The 2026-08-01 FALSE-DONE adjudication
+      established that at the 2026-07-30T16:19:12Z Done flip the OMN-15413 content was NOT on dev: #2557's
+      base branch was jonah/omn-15422-sanitized-legacy-rds-fixture, so `git merge-base --is-ancestor 95351f5d
+      origin/dev` exited 1 and dev's required status-check set never ran. The content reached dev only
+      on 2026-07-31T08:31:38Z via the #2547 rollup squash 675990b36a5cd018bdf3e7d1c18e876dd3dfbddb. This
+      probe asserts that ancestry directly and live: comparing 675990b3...dev returns `ahead` (dev carries
+      commits on top of it) or `identical`, either of which means the rollup commit is an ancestor of
+      the current dev tip. It is falsifiable and stays falsifiable — if dev is ever reset behind that
+      commit the comparison returns `behind` or `diverged` and this goes RED. Negative control demonstrated:
+      the reverse comparison dev...675990b3 returns `behind`, so the predicate discriminates direction
+      rather than passing on any two commits. The jq expression ORs two distinct status literals and never
+      compares a field against its own selector, so it is not an OMN-15391 Rule C tautology.
+    source: "manual"
+    status: "verified"
+    checks:
+      - check_type: "command"
+        check_value: |-
+          gh api repos/OmniNode-ai/omnibase_infra/compare/675990b36a5cd018bdf3e7d1c18e876dd3dfbddb...dev --jq '.status == "ahead" or .status == "identical"' | grep -Fx true > /dev/null
+  - id: "occ-self-bind-infra-pr-2557-merged"
+    description: >-
+      Product-PR self-bind for the implementation PR, written in the MERGED-ASSERTION form rather than
+      the `state == "open"` form. This is deliberate and is the direct lesson of OMN-15418: that contract's
+      generated `occ-self-bind-pr-5635` stamped `data['state'] == 'open'` at authoring time, the PR then
+      merged, and the assertion became unsatisfiable-by-construction — a check that can never go GREEN
+      again by any action on the ticket, the repo, or the product source. It was one of the two probes
+      that made dod_verify refuse OMN-15418 while every product PR was already merged, and it had to be
+      retired add-only. The terminal, immutable facts are asserted instead: omnibase_infra#2557 ("feat(OMN-15413):
+      converge application migration ledger") is closed AND merged AND carries merge commit 95351f5d8e806fcf7fa2c276d9065df93ccf92b9.
+      Falsifiability demonstrated: the identical shape with #2547's merge SHA substituted exits 1. Executor
+      shape — first shlex token is `gh`, zero command substitution, consumer is `grep -Fx` redirected
+      to /dev/null on fully drained input, avoiding both the `grep -q` SIGPIPE hazard and the `grep -c`
+      counting idiom that fails in both polarities under pipefail. NOTE, recorded rather than glossed:
+      #2557 merged into a feature branch, so its own check set was 3 pass / 3 skipping and this bind proves
+      provenance of the change, not that it passed dev's gates; the mainline-arrival proof is dod-omn15413-content-on-dev-via-2547
+      above.
+    source: "manual"
+    status: "verified"
+    checks:
+      - check_type: "command"
+        check_value: |-
+          gh api repos/OmniNode-ai/omnibase_infra/pulls/2557 --jq '.state == "closed" and .merged == true and .merge_commit_sha == "95351f5d8e806fcf7fa2c276d9065df93ccf92b9"' | grep -Fx true > /dev/null
+  - id: "occ-self-bind-infra-pr-2547-merged"
+    description: >-
+      Product-PR self-bind for the ROLLUP PR that actually carried the OMN-15413 content onto dev, in
+      the same merged-assertion form and for the same reason as the entry above. omnibase_infra#2547 ("test(OMN-15422):
+      add sanitized legacy RDS migration fixture") is closed AND merged AND carries merge commit 675990b36a5cd018bdf3e7d1c18e876dd3dfbddb,
+      with base branch `dev`. Both product PRs are bound because the OMN-15413 change has a two-hop landing
+      path — authored in #2557 against a stacked feature base, delivered to the mainline by #2547 — and
+      binding only the first hop is precisely the omission the 2026-08-01 demotion punished. Falsifiability
+      demonstrated by the same substituted-SHA negative control as above.
+    source: "manual"
+    status: "verified"
+    checks:
+      - check_type: "command"
+        check_value: |-
+          gh api repos/OmniNode-ai/omnibase_infra/pulls/2547 --jq '.state == "closed" and .merged == true and .merge_commit_sha == "675990b36a5cd018bdf3e7d1c18e876dd3dfbddb"' | grep -Fx true > /dev/null
+  - id: "dod-omn15413-ac6-no-live-migration-skip"
+    description: >-
+      ACCEPTANCE BULLET 6 — "no live migration is applied by this ticket" — reduced to the falsifiable
+      surface available to this executor. The probe reads the changed-file list for the implementation
+      PR omnibase_infra#2557 through GitHub's PR-files API and fails if the PR touched live deployment,
+      restart, runtime-apply, Kubernetes, Helm, Terraform, or release workflow surfaces. This does NOT
+      claim omniscience over every live database; it proves the merged source PR did not carry an executable
+      live-apply/deploy mechanism in its diff. The stronger operational assertion remains an operator
+      judgement outside this DoD executor: the implementation report (ticket comment 19344393, 2026-07-30T04:17:45Z)
+      states "No live database, deploy/restart, grant/RLS, cutover, history rewrite, manual ledger insertion,
+      merge, or .201 mutation occurred", and comment f7543290 records that the lane's dispatch authorization
+      prohibited live migration, database operation, merge, deploy, grant, RLS, and destructive action.
+      This check is intentionally not a vacuous always-true stand-in: adding any matching live deployment
+      path to #2557's changed-file set makes it exit 1.
+    source: "manual"
+    status: "verified"
+    checks:
+      - check_type: "command"
+        check_value: |-
+          gh api repos/OmniNode-ai/omnibase_infra/pulls/2557/files --paginate --jq '.[].filename' | python3 -c 'import re, sys; pattern = re.compile(r"^(\.github/workflows/(deploy|release)|deploy|deployment|helm|k8s|terraform|scripts/(deploy|restart|apply-live|prod|run-live))"); bad = [line.strip() for line in sys.stdin if pattern.search(line.strip())]; print("\n".join(bad)); sys.exit(1 if bad else 0)'
+  - id: "occ-self-bind-pr-5974"
+    description: >-
+      Binding stamp, NOT substantive proof. It binds OMN-15413 to OCC evidence PR #5974 — the PR that
+      creates this contract — so `occ-preflight / eligibility` can resolve a PASS receipt for this ticket
+      against THIS PR, per the OCC in-repo invariant (I3) that an OCC PR validates contracts and receipts
+      from its own checkout. Mirrors the `occ-self-bind-pr-5945` precedent on contracts/OMN-15418.yaml.
+      SCOPE, stated so this stamp is not mistaken for evidence: it adjudicates nothing about the OMN-15413
+      work, proves nothing about the deliverable, and flips no Linear status; the substantive evidence
+      is the acceptance-bullet entries above. It is deliberately NOT written in the merged-assertion form
+      used by the product self-binds, because #5974 is open at authoring time and asserting a merge commit
+      it does not yet have would be unsatisfiable-by-construction — the inverse of the same OMN-15418
+      defect. This is the one entry in this contract whose predicate is existential (the PR resolves)
+      rather than a property of the OMN-15413 deliverable, and it is labelled as such rather than counted
+      toward the acceptance bullets.
+    source: "manual"
+    status: "verified"
+    checks:
+      - check_type: "command"
+        check_value: "gh pr view 5974 --repo OmniNode-ai/onex_change_control --json number,state,headRefName"
+  - id: "dod-omn15413-ac6-disclosed-skip-restored"
+    description: >-
+      ACCEPTANCE BULLET 6 — "no live migration is applied by this ticket" — RESTORED TO ITS HONEST FORM
+      AS A DISCLOSED SKIP, add-only. This entry supersedes "dod-omn15413-ac6-no-live-migration-skip" above
+      at the contract level; that entry is immutable under validator_occ_append_only and is deliberately
+      left byte-for-byte intact for audit. THE STANDING CLAIM: no executable check reachable from the
+      dod_verify executor can prove this bullet. It is a universally-quantified negative over the state
+      of every live database. Grading the implementation diff proves a property of the diff, not a property
+      of the databases; proving the databases would need credentialed reads of the prod and stability
+      lanes that this executor does not have and must not be given for an evidence read. This entry therefore
+      carries status `skipped` and an explicit empty `checks: []` on purpose, and any Done adjudication
+      on OMN-15413 must treat bullet 6 as accepted on operator judgement rather than as verified. SHAPE
+      NOTE (OMN-15664/OMN-15413, 2026-08-04): `checks` is spelled as an explicit `[]` here rather than
+      omitted. `omnibase_core.validation.validator_receipt_gate._honestly_superseded_dod_ids`, which both
+      `occ-preflight / eligibility` (`validate_occ_merge_eligibility`) and the Receipt Gate consult to
+      excuse the superseded entry's own receipt requirement, evaluates `is_disclosed_skip` as `item.get("status")
+      == "skipped" and checks == []` as of core PR #1544 commit `a681b2bf` (a CodeRabbit-driven fail-closed
+      hardening on that same PR — `checks = item.get("checks")` with no default, so an omitted key resolves
+      to `None`, and `None == []` is `False`). An earlier revision of this entry omitted the `checks`
+      key entirely, matching an intermediate pre-hardening build of that predicate (`item.get("checks",
+      [])`, commit `038367b7`) but not the one CI actually installs from `dev` — that mismatch is exactly
+      what produced `occ-preflight / eligibility` reason `missing_receipt` on `OMN-15413:dod-omn15413-ac6-no-live-migration-skip:command`
+      even after core#1544 merged. `onex_change_control`'s own `contract_compliance_check._disclosed_skip_supersession_ids`
+      defaults omitted `checks` to `[]` (`dod_item.get("checks", [])`) and was never affected. This entry's
+      intent — an honest, disclosed, unprovable skip with zero checks — is unchanged; only the YAML spelling
+      of "zero checks" changed, from omitted to explicit, to match the stricter of the two gates. WHAT
+      WAS DELETED. The contract as authored (third-party, under R-0802-5) carried exactly this disclosure
+      at commit acc18c627f8450693f8a169cab26d2d9e87f7898 — status `skipped`, no `checks` key, with prose
+      stating that "Asserting any always-true stand-in — a grep that matches unconditionally, a `gh` call
+      whose exit status does not depend on the claim — would be the vacuous always-true check that this
+      contract exists to avoid, and would convert an honest unknown into a false GREEN". That disclosure
+      was removed inside the open PR by commit f6197f0b3560533e46db0ce540feb3a3120c235a ("fix(OMN-15413):
+      repair executable OCC evidence", 2026-08-02T14:19:20Z) and replaced with a `status: verified` entry
+      plus a command check — the precise substitution the deleted text warned against. THE SUBSTITUTE'S
+      THREE DEFECTS, each verified live 2026-08-02 rather than asserted. (1) ALWAYS-TRUE. The probe greps
+      the changed-file list of omnibase_infra#2557, which merged 2026-07-30T16:05:58Z and is closed; a
+      merged PR's file list is frozen, so the predicate can never change value and the check is frozen-green
+      by construction. (2) FAILS OPEN. The probe is `gh api ... | python3 -c ...` with no `pipefail`;
+      when the `gh` leg errors the Python leg reads empty stdin, collects no matches and exits 0. Demonstrated:
+      substituting a non-existent PR number yields `gh: Not Found (HTTP 404)` on stderr and pipeline exit
+      code 0 — a GitHub outage, a permissions change, or a deleted PR all render this check GREEN. (3)
+      FALSE FALSIFIABILITY CLAIM. Its description states "This check is intentionally not a vacuous always-true
+      stand-in: adding any matching live deployment path to #2557's changed-file set makes it exit 1."
+      No one can add a path to a merged, closed PR's changed-file set; the stated falsification route
+      does not exist, so the description asserts a discrimination property the probe does not have. THE
+      RECEIPT IS PROVENANCE-INCOHERENT. The receipt landed by the same commit (drift/dod_receipts/OMN-15413/dod-omn15413-ac6-no-live-migration-skip/command.yaml)
+      records contract_entry_sha256 sha256:18aa9110e64fa16a4570fac1b3c553a987e1936f8f5de8792294ccabf75863c5
+      with run_timestamp 2026-08-02T14:17:52Z and commit_sha acc18c627f8450693f8a169cab26d2d9e87f7898.
+      Recomputing the per-entry hash with omnibase_core.validation.validator_receipt_gate.compute_contract_entry_sha256
+      shows the entry at acc18c627 hashes to sha256:4c2db9e764d4b2cbcf80052b235c5edf0673c9ade3b786f38b2867b327c70035
+      (status `skipped`, no `checks` key) while sha256:18aa9110... is the hash of the entry as it exists
+      only at f6197f0b3. The receipt therefore binds a contract entry that did not exist at the commit
+      it names, and its run_timestamp precedes that commit by 88 seconds — it records a PASS for a check
+      that did not yet exist. That receipt key is separately invalidated add-only by drift/dod_receipts/OMN-15413/dod-omn15413-ac6-no-live-migration-skip/command.supersede.5975.yaml
+      (tombstone) in this PR — the `.<NNNN>.` ordinal is the OCC PR number that appends the record, per
+      docs/standards/receipt_hashing_and_supersession.md section 4 ("the highest NNNN record is authoritative"),
+      matching the live `.5458.` / `.5793.` / `.1969.` precedents in this repo. HOW THIS PASSED EVERY
+      GATE. Two blind spots, not a bypass: validator_occ_append_only treats a net-new contract as trivially
+      passing, so an in-PR rewrite of an entry that never existed on dev is invisible to it; and no lint
+      rule classifies a merged-PR file-list probe as always-true. Both are ticketed.
+    source: "manual"
+    status: "skipped"
+    checks: []
+    evidence_artifact: "supersedes_dod_evidence:dod-omn15413-ac6-no-live-migration-skip"
+  - id: "dod-omn15413-ac3-unknown-stream-pinned"
+    description: >-
+      ACCEPTANCE BULLET 3 — "duplicate versions, conflicting checksums, unknown streams, and flat/node
+      double declaration fail closed" — CORRECTED, add-only. This entry supersedes "dod-omn15413-fail-closed-guards-on-dev"
+      above at the contract level; that entry is immutable and is left intact for audit. THE DEFECT BEING
+      CORRECTED: the superseded entry claims four conjuncts including "unknown streams", but its second
+      conjunct pins the literal "unknown migration ledger shape", which is the guard for an unrecognised
+      ledger TABLE SHAPE (wrong column count / unexpected relation), not for an unknown migration STREAM.
+      The unknown-stream bullet was therefore unpinned: every unknown-stream guard could have been deleted
+      from the source and the check would still have gone green. Real unknown-STREAM guards do exist on
+      dev and are pinned here. SIX CONJUNCTS, all live mainline readbacks at ?ref=dev. From docker/migrations/forward/_ledger/bootstrap.sql
+      — (1) the double-declaration abort "double migration declaration: both public.node_schema_migrations
+      and platform_catalog.schema_migrations exist" (flat/node double declaration); (2) the service-owned-ledger
+      unknown-stream abort "unknown migration stream: service-owned migration_id ledger cannot be selected
+      for the application database" (line 165 on dev); (3) the historical-node unknown-stream abort "unknown
+      migration stream/domain: historical node version has no checked-in declaration" (line 202 on dev).
+      From scripts/validation/validate_application_migration_manifest.py — (4) the declaration-time unknown-stream
+      ManifestError ": unknown migration stream " (line 124 on dev), raised when a declared migration_stream
+      diverges from the stream derived from the artifact path; (5) the "conflicting checksum for " ManifestError
+      raised when a declared checksum diverges from the recomputed content SHA-256; (6) the "def _reject_duplicates("
+      guard behind duplicate-version rejection. Conjuncts 2, 3 and 4 are the unknown-stream coverage the
+      superseded entry claimed but did not have. SCOPE, stated plainly: this asserts the fail-closed guards
+      EXIST IN THE SHIPPED SOURCE ON THE MAINLINE. It does not re-execute them against a live PostgreSQL
+      — that execution is the hosted rebuilt-Docker attestation above, whose RED controls exercised these
+      paths. FALSIFIABILITY DEMONSTRATED, not asserted, all three properties re-run live 2026-08-02. GREEN:
+      the committed check_value executed verbatim exits 0 today. RED CONTROL: rewording the conjunct-2
+      literal to a variant absent from the file exits 1, so the probe reads real bytes and discriminates
+      on real content. FAIL-CLOSED: repointing any leg at a non-existent ref makes `gh` error, `base64
+      -d` yield empty input and `grep -F` exit 1, so the whole conjunction goes RED — this probe fails
+      CLOSED on infrastructure error, the opposite of the fails-open shape recorded in the AC6 entry above.
+      Executor shape — the first shlex token is `gh`; the value contains zero command substitution; every
+      leg terminates in `grep -F ... > /dev/null` on fully drained input rather than `grep -q`, which
+      would introduce the `base64 -d` SIGPIPE producer hazard; `?ref=dev` is a mainline ref that is never
+      deleted, so the check stays falsifiable rather than being frozen at an immutable commit pin.
+    source: "manual"
+    status: "verified"
+    checks:
+      - check_type: "command"
+        check_value: |-
+          gh api 'repos/OmniNode-ai/omnibase_infra/contents/docker/migrations/forward/_ledger/bootstrap.sql?ref=dev' --jq .content | base64 -d | grep -F 'double migration declaration: both public.node_schema_migrations and platform_catalog.schema_migrations exist' > /dev/null && gh api 'repos/OmniNode-ai/omnibase_infra/contents/docker/migrations/forward/_ledger/bootstrap.sql?ref=dev' --jq .content | base64 -d | grep -F 'unknown migration stream: service-owned migration_id ledger cannot be selected for the application database' > /dev/null && gh api 'repos/OmniNode-ai/omnibase_infra/contents/docker/migrations/forward/_ledger/bootstrap.sql?ref=dev' --jq .content | base64 -d | grep -F 'unknown migration stream/domain: historical node version has no checked-in declaration' > /dev/null && gh api 'repos/OmniNode-ai/omnibase_infra/contents/scripts/validation/validate_application_migration_manifest.py?ref=dev' --jq .content | base64 -d | grep -F ': unknown migration stream ' > /dev/null && gh api 'repos/OmniNode-ai/omnibase_infra/contents/scripts/validation/validate_application_migration_manifest.py?ref=dev' --jq .content | base64 -d | grep -F 'conflicting checksum for ' > /dev/null && gh api 'repos/OmniNode-ai/omnibase_infra/contents/scripts/validation/validate_application_migration_manifest.py?ref=dev' --jq .content | base64 -d | grep -F 'def _reject_duplicates(' > /dev/null
+    evidence_artifact: "supersedes_dod_evidence:dod-omn15413-fail-closed-guards-on-dev"
+  - id: "dod-omn15413-ac2-idempotent-and-history-preserving"
+    description: >-
+      ACCEPTANCE BULLET 2, RESTORED IN FULL — add-only. The bullet as written on OMN-15413 reads "Historical
+      imports are deterministic, checksummed, idempotent, and preserve applied history." The entry "dod-omn15413-ledger-declarations-on-dev"
+      above restates it as "(historical imports are deterministic and checksummed)" and evidences only
+      those two properties via the declaration manifest's 6-column/SHA-256 shape. The conjuncts "idempotent"
+      and "preserve applied history" were dropped without disclosure, so half of bullet 2 was silently
+      unevidenced while the entry read as fully verified. This entry adds executable evidence for the
+      two dropped conjuncts. It supersedes nothing and removes nothing; the superseded-scope entry stays
+      intact and its own two conjuncts remain valid. FOUR CONJUNCTS, all live mainline readbacks at ?ref=dev.
+      IDEMPOTENCY, from scripts/run-forward-migrations.sh — (1) the ledger insert terminates in "ON CONFLICT
+      (migration_id) DO NOTHING;", so re-running an already-applied migration inserts nothing; (2) the
+      runner carries the "(already applied)" short-circuit that skips a migration whose migration_id is
+      already present rather than re-executing it. HISTORY PRESERVATION: conjunct (1) is also the history-preservation
+      mechanism — the conflict action is DO NOTHING, not DO UPDATE, so an import can never overwrite an
+      applied row's recorded checksum, source_set or identity. This is the "do not hand-insert applied
+      rows / do not rewrite applied history" property in executable form. From tests/integration/migrations/test_application_migration_ledger_omn15413.py
+      — (3) "def test_real_runner_imports_sanitized_legacy_history_twice_on_postgresql_16(" and (4) "def
+      test_real_runner_fresh_install_twice_on_postgresql_16(" are the twice-apply suites that exercise
+      both properties against a real PostgreSQL 16. SCOPE, stated so this is not read as more than it
+      is: conjuncts 3 and 4 prove those test functions are PRESENT on the mainline, not that they PASS
+      today. dod_verify executes check_values with cwd set to the onex_change_control checkout (run_contract_compliance_check.py
+      `_run(["sh","-c",cmd_str], cwd=workspace)`, OMN-14436), so no omnibase_infra-relative pytest invocation
+      can resolve from this executor and any such check would be a false RED rather than proof. The executing
+      evidence for that suite is the hosted rebuilt-Docker attestation above. Conjuncts 1 and 2 are stronger:
+      they pin the shipped idempotency/no-overwrite mechanism itself, not a test of it. FALSIFIABILITY
+      DEMONSTRATED, not asserted, all re-run live 2026-08-02. GREEN: the committed check_value executed
+      verbatim exits 0 today. RED CONTROLS, two of them: pinning "ON CONFLICT (migration_id) DO UPDATE;"
+      — the history-overwriting shape this bullet forbids — exits 1, and renaming the twice-import test
+      to a "_ONCE_" variant exits 1. FAIL-CLOSED: repointing any leg at a non-existent ref exits 1 rather
+      than passing vacuously. Executor shape — first shlex token is `gh`, zero command substitution, every
+      leg ends in `grep -F ... > /dev/null` on drained input rather than `grep -q`; `?ref=dev` is a never-deleted
+      mainline ref, so the check stays falsifiable rather than frozen at a commit pin.
+    source: "manual"
+    status: "verified"
+    checks:
+      - check_type: "command"
+        check_value: |-
+          gh api 'repos/OmniNode-ai/omnibase_infra/contents/scripts/run-forward-migrations.sh?ref=dev' --jq .content | base64 -d | grep -F 'ON CONFLICT (migration_id) DO NOTHING;' > /dev/null && gh api 'repos/OmniNode-ai/omnibase_infra/contents/scripts/run-forward-migrations.sh?ref=dev' --jq .content | base64 -d | grep -F '(already applied)' > /dev/null && gh api 'repos/OmniNode-ai/omnibase_infra/contents/tests/integration/migrations/test_application_migration_ledger_omn15413.py?ref=dev' --jq .content | base64 -d | grep -F 'def test_real_runner_imports_sanitized_legacy_history_twice_on_postgresql_16(' > /dev/null && gh api 'repos/OmniNode-ai/omnibase_infra/contents/tests/integration/migrations/test_application_migration_ledger_omn15413.py?ref=dev' --jq .content | base64 -d | grep -F 'def test_real_runner_fresh_install_twice_on_postgresql_16(' > /dev/null
+  - id: "occ-self-bind-pr-5975"
+    description: >-
+      Binding stamp, NOT substantive proof. It binds OMN-15413 to OCC evidence PR #5975 — the append-only
+      integrity supersession that adds the three entries above — so `occ-preflight / eligibility` can
+      resolve a PASS receipt for this ticket against THIS PR, per the OCC in-repo invariant (I3) that
+      an OCC PR validates contracts and receipts from its own checkout. Mirrors the `occ-self-bind-pr-5945`
+      and `occ-self-bind-pr-5974` precedents. SCOPE, stated so this stamp is not mistaken for evidence:
+      it adjudicates nothing about the OMN-15413 work, proves nothing about the deliverable, and flips
+      no Linear status. Like `occ-self-bind-pr-5974` it is deliberately NOT written in the merged-assertion
+      form, because #5975 is open at authoring time and asserting a merge commit it does not yet have
+      would be unsatisfiable-by-construction. This is an existential predicate (the PR resolves) rather
+      than a property of the OMN-15413 deliverable, and is labelled as such rather than counted toward
+      the acceptance bullets.
+    source: "manual"
+    status: "verified"
+    checks:
+      - check_type: "command"
+        check_value: "gh pr view 5975 --repo OmniNode-ai/onex_change_control --json number,state,headRefName"

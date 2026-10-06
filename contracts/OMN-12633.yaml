@@ -1,0 +1,51 @@
+---
+schema_version: '1.0.0'
+ticket_id: OMN-12633
+title: 'Retire ServiceDlqTracking runtime DDL — dlq_replay_history to migration-managed schema'
+summary: >
+  Removes ServiceDlqTracking._ensure_table_exists() and the CREATE TABLE IF NOT EXISTS call from initialize().
+  The dlq_replay_history table is now provisioned by the canonical forward migration runner (086_create_dlq_replay_history.sql),
+  making it visible to public.schema_migrations and owned by node_dlq_replay_effect per CONTRACT/NODE/HANDLER
+  (OMN-12525). Adds src/omnibase_infra/schemas/schema_dlq_replay_history.sql as node-owned schema documentation.
+  Adds a static-analysis ratchet test preventing re-introduction of imperative DDL.
+is_seam_ticket: false
+interface_change: false
+interfaces_touched: []
+evidence_requirements:
+  - kind: tests
+    description: DLQ unit tests pass including no-runtime-DDL ratchet
+    command: "grep -q '^status: PASS$' drift/dod_receipts/OMN-12633/dod-no-imperative-ddl/command.yaml"
+  - kind: ci
+    description: CI pipeline green on omnibase_infra PR  #2012
+    command: "grep -q '^status: PASS$' drift/dod_receipts/OMN-12633/dod-infra-pr-2012/command.yaml"
+dod_evidence:
+  - id: dod-no-imperative-ddl
+    description: ServiceDlqTracking._ensure_table_exists() removed; no CREATE TABLE in method bodies
+    source: generated
+    checks:
+      - check_type: command
+        check_value: "grep -q '^status: PASS$' drift/dod_receipts/OMN-12633/dod-no-imperative-ddl/command.yaml"
+  - id: dod-migration-exists
+    description: Forward migration 086_create_dlq_replay_history.sql is present
+    source: generated
+    checks:
+      - check_type: command
+        check_value: "grep -q '^status: PASS$' drift/dod_receipts/OMN-12633/dod-migration-exists/command.yaml"
+  - id: dod-infra-pr-2012
+    description: omnibase_infra PR  #2012 open with correct head SHA
+    source: generated
+    checks:
+      - check_type: command
+        check_value: "grep -q '^status: PASS$' drift/dod_receipts/OMN-12633/dod-infra-pr-2012/command.yaml
+          && grep -q '^pr_number: 2012$' drift/dod_receipts/OMN-12633/dod-infra-pr-2012/command.yaml"
+  - id: dod-deploy
+    description: >-
+      deploy: tech-debt cleanup only — removes runtime CREATE TABLE from ServiceDlqTracking and provisions
+      dlq_replay_history via forward migration 086_create_dlq_replay_history.sql. No new Kafka topics,
+      no API surface changes. Migration is idempotent (IF NOT EXISTS). Forward migration runner applies
+      086 on next deploy; DLQ plugin must activate after migration.
+    source: generated
+    checks:
+      - check_type: command
+        check_value: "grep -q '^status: PASS$' drift/dod_receipts/OMN-12633/dod-deploy/command.yaml &&
+          grep -q '^pr_number: 2693$' drift/dod_receipts/OMN-12633/dod-deploy/command.yaml"

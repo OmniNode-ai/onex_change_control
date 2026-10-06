@@ -1,0 +1,90 @@
+---
+schema_version: "1.0.0"
+ticket_id: "OMN-16047"
+title: "Unblock omnibase_infra releases: pin-resolvability gate budget is unreachable on the CI fleet"
+summary: >-
+  OCC companion for OmniNode-ai/omnibase_infra#2748. The release pipeline's PyPI pin-resolvability gate
+  has never fit inside its 300s budget on this fleet -- its first real execution (tag v0.38.4) killed
+  the release twice with a bare subprocess.TimeoutExpired that read exactly like the unresolvable-pin
+  failure the gate exists to detect, and PyPI is still at 0.36.1. The pins are fine: the full resolve
+  is 1.3s and the complete --no-cache install 5.3s locally; what does not fit in 300s is the download
+  on a fleet where even a fully-cached uv sync measured 110-402s under load. The fix raises the install
+  budget to 1800s (env-overridable), gives uv venv its own 120s budget, converts the timeout into a typed
+  error carrying partial uv output with a distinct THROUGHPUT-failure report, and raises the release job
+  ceiling so the script's diagnostic -- not an opaque job kill -- is what surfaces.
+is_seam_ticket: false
+interface_change: false
+interfaces_touched: []
+evidence_requirements:
+  - kind: "ci"
+    description: "PR #2748 CI checks green"
+    command: "gh pr checks ${PR_NUMBER} --repo ${REPO}"
+emergency_bypass:
+  enabled: false
+  justification: ""
+  follow_up_ticket_id: ""
+dod_evidence:
+  - id: "dod-OmniNode-ai-omnibase_infra-pr-2748"
+    description: >-
+      PR #2748 on OmniNode-ai/omnibase_infra carries the pin-resolvability budget fix.
+    source: "generated"
+    checks:
+      - check_type: "command"
+        check_value: "gh pr view 2748 --repo OmniNode-ai/omnibase_infra --json number,state"
+  - id: "dod-install-timeout-env-overridable"
+    description: >-
+      The install budget is overridable from the workflow via the documented env var, so fleet throughput
+      can be tuned without editing the script. Content-bound readback at the pinned product head; RED
+      at the pre-fix dev base where the env var does not exist.
+    source: "generated"
+    checks:
+      - check_type: "command"
+        check_value: |-
+          gh api repos/OmniNode-ai/omnibase_infra/contents/scripts/ci/verify_pypi_pin_resolvability.py?ref=8e444023a37e21fc331174ac58d62bd27814431f --jq '.content' | base64 -d | grep -c '_INSTALL_TIMEOUT_ENV_VAR = "PYPI_PIN_RESOLVE_TIMEOUT_SECONDS"'
+  - id: "dod-timeout-is-a-typed-error-not-a-bare-traceback"
+    description: >-
+      TimeoutExpired is re-raised as a typed PinResolveTimeoutError carrying the partial uv output. This
+      is the ambiguity fix: the previous bare traceback discarded the diagnostics and was indistinguishable
+      from the unresolvable-pin failure, which is what mis-routed the v0.38.4 diagnosis. RED at the pre-fix
+      dev base where the class does not exist.
+    source: "generated"
+    checks:
+      - check_type: "command"
+        check_value: |-
+          gh api repos/OmniNode-ai/omnibase_infra/contents/scripts/ci/verify_pypi_pin_resolvability.py?ref=8e444023a37e21fc331174ac58d62bd27814431f --jq '.content' | base64 -d | grep -c 'class PinResolveTimeoutError(Exception):'
+  - id: "dod-venv-budget-separated-from-install-budget"
+    description: >-
+      uv venv gets its own 120s budget instead of sharing the install allowance -- previously a hung venv
+      could consume the whole budget before the install started, producing a timeout that implicated the
+      wrong phase. RED at the pre-fix dev base where the constant does not exist.
+    source: "generated"
+    checks:
+      - check_type: "command"
+        check_value: |-
+          gh api repos/OmniNode-ai/omnibase_infra/contents/scripts/ci/verify_pypi_pin_resolvability.py?ref=8e444023a37e21fc331174ac58d62bd27814431f --jq '.content' | base64 -d | grep -c '_VENV_TIMEOUT_SECONDS = 120'
+  - id: "dod-release-job-ceiling-clears-step-ceiling"
+    description: >-
+      The release job's timeout-minutes is raised to 60 so the job ceiling clears the 1800s step budget
+      and a slow install surfaces as the script's diagnostic report rather than an opaque runner-side
+      job kill. RED at the pre-fix dev base where no job in release.yml declares 60.
+    source: "generated"
+    checks:
+      - check_type: "command"
+        check_value: |-
+          gh api repos/OmniNode-ai/omnibase_infra/contents/.github/workflows/release.yml?ref=8e444023a37e21fc331174ac58d62bd27814431f --jq '.content' | base64 -d | grep -c 'timeout-minutes: 60'
+  - id: "dod-timeout-path-has-tests"
+    description: >-
+      The timeout path is covered by unit tests that reference the typed error (typed re-raise, partial-output
+      retention, venv/install budget separation, env override). RED at the pre-fix dev base where the
+      test file has no such references.
+    source: "generated"
+    checks:
+      - check_type: "command"
+        check_value: |-
+          gh api repos/OmniNode-ai/omnibase_infra/contents/tests/ci/test_verify_pypi_pin_resolvability.py?ref=8e444023a37e21fc331174ac58d62bd27814431f --jq '.content' | base64 -d | grep -c 'PinResolveTimeoutError'
+  - id: "occ-self-bind-pr-6513"
+    description: "OCC companion PR #6513 — self-bind for OMN-16047 (OMN-14650)."
+    source: "generated"
+    checks:
+      - check_type: "command"
+        check_value: "gh pr view 6513 --repo OmniNode-ai/onex_change_control --json number,state"

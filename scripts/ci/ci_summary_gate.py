@@ -1,0 +1,1789 @@
+# SPDX-FileCopyrightText: 2025 OmniNode.ai Inc.
+# SPDX-License-Identifier: MIT
+
+"""Fail-closed verdict for the ``CI Summary`` required-context poller.
+
+OMN-15768 enforce-everything fan-out.
+
+Why this exists
+---------------
+``onex_change_control`` (OCC) dev requires exactly four direct contexts
+(``CI Summary``, ``verify / verify``, ``occ-preflight / eligibility``,
+``required-check-skip-guard / check-skip-vectors``). ``CI Summary`` itself used
+to be a plain ``needs:``-gated aggregator over ~27 ``ci.yml`` jobs, with a
+two-tier pass/fail body: 13 named strict blocks plus a generic rollup that only
+tested ``contains(needs.*.result, 'failure') || contains(needs.*.result,
+'cancelled')`` — which does **not** catch ``skipped``. Two independent defects
+followed from that shape:
+
+1. **Needs-graph omission.** ``contract-compliance`` — the job at the center of
+   OCC#6346 (merged 2026-08-11, merge commit ``5399a37f``, with ``Contract
+   Compliance Check`` = **failure** and ``CI Summary`` = **success** on the same
+   head SHA) was never listed in ``ci-summary``'s ``needs:`` at all. A job
+   absent from ``needs:`` is invisible to a ``needs:``-based aggregator by
+   construction — no amount of "the generic rollup would have caught it"
+   reasoning applies, because the rollup only inspects ``needs.*.result``.
+   ``substance-floor`` and ``divergent-automation-pr-guard`` carried the same
+   omission despite being unconditional (``if:``-less) jobs.
+2. **Skip-as-pass.** 12 jobs (``schema-purity``, ``no-localhost-fallbacks``,
+   ``imperative-contract-guard``, ``context-integrity-contracts``,
+   ``migration-conflicts``, ``migration-inventory``, ``kafka-boundary-parity``,
+   ``cross-repo-null-contract``, ``seam-contract-coverage``,
+   ``url-authority-gate``, ``no-new-os-environ``, ``ai-slop-check``) carried an
+   undocumented ``(github.event_name != 'pull_request' || github.base_ref !=
+   'dev')`` clause that made them skip on *every* dev-targeting PR — the branch
+   every real OCC merge lands on — while the generic rollup read a ``skipped``
+   result as passing (OMN-15768).
+
+This module replaces the ``needs:``-gated aggregator with a NO-``needs``,
+GitHub-hosted poller: its check-run instantiates immediately (so the required
+context can never be absent under runner-fleet saturation), and it calls this
+module in a loop against the current run's job list until a terminal verdict
+is reached (or a bounded deadline fires -> fail-closed).
+
+Verdict policy — DEFAULT-DENY, FAIL-CLOSED, four layers
+--------------------------------------------------------
+1. **L1 STRICT_GATE_JOBS.** Every in-run (``ci.yml``) job that is
+   unconditional (no legitimate skip path) must be *present*, *completed*, and
+   conclude ``success``. ``skipped``/``failure``/``cancelled`` all fail.
+2. **L2 SKIPPABLE_GATE_JOBS.** Jobs that carry a gate-re-derivable skip
+   precondition (the ``docs_only`` evidence-only fast lane, the narrower
+   OMN-16285 ``evidence-only-predicate`` fast lane -- exact-allowlisted to
+   ``contracts/**``/``drift/dod_receipts/**``, gating only jobs that scan a
+   surface the predicate proves is unchanged -- or a legitimate ``push``-only
+   skip) must be *present*, *completed*, and conclude ``success`` **or**
+   ``skipped``. The precondition itself is enforced by the job's own ``if:``
+   in ``ci.yml`` (verified against source at authoring time, pinned by
+   ``test_every_pr_triggered_job_is_classified`` and the red-replay tests
+   below) — this module does not re-parse ``ci.yml`` at runtime.
+3. **L3 default-deny sweep.** Any *other* job present in this run's job list,
+   completed, and not ``success``/``skipped`` fails the gate — unless it is the
+   poller itself or an explicit, reason-carrying :data:`SOFT_ALLOWLIST` entry.
+   Non-exempt running rows hold the verdict at PENDING and are re-polled.
+4. **L4 EXPECTED_EXTERNAL_CONTEXTS.** Checks 1-3 only see ``actions/runs/
+   {RUN_ID}/jobs`` — this workflow run's own job list. A job living in ANY
+   OTHER workflow file (``guards.yml`` (OMN-16260 -- Dep Provenance Gate,
+   main-target-guard, non-dev-base-guard, call-reject-skip-token, Stale TODO
+   Gate, required-check-skip-guard, and the two OCC-autobind publishers all
+   consolidated here), ``call-receipt-gate.yml``, ...) is structurally
+   invisible to it. This layer
+   asserts each named context against the PR head's ``commits/{sha}/
+   check-runs``: present + completed + ``success`` (``skipped`` fails closed
+   here — every listed context was verified to run unconditionally on ordinary
+   dev PRs, see the per-entry comments below); missing/still-running is
+   PENDING, converted to FAILURE at the caller's deadline; an unfetchable
+   check-runs list is treated as every context unobserved, never green.
+   OMN-18062 narrows that ``skipped`` bar by exactly one case: a ``skipped``
+   row for a name that ALSO carries a non-skipped row on the same head is a
+   re-trigger artifact and is dropped before resolution
+   (:func:`drop_superseded_skips`). A ``skipped`` with no non-skipped row on
+   that head still fails closed, and a ``failure`` after a ``success`` still
+   wins.
+
+Exit codes: ``0`` success, ``1`` failure, ``2`` pending.
+"""
+
+from __future__ import annotations
+
+import argparse
+import json
+import re
+import sys
+from dataclasses import dataclass
+from datetime import UTC, date, datetime
+from pathlib import Path
+
+# The poller's own job -- excluded to avoid self-deadlock.
+SELF_JOB_NAME = "CI Summary"
+
+# ---------------------------------------------------------------------------
+# L1 -- unconditional ci.yml jobs. Verified against .github/workflows/ci.yml
+# at authoring time (2026-08-13): none of these carry an `if:` that can
+# legitimately produce anything but `success` on a pull_request/merge_group
+# run. A `skipped` here is always the OMN-15768 hole reopening, never a
+# deliberate opt-out.
+# ---------------------------------------------------------------------------
+STRICT_GATE_JOBS: tuple[str, ...] = (
+    # OMN-15731 label-gated CI pilot: `pre-commit` legitimately SKIPS for an
+    # unlabeled dev-targeting PR (missing `ci:ready`) -- but that skip is
+    # DELIBERATELY treated as blocking (the pilot's whole point is to force
+    # the label), so this stays STRICT, not SKIPPABLE. Matches the exact
+    # behavior of the needs-based aggregator it replaces.
+    "Pre-commit",
+    # Deliberately unconditional (no needs/if) per their own ci.yml headers --
+    # a defense that only runs when its own trigger files change is a defense
+    # that never runs (OMN-14416 lesson), so both scan the whole tree/corpus
+    # on every PR. These validate EVIDENCE CONTENT (contracts/, drift/
+    # dod_receipts/) at corpus scope, so OMN-16285's evidence-only predicate
+    # never gates them -- an evidence-only diff is exactly the diff shape
+    # they exist to check (OMN-16285 hard constraint: never weaken receipt
+    # integrity).
+    "Contract Substance Floor (OMN-14409)",
+    "Validate Contract YAML (OMN-8808)",
+    "Receipt Honesty Gate",
+    "OCC Append-Only Gate",
+    "validate-prod-promotion-grants",
+    "validate-staging-namespace-grants",
+    "validate-pre-execution-action-authorizations",
+    "check-platform-leads-review-tripwire",
+    "Contract Corpus Ratchets (OMN-15411)",
+    "yamlfmt Contamination Ratchet (OMN-15479)",
+    "yamlfmt Sentinel Baseline One-way (OMN-19677) / anti-growth-baseline",
+    "yamlfmt Folded Scalar Baseline One-way (OMN-19677) / anti-growth-baseline",
+    "Expiring DoD Check Gate (OMN-18641)",
+    "Supersession Binding Ratchet (OMN-15459)",
+    "Supersession Baseline One-way (OMN-19677) / anti-growth-baseline",
+    # OMN-13888. Two-way set equality between the whole orphan corpus and its
+    # frozen shrink-only baseline. STRICT, not SKIPPABLE, and it carries no
+    # evidence-only predicate: an evidence-only diff (contracts/**, drift/
+    # dod_receipts/**) is exactly the diff shape that mints an orphan, so a
+    # fast-lane skip would exempt the only PRs it exists to check.
+    "Orphan Corpus Ratchet (OMN-13888)",
+    "Orphan Corpus Baseline One-way (OMN-19677) / anti-growth-baseline",
+    "Shape-Gate Independence (OMN-20298)",  # shape-gate-independence
+    # Reusable-workflow caller; the job's own `name:` is set to this literal
+    # composed string (Shape A), matching how GitHub surfaces the check-run.
+    # A hold gate an unrelated upstream failure/predicate can cascade-skip is
+    # not a gate (its own ci.yml comment, AC4) -- never move this to
+    # SKIPPABLE for any precondition.
+    "merge-hold-gate / evaluate",
+    "Contract Shape v1 (OMN-15669)",
+    "Acceptance-Criterion Binding Gate (OMN-18236)",
+    # OMN-18031: the per-run runner routing decision, adopted from the
+    # omnibase_infra pilot. THIS LINE IS HALF THE MECHANISM, on the identical
+    # reasoning as the corpus-ratchet entries above: the L3 default-deny sweep
+    # already fails this gate when a registered job FAILS, but an unregistered
+    # job that is `skipped` or ABSENT yields SUCCESS. Without this entry,
+    # deleting the `route` job from ci.yml would silently retire per-run
+    # routing on a fully green run -- and because routing is deliberately INERT
+    # while this repo's trusted seam reads '["ubuntu-latest"]', nothing about
+    # job PLACEMENT would change to reveal it. The only observable difference
+    # between "routing works and chose hosted" and "routing is gone" is a
+    # decision artifact nobody is required to read, which is the exact
+    # silent-retirement shape this tuple exists for. The job is unconditional
+    # in ci.yml (no needs/if), so a skip is anomalous and never a legitimate
+    # opt-out. Composed "<caller display name> / <inner job name>" shape, same
+    # as "merge-hold-gate / evaluate" above; renaming either half breaks this
+    # registration, which COMPOSED_NAME_OVERRIDES in tests/ci/
+    # test_ci_summary_gate.py pins.
+    "Runner Route (OMN-18031) / route",
+    # OMN-19612: unconditional whole-tree backstop; a skip is always a fail-open.
+    "No localhost env-var fallbacks in src/ (OMN-10737)",
+    # OMN-20304: canonical-file-shape ratchet. Unconditional in ci.yml (no
+    # needs/if) and whole-tree: an evidence-only diff can add a new
+    # allowlist or baseline entry, which is one of the shapes it refuses, so
+    # it is STRICT and never SKIPPABLE.
+    "Canonical File Shape (OMN-20304)",
+)
+
+# ---------------------------------------------------------------------------
+# L2 -- jobs with a legitimate, gate-re-derivable skip path. Each precondition
+# is enforced by the job's own `if:` in ci.yml (docs_only evidence-only fast
+# lane per OMN-14098, or a `push`-only skip); this module trusts that `if:`
+# rather than re-parsing it, and is pinned against drift by
+# test_every_pr_triggered_job_is_classified + test_no_job_carries_a_base_ref_
+# dev_exemption below.
+# ---------------------------------------------------------------------------
+SKIPPABLE_GATE_JOBS: tuple[str, ...] = (
+    # docs_only (OMN-14098) evidence-only fast lane -- skip legal iff the
+    # zone-filter classified the PR as pure contracts/+drift/dod_receipts/
+    # evidence. OMN-15731 removed the `base_ref != 'dev'` clause that used to
+    # make these skip on EVERY dev PR regardless of content.
+    "Type Check",
+    "Tests",
+    "Schema Purity & Naming Check",
+    "Imperative Contract Guard",
+    "AI-Slop Pattern Check (strict, PR diff)",
+    "Context Integrity Contract Compliance",
+    "Migration Conflict Check",
+    # OMN-15772 AC ("reclassify STRICT, or justify SKIPPABLE in writing").
+    # SKIPPABLE is RETAINED, deliberately. The ticket recorded this tier as
+    # leniency (ii) -- "its failure does not fail CI Summary" -- and that
+    # description does not survive a read of `evaluate()` below: a SKIPPABLE
+    # gate whose conclusion is not in GOOD_CONCLUSIONS lands in
+    # `skippable_failures` and fails the run exactly like a STRICT one. The
+    # ONLY thing this tier tolerates is a `skipped` conclusion.
+    #
+    # Promoting it to STRICT would therefore buy nothing on the failure path
+    # and would wedge the skip path: this job carries the docs_only
+    # evidence-only `if:` like its 10 tier-mates, and STRICT treats `skipped`
+    # as a failure -- every evidence-companion PR would go red in a repo whose
+    # merge traffic is mostly evidence companions.
+    #
+    # The fail-open the ticket actually observed was the CASCADE, not this
+    # tier: the job `needs: [pre-commit, zone-filter]`, so a failing
+    # `pre-commit` skipped it and the skip read as "not failing". Both
+    # upstreams are now covered independently -- `Pre-commit` is STRICT above,
+    # and `zone-filter` is in CLASSIFICATION_ONLY (deliberately NOT
+    # soft-allowlisted, so the L3 sweep fails the run on its failure). A skip
+    # of this job can no longer be produced by a silent upstream failure.
+    "Migration Inventory Sync",
+    "Kafka Boundary Parity",
+    "Python↔TypeScript Null Contract",
+    "Seam Contract Coverage",
+    # Legitimate `push`-only skip (`if: github.event_name == 'pull_request' ||
+    # github.event_name == 'merge_group'`).
+    "Contract Sync Gate (Layer 3)",
+    # THE OCC#6346 FIX. Was absent from the old aggregator's `needs:` entirely
+    # -- a red Contract Compliance Check could merge with CI Summary green.
+    # Same push-only skip precondition as Contract Sync Gate above.
+    "Contract Compliance Check",
+    # ------------------------------------------------------------------
+    # OMN-16285 evidence-only-predicate fast lane -- skip legal iff the
+    # `evidence-only-predicate` job (ci.yml) classified the diff as touching
+    # ONLY contracts/** and drift/dod_receipts/** (exact allowlist, computed
+    # by scripts/ci/evidence_only_predicate.py; NOT the broader docs_only
+    # zone above, which also covers allowlists/ and .evidence/). Each entry
+    # below validates a surface (src/, .github/workflows/, .pre-commit-
+    # config.yaml, grants/+allowlists/-touching diffs) that predicate PROVES
+    # is unchanged when it reports evidence_only=true -- a skip here can only
+    # be produced by that exact `if:` condition, so it structurally implies
+    # the predicate ran, succeeded, and asserted evidence-only (mirrors the
+    # docs_only tier's own reasoning above). Never move an evidence-CONTENT
+    # validator into this group -- see the OMN-16285 comments on
+    # STRICT_GATE_JOBS's corpus-ratchet entries above.
+    "No Divergent Automation PRs (OMN-14778)",
+    "no-noncanonical-lifecycle-classes",
+    "Precommit Parity Gate",
+    "Evidence Admissibility Predicate Parity",
+    "check-bot-authored-authz-guard",
+)
+
+# Every job the completeness anchor must observe present+good for SUCCESS.
+GATE_JOBS: tuple[str, ...] = STRICT_GATE_JOBS + SKIPPABLE_GATE_JOBS
+
+# ---------------------------------------------------------------------------
+# L3 -- default-deny sweep allowlist. Jobs already non-gating in ci.yml BY
+# DESIGN (continue-on-error advisory steps, or structural reusable-caller
+# jobs). Matching is prefix-aware (see `_is_allowlisted`) so a reusable
+# caller's inner jobs (surfaced as "<caller name> / <inner job>") are covered
+# by the caller entry.
+# ---------------------------------------------------------------------------
+SOFT_ALLOWLIST: frozenset[str] = frozenset(
+    {
+        # occ-self-bind-mint.yml (OMN-18921) -- an ACTION job, not a report,
+        # and deliberately non-blocking anyway. It mints the structural
+        # self-bind a hand-authored companion owes and pushes it, so the
+        # resulting fresh event clears `occ-preflight / eligibility`. Gating
+        # merge on it would add no enforcement and would add a real outage
+        # mode: the job mints an App installation token, so a token or secrets
+        # outage would wedge every pull request in this repository behind a
+        # job whose only purpose is to SAVE a round. The enforcement layer is
+        # `occ-preflight / eligibility`, which is already strict and which
+        # this job exists to satisfy -- if the mint fails, eligibility stays
+        # red and blocks on its own, with the mint's own red job naming why.
+        "Mint the owed OCC self-bind",
+        # ci.yml:384-411 -- `continue-on-error: true` on the one substantive
+        # step, with an inline comment: "non-blocking report; pre-commit hook
+        # is the blocking surface." The job can never conclude anything but
+        # `success` once it runs, so gating on it would add nothing; the
+        # pre-commit `url-authority` hook is the real enforcement layer.
+        "URL Authority Gate (OMN-13563)",
+        # ci.yml:413-438 -- same continue-on-error shape and the same inline
+        # rationale ("non-blocking report; pre-commit hook is the blocking
+        # surface"), enforced instead by the `no-new-os-environ` pre-commit
+        # hook.
+        "No New os.environ Reads (OMN-13563)",
+        # governance-file-advisory-gate.yml (OMN-16117, second vector) --
+        # DELIBERATELY advisory, by explicit design documented at the top of
+        # that workflow file: it exists to break the "all checks green"
+        # signal an automated merge driver reads, for a PR touching
+        # grants/prod_promotion_grants.yaml or
+        # allowlists/skip_token_approvals.yaml -- not to block a human
+        # merge decision. It is intentionally NOT in STRICT_GATE_JOBS or
+        # SKIPPABLE_GATE_JOBS (the workflow file says so explicitly, twice)
+        # because onex_change_control@main has enforce_admins:true and a
+        # REQUIRED failing check there would permanently wedge every future
+        # prod-promotion grant landing, including emergency prod recovery.
+        # A genuine failure conclusion here (when a governance path really
+        # is touched) must stay visible on the PR's check list -- it must
+        # NOT gate CI Summary, which is exactly what SOFT_ALLOWLIST gives it.
+        "Governance File Advisory Gate",
+        # OMN-18327, in the workflow file named for this job -- it is
+        # DELIBERATELY advisory while the writer-App dispatch path proves
+        # itself. It
+        # reports a PR authored by a human account whose diff touches src/,
+        # scripts/ or .github/, because change-control PRs on those surfaces
+        # are meant to be opened AS the onexbot-occ-writer App: every lane
+        # here commits under one shared account, so a human-authored PR on an
+        # owned path is un-approvable by construction, which is what froze the
+        # fleet behind OCC#9362 on 2026-09-13.
+        #
+        # It is here rather than in STRICT_GATE_JOBS for a reason that is a
+        # precondition, not a preference: no PR has yet merged through
+        # .github/workflows/open-pr-as-writer-app.yml, so the sanctioned route
+        # is unproven end to end. A REQUIRED check that refuses the only route
+        # people currently have would wedge this repo exactly the way the
+        # incident it closes did -- and onex_change_control@main carries
+        # enforce_admins:true, so a required failing check blocks
+        # administrators too. Move this string to STRICT_GATE_JOBS once one
+        # App-authored PR has merged through that path, and not before.
+        "check-human-authored-privileged-pr",
+        # public-repo-hygiene.yml (OMN-18016) -- report-mode reusable hygiene
+        # caller. The workflow comments state that the validator records every
+        # finding and exits 0 while pre-existing public-repo residue is cleaned
+        # up. It is an advisory visibility surface for this PR, not a CI Summary
+        # blocker; enforcement happens when the gate flips out of report mode.
+        "public-repo-hygiene",
+        # OMN-18426 -- advisory reusable-workflow caller.  The workflow
+        # deliberately adds visibility without becoming a required branch
+        # protection context, so it must remain outside the gate tiers while
+        # still being classified by the completeness anchor.
+        "no-ai-coauthor-trailer",
+        # OMN-19183 plan task A3, ticket OMN-20005 -- advisory reusable-
+        # workflow caller. Required-check wiring in branch protection follows
+        # once the context has run green on dev, so it must not gate CI
+        # Summary until then.
+        "hardcoded-model-config",
+    }
+)
+
+# ---------------------------------------------------------------------------
+# L3b -- CLASSIFICATION-ONLY. Accounted for by the completeness test, but
+# DELIBERATELY NOT allowlisted: the L3 default-deny sweep still fails the run
+# on a present+completed+not-good entry here. The sweep ignores ABSENT jobs,
+# so listing a name here can never wedge a branch.
+# ---------------------------------------------------------------------------
+CLASSIFICATION_ONLY: dict[str, str] = {
+    "zone-filter": (
+        "Structural reusable-workflow caller (zone-filter.yml@dev), not a "
+        "validator -- so not a STRICT/SKIPPABLE gate. It is NOT soft-"
+        "allowlisted: all 11 docs_only-tier SKIPPABLE jobs `needs:` it, and a "
+        "FAILED zone-filter cascades every one of them to `skipped`, which "
+        "the SKIPPABLE tier tolerates unconditionally -- a SUCCESS verdict "
+        "with zero tests and zero type-checks having run. The sweep catching "
+        "the zone-filter failure itself closes that fail-open."
+    ),
+    "Evidence-Only Diff Predicate": (
+        "OMN-16285. ci.yml's `evidence-only-predicate` job -- not a "
+        "validator, so not a STRICT/SKIPPABLE gate. NOT soft-allowlisted, by "
+        "the identical zone-filter mechanism directly above: the 5 "
+        "OMN-16285 evidence-only-predicate-tier SKIPPABLE jobs (No "
+        "Divergent Automation PRs, no-noncanonical-lifecycle-classes, "
+        "Precommit Parity Gate, Evidence Admissibility Predicate Parity, "
+        "check-bot-authored-authz-guard) all `needs:` this job, and a FAILED "
+        "predicate cascades every one of them to `skipped` -- which the "
+        "SKIPPABLE tier tolerates unconditionally in isolation. The sweep "
+        "catching THIS job's own failure is what keeps that cascade "
+        "fail-closed (hard constraint: skipped-by-the-predicate is "
+        "acceptable ONLY when the predicate job itself succeeded and "
+        "asserted evidence-only; any other skip stays fail-closed)."
+    ),
+}
+
+# ---------------------------------------------------------------------------
+# L4 -- cross-workflow ("external") required contexts (OMN-15496 pattern).
+# ---------------------------------------------------------------------------
+# ADMISSION RULE: a context is listed here only after confirming its
+# `pull_request` trigger fires unconditionally against `dev` (branches filter
+# includes `dev` or has none) and its job has no `base_ref`/`docs_only`-style
+# skip that would make it silently absent or `skipped` on an ordinary
+# non-docs-only dev PR (that would burn the poll deadline and wedge the
+# branch -- see EXEMPT_CONTEXTS below for the two contexts that failed this
+# check and were deliberately left out). Verified by direct source read of
+# every listed workflow file on 2026-08-13, cross-checked against the live
+# check-run list on OCC#6231 (a real, currently open dev PR against this same
+# ci.yml) where every one of these appeared `success` (two appeared
+# transiently `cancelled` under runner contention -- validate-localhost-url --
+# which is exactly the fail-closed case this layer exists to catch, not
+# evidence the context is unsafe to assert).
+EXPECTED_EXTERNAL_CONTEXTS: tuple[str, ...] = (
+    # OMN-18434: git-env-scrub.yml, standalone and unconditional on
+    # pull_request, so it carries no paths filter and is always present. A test
+    # that shells out to git inherits GIT_DIR from the hook running it and
+    # rewrites this repository; the conftest scrub neutralises the call sites
+    # already written and this gate refuses a new one. Registered here because
+    # on this repo the CI Summary umbrella IS the enforcement surface, and a
+    # context missing from this tuple is silently unenforced.
+    "Git env scrub gate",
+    # OMN-18796 (epic OMN-18775): the no-new-advisory-job gate, called from
+    # .github/workflows/advisory-job-gate.yml against the omniclaude reusable
+    # pinned by commit. Standalone and unconditional on pull_request -- no
+    # `branches:` filter and no `paths:` filter -- so it is always present on
+    # every pull-request shape this repository produces, including the
+    # hotfix/* pull requests that target `main`. Registered here because on
+    # this repo the CI Summary umbrella IS the enforcement surface, and a
+    # context missing from this tuple is silently unenforced. The census
+    # counted 7 advisory settings and 9 pull-request-reachable verification
+    # jobs here, none of which any check could have refused.
+    "advisory-job-gate / advisory-job-gate",
+    "Dep Provenance Gate",  # guards.yml (OMN-16260) -- unconditional
+    "validate-private-ip",  # validator-g2-ip-family.yml -- unconditional
+    "validate-localhost-url",  # validator-g2-ip-family.yml -- unconditional
+    "validate-topic-string",  # validator-g2-ip-family.yml -- unconditional
+    "validate-todo-marker",  # validator-g2-ip-family.yml -- unconditional
+    "main-target-guard",  # guards.yml (OMN-16260) -- unconditional
+    "non-dev-base-guard",  # guards.yml (OMN-16260) -- unconditional
+    "occ-preflight / eligibility",  # call-occ-preflight.yml -- already a
+    # direct dev-required context; asserted here too so CI Summary does not
+    # depend on branch protection staying in sync (belt-and-braces, matches
+    # the reference implementation's treatment of `deploy-gate / deploy-gate`).
+    "verify / verify",  # call-receipt-gate.yml -- already direct-required;
+    # same belt-and-braces rationale as occ-preflight above.
+    "call-reject-skip-token / scan / reject-skip-gate-token",  # guards.yml (OMN-16260)
+    "required-check-skip-guard / check-skip-vectors",  # already direct-required
+    "pr-title / check-title",  # guards.yml (OMN-16260) -- no branches: filter
+    "Stale TODO Gate",  # guards.yml (OMN-16260) -- unconditional
+    # validate-validator-requirements.yml -- unconditional
+    "Enforce validator-requirements.yaml (OMN-13299)",
+    "call / validate-docs",  # docs-validate.yml -- unconditional
+    "kb-doc-gate / kb-doc-gate",  # kb-doc-gate.yml -- unconditional
+    "CI Naming Convention",  # omni-standards-compliance.yml -- unconditional
+    # doctrine-coverage.yml: the job itself is unconditional (`if:
+    # !cancelled()`); this PR also removes the base_ref!='dev' clause that
+    # previously skipped every SUBSTANTIVE STEP (not the job) on dev PRs, so
+    # asserting this context now means something instead of trivially
+    # succeeding on an empty step list.
+    "Doctrine Coverage Matrix",
+    # security-scan.yml: this PR adds `dev` to the job's `pull_request.branches`
+    # trigger (it previously fired on `[main, hotfix/**]` only -- ABSENT on
+    # every dev PR, not skipped). The job's own docs_only skip-with-success
+    # design (ci.yml:82-86 equivalent) was already wedge-safe.
+    "CodeQL / CodeQL Analysis (python)",
+    # release-staleness-gate.yml (OMN-18010 deliverable 3) -- unconditional:
+    # the workflow's `pull_request:` trigger carries no `branches:`/`paths:`
+    # filter and its single job carries no `if:`, so it reports on every PR.
+    # This entry is the ONLY thing that gives the staleness gate merge-blocking
+    # force -- `dev` requires the `CI Summary` umbrella, not this context
+    # directly -- so deleting it turns the gate back into the detection-only
+    # sweep that CLAUDE.md rule 5 says gets ignored. Pinned from the other
+    # side by tests/test_check_release_staleness.py, whose
+    # test_gate_context_is_asserted_by_ci_summary fails if this entry goes.
+    "release-staleness",
+)
+
+# Contexts that were CONSIDERED for L4 and deliberately NOT enforced, with the
+# concrete reason. Recorded as data -- not a silent omission -- so a reviewer
+# does not have to rediscover why a plausible candidate is missing, per the
+# fleet-wide MEASURED_NOT_ENFORCED / EXEMPT convention.
+EXEMPT_CONTEXTS: dict[str, str] = {
+    "PEP 604 Type Union Check (UP007)": (
+        "omni-standards-compliance.yml's type-union-check job legitimately "
+        "skips on docs_only evidence-only PRs (OMN-14098 fast lane). This "
+        "layer's EXTERNAL_GOOD_CONCLUSIONS is success-only (skip fails "
+        "closed) with no skippable-external tier yet, so asserting this "
+        "context would fail-closed on every evidence-only PR and wedge the "
+        "fast lane. Deferred to a follow-up that either re-derives docs_only "
+        "for external contexts or adds a skippable-external tier."
+    ),
+    "Self-companion guard (OMN-15334)": (
+        "Duplicate producer: the identical job name is emitted by BOTH "
+        "self-companion-guard-autobind and self-companion-guard-companion-"
+        "effect (both now jobs within guards.yml, OMN-16260 -- previously "
+        "call-occ-autobind.yml and call-occ-companion-effect.yml, two "
+        "separate files; the job-id rename that resolved their guards.yml "
+        "collision left the check-run NAME, which is driven by an explicit "
+        "`name:` field on each job, unchanged) on the same PR (confirmed "
+        "live on OCC#6231 -- two same-named check-runs, both success). Same "
+        "ANY-vs-ALL branch-protection ambiguity class as OMN-15112's "
+        "occ-preflight finding; asserting one name would not distinguish "
+        "which producer is being observed. Excluded pending a producer-side "
+        "rename."
+    ),
+    "occ-autobind / Publish occ-autobind command": (
+        "guards.yml's self-companion-guard-autobind/occ-autobind pair "
+        "(OMN-16260; formerly call-occ-autobind.yml) self-declares "
+        "'ADDITIVE / REJECTS NOTHING: this workflow is NOT a required "
+        "status check. It publishes a command; it never fails a PR's "
+        "merge.' Structurally cannot validate anything -- it is a command "
+        "publisher, not a gate."
+    ),
+    "occ-companion-effect / Publish occ-companion-effect command": (
+        "guards.yml's self-companion-guard-companion-effect/occ-companion-"
+        "effect pair (OMN-16260; formerly call-occ-companion-effect.yml) "
+        "carries the identical 'ADDITIVE / REJECTS NOTHING' self-"
+        "declaration as occ-autobind above. Same reasoning."
+    ),
+    "Enable Auto-Merge": (
+        "auto-merge.yml's job arms auto-merge on an already-eligible PR; it "
+        "is an automation trigger, not a validator, and its own logic reads "
+        "the other required checks' state -- asserting it here would be "
+        "circular (it would depend on itself having already run)."
+    ),
+    "Claude Code": (
+        "claude.yml triggers on issue_comment / pull_request_review_comment "
+        "/ pull_request_review / issues with an actor filter requiring an "
+        "'@claude' mention -- it does not fire on ordinary PR "
+        "opened/synchronize events. A context that does not report on every "
+        "PR shape must never be listed (the reference implementation's own "
+        "admission rule) -- it would burn the poll deadline on most PRs and "
+        "wedge the branch."
+    ),
+    "TODO Audit": (
+        "todo-audit-on-merge.yml's job is gated `if: "
+        "github.event.pull_request.merged == true` -- it runs only AFTER a "
+        "PR merges, so it structurally cannot be a pre-merge gate for that "
+        "same PR."
+    ),
+    # product-readiness-shadow.yml family: every job name is literally suffixed
+    # "(shadow)" or is the bare `reason-graph` job in that same file. The
+    # file's own header (matches the identical pattern cited inline at
+    # ci.yml's contract-corpus-ratchets job) states these are "deliberately
+    # kept OUT of required_status_checks, so a red shadow ... CANNOT block
+    # merges" -- an intentional non-gating proof surface, not a gap.
+    "lint (shadow)": (
+        "product-readiness-shadow.yml: self-declared shadow proof surface, "
+        "deliberately non-gating by design (matches the file's own header)."
+    ),
+    "typecheck (shadow)": (
+        "product-readiness-shadow.yml: self-declared shadow proof surface, "
+        "deliberately non-gating by design (matches the file's own header)."
+    ),
+    "tests+coverage (shadow)": (
+        "product-readiness-shadow.yml: self-declared shadow proof surface, "
+        "deliberately non-gating by design (matches the file's own header)."
+    ),
+    "reason-graph": (
+        "product-readiness-shadow.yml: shadow-family job (no '(shadow)' "
+        "suffix in its display name, but same file, same non-gating design). "
+        "Was a REQUIRED context prior to the 2026-07-25 required-checks.yaml "
+        "reconcile pass, which removed it after confirming it was no longer "
+        "live-required on either branch; re-promoting it is a separate, "
+        "deliberate decision, not something this PR should silently redo by "
+        "asserting it in L4."
+    ),
+}
+
+# External contexts are held to the STRICT bar: `skipped` fails closed. Every
+# name in EXPECTED_EXTERNAL_CONTEXTS was verified to run unconditionally
+# (never skip) on an ordinary dev PR, so this costs nothing today and closes
+# the skip-vector fail-open the same way STRICT_GATE_JOBS does for in-run jobs.
+GOOD_CONCLUSIONS: frozenset[str] = frozenset({"success", "skipped"})
+EXTERNAL_GOOD_CONCLUSIONS: frozenset[str] = frozenset({"success"})
+
+EXIT_SUCCESS = 0
+EXIT_FAILURE = 1
+EXIT_PENDING = 2
+
+
+@dataclass(frozen=True)
+class JobState:
+    """The latest-attempt state of a single workflow job."""
+
+    name: str
+    status: str  # queued | in_progress | completed | waiting | ...
+    conclusion: str | None  # success | failure | cancelled | skipped | timed_out | None
+    run_attempt: int
+
+
+def _state_severity(job: JobState) -> int:
+    """Rank same-attempt duplicate jobs by the most blocking state."""
+
+    if job.status != "completed":
+        return 2
+    if job.conclusion not in GOOD_CONCLUSIONS:
+        return 3
+    return 1
+
+
+def dedup_latest(
+    jobs: list[dict[str, object]],
+    *,
+    run_attempt: int | None = None,
+) -> dict[str, JobState]:
+    """Collapse the raw ``/runs/{id}/jobs`` array to one entry per job name.
+
+    When ``run_attempt`` is provided, only rows from that workflow attempt are
+    considered. Within the same attempt, duplicate display names keep the
+    most blocking state so a failed matrix leg cannot be hidden by a later
+    same-name success.
+    """
+
+    latest: dict[str, JobState] = {}
+    for raw in jobs:
+        name = str(raw.get("name") or "")
+        if not name:
+            continue
+        try:
+            attempt = int(str(raw.get("run_attempt") or 1))
+        except (TypeError, ValueError):
+            attempt = 1
+        if run_attempt is not None and attempt != run_attempt:
+            continue
+        prev = latest.get(name)
+        if prev is not None and attempt < prev.run_attempt:
+            continue
+        conclusion = raw.get("conclusion")
+        current = JobState(
+            name=name,
+            status=str(raw.get("status") or ""),
+            conclusion=None if conclusion is None else str(conclusion),
+            run_attempt=attempt,
+        )
+        if (
+            prev is not None
+            and attempt == prev.run_attempt
+            and _state_severity(current) < _state_severity(prev)
+        ):
+            continue
+        latest[name] = current
+    return latest
+
+
+def _is_skipped_row(raw: dict[str, object]) -> bool:
+    """True for a completed check-run whose conclusion is ``skipped``."""
+
+    return (
+        str(raw.get("status") or "") == "completed"
+        and str(raw.get("conclusion") or "") == "skipped"
+    )
+
+
+def _skip_partition_key(raw: dict[str, object]) -> tuple[str, str]:
+    """Partition key for skip supersession: ``(context name, head SHA)``.
+
+    The head SHA is load-bearing, not decoration. A ``skipped`` row is only a
+    re-trigger artifact when a non-skipped row exists for the same name ON THE
+    SAME HEAD; a non-skipped row on a DIFFERENT head is a verdict about a
+    different commit and must not clear it. Partitioning by name alone would
+    let a ``success`` recorded on an earlier head silently suppress a
+    ``skipped`` on the head actually being gated -- the exact
+    skip-as-pass vector (OMN-15057 / OMN-14854) the strict external bar
+    exists for, re-opened through the fix for OMN-18062.
+
+    Rows carrying no ``head_sha`` field all share the ``""`` partition, so a
+    payload without head SHAs behaves exactly as it did before this guard.
+    Unreachable through the sanctioned caller -- it fetches
+    ``commits/{sha}/check-runs`` for one head -- but the safety of that
+    rested on convention, and this makes it a property of the function.
+    """
+
+    return (str(raw.get("name") or ""), str(raw.get("head_sha") or ""))
+
+
+def drop_superseded_skips(
+    check_runs: list[dict[str, object]],
+) -> list[dict[str, object]]:
+    """Drop ``skipped`` rows for names that also carry a non-skipped row (OMN-18062).
+
+    MECHANISM this closes, measured on this repo's PR #8709 (2026-09-08): a
+    ``gh pr edit`` of the PR body fires a SECOND ``pull_request`` run of a
+    workflow whose ``types:`` include ``edited`` (``guards.yml``). A job in
+    that workflow whose own ``if:`` excludes ``edited`` -- ``dep-provenance-
+    gate``, whose ``if:`` admits only opened/synchronize/reopened/
+    ready_for_review -- is SKIPPED in that run, and GitHub writes a FRESH
+    check-run with conclusion ``skipped`` onto the same, unchanged head SHA
+    where the very same job reported ``success`` 64 seconds earlier.
+    Latest-wins resolution then picks the skip, :data:`EXTERNAL_GOOD_
+    CONCLUSIONS` admits only ``success``, and ``CI Summary`` fails closed on a
+    head that nothing regressed on. Re-running ``CI Summary`` cannot clear it
+    (the skip is and stays the newest row for that name) -- only a new head
+    SHA can, so every lane that edits a PR body (OCC autobind stamps,
+    union-resolves) pays a re-push cycle.
+
+    A ``skipped`` row is evidence about a WORKFLOW RUN, not about the head: it
+    says a job's ``if:`` was false for that run's event. When a non-skipped row
+    for the same name exists on the same head, that row is the verdict about
+    the head and the skip is a re-trigger artifact.
+
+    What this deliberately does NOT relax:
+
+    * ``skipped`` with **no** non-skipped row for that name still stands and
+      still fails closed -- a producer whose ``if:`` was false for the whole
+      life of the head never ran, which is exactly the skip-as-pass vector
+      (OMN-15057 / OMN-14854) the strict external bar exists for.
+    * A ``failure`` (or ``cancelled``, or anything else non-skipped) after a
+      ``success`` still wins on recency -- a failure IS a verdict about the
+      head.
+    * A still-running row is non-skipped, so a later skip can never suppress
+      PENDING into a stale green.
+    * A skip on a DIFFERENT head SHA. Supersession is partitioned by
+      ``(name, head_sha)``, not by name alone -- see
+      :func:`_skip_partition_key`.
+    """
+
+    non_skipped_keys = {
+        _skip_partition_key(raw)
+        for raw in check_runs
+        if str(raw.get("name") or "") and not _is_skipped_row(raw)
+    }
+    return [
+        raw
+        for raw in check_runs
+        if not (_is_skipped_row(raw) and _skip_partition_key(raw) in non_skipped_keys)
+    ]
+
+
+def latest_check_run_by_name(
+    check_runs: list[dict[str, object]],
+) -> dict[str, JobState]:
+    """Collapse ``commits/{sha}/check-runs`` to one entry per context name.
+
+    Resolution is **latest wins** by ``(started_at, id)`` -- the same rule
+    GitHub applies when deciding a required status check from several
+    same-named check-runs on one SHA -- over the rows that survive
+    :func:`drop_superseded_skips`, so a re-trigger skip cannot supersede a
+    real conclusion already recorded for that name on this head (OMN-18062).
+    """
+
+    latest: dict[str, JobState] = {}
+    ordering: dict[str, tuple[str, int]] = {}
+    for raw in drop_superseded_skips(check_runs):
+        name = str(raw.get("name") or "")
+        if not name:
+            continue
+        try:
+            run_id = int(str(raw.get("id") or 0))
+        except (TypeError, ValueError):
+            run_id = 0
+        key = (str(raw.get("started_at") or ""), run_id)
+        if name in ordering and key <= ordering[name]:
+            continue
+        conclusion = raw.get("conclusion")
+        ordering[name] = key
+        latest[name] = JobState(
+            name=name,
+            status=str(raw.get("status") or ""),
+            conclusion=None if conclusion is None else str(conclusion),
+            run_attempt=1,
+        )
+    return latest
+
+
+# ---------------------------------------------------------------------------
+# OMN-18972 (parent OMN-18943, epic OMN-18527) - L5: the default-deny external
+# sweep. Ported from omnibase_infra OMN-18960; the measurement is this
+# repository's own.
+#
+# L4 below is a whitelist LOOKUP: it walks EXPECTED_EXTERNAL_CONTEXTS and asks
+# the head for each name. It never walks the head's check-run list the other
+# way, so a check-run outside that tuple is read by NOTHING and can conclude a
+# refusal unseen.
+#
+# MEASURED, 16 dev PRs merged 2026-09-20T23:42:54Z -> 2026-09-21T04:47:21Z,
+# scoped to rows that had STARTED at or before each merge decision:
+#
+#   * 12-13 unregistered external check-run names per head, 13 distinct across
+#     the window, against an EXPECTED_EXTERNAL_CONTEXTS of 21.
+#   * 7 of 16 heads carried a non-green unregistered context at merge time,
+#     and EVERY ONE of them is `tests+coverage (shadow)` -- see
+#     the four EXTERNAL_SWEEP_EXCLUSIONS entries below, each of which is
+#     dated, owned and expiring, and one of which additionally names the
+#     producer that declares itself advisory.
+#   * Event attribution: 206 `pull_request` and nothing else. No rows written
+#     by a GitHub App in this window; the DENY-list polarity below still holds
+#     for the day one appears.
+#
+# THE BAR IS STRICT AND IS THE SAME ONE L4 HOLDS: only `success` passes.
+# `skipped`, `neutral`, `cancelled` and `stale` all FAIL. Operator ruling,
+# 2026-09-21, firm. The reasoning is that a weaker default for unregistered
+# names beside an empty registry is a HIDDEN ALLOWLIST, which is the shape
+# this ticket exists to remove. The honest form of the same decision is a
+# POPULATED registry whose every entry carries a reason, an owner, a date and
+# an expiry, so a person re-reads it. Four names in this repository are
+# non-green by design and each now has such an entry.
+#
+# ONE CONSEQUENCE IS WORTH NAMING. This module has no supersession grace --
+# its JobState carries no `completed_at`, so there is no clock to bound a
+# wait against -- and under the strict bar a `cancelled` row now FAILS on the
+# poll that sees it rather than being waited out. In the measured window the
+# only cancellations belong to the shadow surface, which has an entry, so
+# this costs nothing today. It is still a real difference from
+# omnibase_infra, where a fresh cancellation is waited out inside a bounded
+# grace, and porting that grace into this module is the follow-up that would
+# close it.
+# ---------------------------------------------------------------------------
+
+# Events whose check-runs are NOT a verdict on the pull request being gated.
+# DENY list, never an allow list: a row whose event cannot be resolved -- a
+# GitHub App with no run URL, a run absent from the supplied index, or no index
+# supplied at all -- is SWEPT. An allow list would exempt all of those for free.
+SWEEP_NON_PR_EVENTS: frozenset[str] = frozenset(
+    {
+        "push",
+        # OMN-18970 adversarial review: a queue run's rows are a verdict about
+        # a queue commit, not about this pull request. The sweep only runs on
+        # `pull_request` today so this cannot currently fire, and it is listed
+        # anyway because the deny list is the place a reader looks to learn
+        # which events are not pull-request verdicts.
+        "merge_group",
+        "schedule",
+        "workflow_dispatch",
+        "release",
+        "deployment",
+        "deployment_status",
+        "repository_dispatch",
+        "create",
+        "delete",
+        "fork",
+        "page_build",
+        "public",
+        "registry_package",
+        "watch",
+    }
+)
+
+# The STRICT bar, and it is the same one L4 holds its own tuple to: the ONLY
+# conclusion that passes is `success`.
+#
+# Operator ruling, 2026-09-21, firm, and it overrides the narrower
+# refusal-only set this layer first shipped with in omnibase_infra: `skipped`,
+# `neutral`, `cancelled` and `stale` all FAIL on the swept population too. The
+# reasoning is that an empty exclusion registry beside a weaker default for
+# unregistered names is a HIDDEN ALLOWLIST, which is the shape this ticket
+# exists to remove; a populated registry whose every entry carries a date and
+# an expiry is the honest form of the same decision, because somebody has to
+# re-read it.
+#
+# The practical consequence, stated so nobody mistakes it for an accident:
+# every name that is non-green BY DESIGN now needs an entry in
+# EXTERNAL_SWEEP_EXCLUSIONS. This repository has four, measured, below.
+SWEEP_GOOD_CONCLUSIONS: frozenset[str] = frozenset({"success"})
+
+
+@dataclass(frozen=True)
+class SweepExclusion:
+    """One dated, ticketed, EXPIRING admission to the L5 sweep.
+
+    ONE admission path, not two. An earlier revision of this change carried a
+    second, undated category for producers that declare themselves advisory,
+    on the argument that a 90-day expiry on a permanent exemption schedules an
+    outage. The operator ruled against it on 2026-09-21: an undated category
+    is a hidden allowlist however well argued, and the honest form of a
+    permanent exemption is a dated one somebody has to re-read. So a producer
+    that is advisory by design gets an entry here like everything else, says
+    so in its ``reason``, and names itself in ``declared_by``.
+
+    ``declared_by`` is the optional derived half. When set, it is the
+    repository-relative path of the producer that declares itself advisory,
+    and the suite REFUSES the entry unless that file still carries
+    :data:`ADVISORY_DECLARATION_MARKER`. The exemption is then valid only
+    while the producer still says so: make the surface authoritative, or
+    delete the declaration, and the test goes red. That is a machine
+    re-reading the premise rather than a comment written once.
+    """
+
+    reason: str
+    ticket: str
+    added: str
+    expires: str
+    declared_by: str | None = None
+
+
+# The longest window one entry may claim. An exclusion needing longer than a
+# quarter is not a temporary exception, it is a decision to stop enforcing.
+# It applies to the declared-advisory entries too, deliberately: the cap is
+# what forces somebody to re-read a premise that has held for a quarter.
+SWEEP_EXCLUSION_MAX_DAYS: int = 90
+
+# The phrase the suite reads back out of each ``declared_by`` producer.
+# Changing it here without changing the producers is a red test, which is the
+# point of having it in one place.
+ADVISORY_DECLARATION_MARKER: str = "REPORT-ONLY / NON-REQUIRED / STANDALONE"
+
+# FOUR ENTRIES, one per name this repository's measurement found non-green by
+# design over the 16-PR window recorded above. Under the strict bar every one
+# of them would otherwise fail the gate on the first run, which is exactly the
+# point: each is now a named, dated, owned decision instead of a silent
+# tolerance buried in a conclusion set.
+EXTERNAL_SWEEP_EXCLUSIONS: dict[str, SweepExclusion] = {
+    "tests+coverage (shadow)": SweepExclusion(
+        reason=(
+            "The check was cancelled on 3 of 16 heads, was still running on 4 "
+            "of 16 heads, and never reached a success conclusion in the "
+            "measured window. Its producer declares the workflow as report "
+            "only, not required, and standalone. Its concurrency group "
+            "supersedes an in flight run for the same ref, which explains the "
+            "cancellations. If this name is not registered, the default deny "
+            "layer can fail the merge gate from a shadow report that is "
+            "intended to remain outside the authoritative gate."
+        ),
+        ticket="OMN-18972",
+        added="2026-09-21",
+        expires="2026-12-20",
+        declared_by=".github/workflows/product-readiness-shadow.yml",
+    ),
+    "PEP 604 Type Union Check (UP007)": SweepExclusion(
+        reason=(
+            "The check was skipped on 16 of 16 heads, with no success "
+            "conclusion in the measured window. Its producer skips it when a "
+            "docs only change is detected through a job level condition on a "
+            "zone filter output. The measured pull requests are predominantly "
+            "docs shaped evidence companions. If this name is not registered, "
+            "the default deny layer can fail the merge gate from a content "
+            "dependent skip that is deliberately not yet asserted in the "
+            "external context tuple."
+        ),
+        ticket="OMN-18972",
+        added="2026-09-21",
+        expires="2026-12-20",
+    ),
+    "occ-autobind": SweepExclusion(
+        reason=(
+            "The check was skipped on 16 of 16 heads, with no success "
+            "conclusion in the measured window. The job runs only when a "
+            "preceding self companion guard emits should_publish true. A "
+            "skipped guard produces an empty output. If this name is not "
+            "registered, the default deny layer can fail the merge gate from "
+            "a job that skips because the guard output is empty."
+        ),
+        ticket="OMN-18972",
+        added="2026-09-21",
+        expires="2026-12-20",
+    ),
+    # THESE TWO WERE NOT IN THE MEASURED WINDOW, and that is the finding
+    # rather than an oversight to hide. The 16-PR window above contained no
+    # App-written mint-status or outcome row at all, so the registry shipped
+    # without them; both then appeared live on this very pull request and the
+    # sweep refused it. The layer worked exactly as designed. What failed was
+    # the premise that a 16-PR window enumerates a population, and the lesson
+    # is written here rather than in a commit message because the next person
+    # to add an entry from a window needs to read it.
+    #
+    # Their mechanism is the same one their siblings in omnibase_infra,
+    # omniclaude and omnibase_core already carry: a status row written by a
+    # GitHub App rather than by Actions, whose neutral conclusion is a
+    # placeholder rather than a verdict about the head.
+    "occ-autobind / outcome": SweepExclusion(
+        reason=(
+            "Observed live on onex_change_control#10642 at neutral, and ABSENT "
+            "from the 16-PR window this registry was otherwise measured from: "
+            "that window carried no App-written outcome row at all. It is a "
+            "status row written by a GitHub App rather than by Actions, and a "
+            "neutral conclusion from that producer is a placeholder rather "
+            "than a verdict about the head. It is also the context recorded "
+            "as printing the wrong label on its own success path. Without "
+            "this entry the gate reads a placeholder as a refusal, which is "
+            "what it did before the entry existed."
+        ),
+        ticket="OMN-18939",
+        added="2026-09-21",
+        expires="2026-12-20",
+    ),
+    "occ-companion-effect / mint status": SweepExclusion(
+        reason=(
+            "Observed live on onex_change_control#10642 at neutral, and "
+            "absent from the measured 16-PR window for the same reason as the "
+            "autobind outcome row beside it. Same producer family and same "
+            "placeholder mechanism: a GitHub App writes the row and its "
+            "neutral conclusion states nothing about the head. Without this "
+            "entry the gate blocks on a non-verdict."
+        ),
+        ticket="OMN-18939",
+        added="2026-09-21",
+        expires="2026-12-20",
+    ),
+    "occ-companion-effect": SweepExclusion(
+        reason=(
+            "The check was skipped on 16 of 16 heads, with no success "
+            "conclusion in the measured window. It is gated on the same self "
+            "companion guard output. The job skips when that guard does not "
+            "ask for a publish. If this name is not registered, the default "
+            "deny layer can fail the merge gate from a job that skips because "
+            "the guard output is empty."
+        ),
+        ticket="OMN-18972",
+        added="2026-09-21",
+        expires="2026-12-20",
+    ),
+}
+
+_SWEEP_TICKET_RE = re.compile(r"^OMN-\d+$")
+_SWEEP_DATE_RE = re.compile(r"^\d{4}-\d{2}-\d{2}$")
+_RUN_ID_RE = re.compile(r"/actions/runs/(\d+)(?:/|$)")
+
+
+def _parse_exclusion_date(raw: str) -> date | None:
+    """Parse a ``YYYY-MM-DD`` exclusion date, or ``None`` if unreadable."""
+
+    if not _SWEEP_DATE_RE.match((raw or "").strip()):
+        return None
+    try:
+        return date.fromisoformat(raw.strip())
+    except ValueError:
+        return None
+
+
+def validate_sweep_exclusions(
+    exclusions: dict[str, SweepExclusion],
+) -> list[str]:
+    """Refusal reasons for malformed :data:`EXTERNAL_SWEEP_EXCLUSIONS` entries.
+
+    A non-empty return FAILS the gate. An exclusion nobody could have reviewed
+    is worse than no exclusion, because it reads as a considered decision.
+
+    Expiry is deliberately NOT a finding. An entry past its date is not
+    malformed, it is spent: :func:`active_sweep_exclusions` drops it and the
+    name is swept again, so the gate RE-ARMS rather than breaking. The suite
+    carries the other half, a test that fails the moment a live entry expires.
+    """
+
+    findings: list[str] = []
+    for name, declared in sorted(exclusions.items()):
+        # Widened to `object` on purpose: the annotation says these are all
+        # SweepExclusion, and this check is what makes that true at runtime for
+        # a hand-edited registry. Without the widening a strict type checker
+        # calls the guard unreachable and it gets deleted.
+        entry: object = declared
+        if not isinstance(entry, SweepExclusion):
+            findings.append(f"{name}: not a SweepExclusion instance")
+            continue
+        if not entry.reason.strip():
+            findings.append(f"{name}: reason is empty")
+        if not _SWEEP_TICKET_RE.match(entry.ticket.strip()):
+            findings.append(
+                f"{name}: ticket {entry.ticket!r} is not an OMN-<number> reference"
+            )
+        findings.extend(_validate_exclusion_window(name, entry))
+        if entry.declared_by is not None and not entry.declared_by.strip():
+            findings.append(f"{name}: declared_by is set but empty")
+    return findings
+
+
+def _validate_exclusion_window(name: str, entry: SweepExclusion) -> list[str]:
+    """Refusal reasons for one entry's ``added`` / ``expires`` pair.
+
+    Both dates must parse, the expiry must be strictly after the added date,
+    and the window may not exceed :data:`SWEEP_EXCLUSION_MAX_DAYS`. The cap is
+    what forces a premise that has held for a quarter to be re-read.
+    """
+
+    findings: list[str] = []
+    added = _parse_exclusion_date(entry.added)
+    expires = _parse_exclusion_date(entry.expires)
+    if added is None:
+        findings.append(f"{name}: added {entry.added!r} is not a YYYY-MM-DD date")
+    if expires is None:
+        findings.append(f"{name}: expires {entry.expires!r} is not a YYYY-MM-DD date")
+    if added is not None and expires is not None:
+        if expires <= added:
+            findings.append(
+                f"{name}: expires {entry.expires} is not after added {entry.added}"
+            )
+        elif (expires - added).days > SWEEP_EXCLUSION_MAX_DAYS:
+            findings.append(
+                f"{name}: window {(expires - added).days}d exceeds the "
+                f"{SWEEP_EXCLUSION_MAX_DAYS}d cap"
+            )
+    return findings
+
+
+def validate_declared_producers(
+    exclusions: dict[str, SweepExclusion],
+    repo_root: Path,
+) -> list[str]:
+    """Refusal reasons for entries whose producer no longer declares itself advisory.
+
+    This is the DERIVED half of the registry and the reason a
+    ``declared_by`` entry is a mechanism rather than an assertion: the premise
+    is re-read from the producer, not trusted from the comment beside it. An
+    entry whose file is gone, or which no longer carries
+    :data:`ADVISORY_DECLARATION_MARKER`, is refused, and the name goes back to
+    being swept.
+
+    Kept OUT of :func:`validate_sweep_exclusions` on purpose: that one is pure
+    and runs inside the gate on every poll, and this one reads the filesystem.
+    The suite calls it; the poller does not pay for it once per poll.
+    """
+
+    findings: list[str] = []
+    for name, entry in sorted(exclusions.items()):
+        if entry.declared_by is None:
+            continue
+        producer = repo_root / entry.declared_by
+        if not producer.is_file():
+            findings.append(f"{name}: declared producer {entry.declared_by} is missing")
+            continue
+        try:
+            text = producer.read_text(encoding="utf-8")
+        except OSError as exc:
+            findings.append(f"{name}: declared producer unreadable: {exc}")
+            continue
+        if ADVISORY_DECLARATION_MARKER not in text:
+            findings.append(
+                f"{name}: {entry.declared_by} no longer declares itself "
+                f"{ADVISORY_DECLARATION_MARKER!r}"
+            )
+    return findings
+
+
+def active_sweep_exclusions(
+    exclusions: dict[str, SweepExclusion],
+    *,
+    now: datetime | None,
+) -> tuple[frozenset[str], tuple[str, ...]]:
+    """Return ``(names still excluding, names whose entry has expired)``.
+
+    An entry excludes on every day STRICTLY BEFORE its ``expires`` date.
+    ``now is None`` excludes NOTHING -- a caller with no clock cannot judge an
+    expiry, and the fail-closed answer to that is to enforce.
+    """
+
+    if now is None:
+        return frozenset(), tuple(sorted(exclusions))
+    today = now.date()
+    active: set[str] = set()
+    expired: list[str] = []
+    for name, entry in exclusions.items():
+        expires = _parse_exclusion_date(getattr(entry, "expires", ""))
+        if expires is None or today >= expires:
+            expired.append(name)
+        else:
+            active.add(name)
+    return frozenset(active), tuple(sorted(expired))
+
+
+def check_run_event_index(
+    workflow_runs: list[dict[str, object]] | None,
+) -> dict[int, str]:
+    """Map workflow-run id -> triggering event, from ``actions/runs?head_sha=``.
+
+    ``None`` or an empty list yields an empty index, under which every row
+    resolves to ``None`` and the sweep judges all of them. A forgotten
+    argument therefore ENFORCES rather than exempting.
+    """
+
+    index: dict[int, str] = {}
+    for raw in workflow_runs or []:
+        try:
+            run_id = int(str(raw.get("id") or 0))
+        except (TypeError, ValueError):
+            continue
+        event = str(raw.get("event") or "")
+        if run_id and event:
+            index[run_id] = event
+    return index
+
+
+def check_run_workflow_run_id(raw: dict[str, object]) -> int | None:
+    """The Actions workflow-run id that wrote this check-run, or ``None``.
+
+    Read from the row's own ``html_url``/``details_url``
+    (``.../actions/runs/<run id>/job/<job id>``). ``None`` for a row no
+    Actions run wrote (a third-party app) or whose URL is unreadable.
+    """
+
+    for key in ("html_url", "details_url"):
+        match = _RUN_ID_RE.search(str(raw.get(key) or ""))
+        if match:
+            return int(match.group(1))
+    return None
+
+
+def own_workflow_run_ids(
+    jobs: list[dict[str, object]],
+    current_run_id: int | None = None,
+) -> frozenset[int]:
+    """The id of the workflow run this CI Summary job belongs to.
+
+    OMN-17427. Taken from the explicit ``--current-run-id`` when the poller
+    passes it, and from the ``run_id`` every row of the run's own jobs payload
+    carries, so a jobs fetch that came back empty still knows which run it is.
+    """
+
+    ids: set[int] = set()
+    if current_run_id:
+        ids.add(current_run_id)
+    for raw in jobs:
+        try:
+            run_id = int(str(raw.get("run_id") or 0))
+        except (TypeError, ValueError):
+            continue
+        if run_id:
+            ids.add(run_id)
+    return frozenset(ids)
+
+
+def resolve_check_run_event(
+    raw: dict[str, object],
+    events: dict[int, str],
+) -> str | None:
+    """The event that produced this check-run, or ``None`` when unresolvable.
+
+    ``None`` is the fail-closed answer: the caller sweeps the row.
+    """
+
+    run_id = check_run_workflow_run_id(raw)
+    return None if run_id is None else events.get(run_id)
+
+
+def latest_check_run_rows(
+    check_runs: list[dict[str, object]],
+) -> dict[str, dict[str, object]]:
+    """The RAW winning row per context name, under latest-wins resolution.
+
+    :func:`latest_check_run_by_name` projects these onto :class:`JobState`,
+    which drops the producer URL. The L5 sweep needs that URL to resolve which
+    EVENT wrote the row, so the ordering lives here and both callers read the
+    same winner. Duplicating it would let L4 and L5 disagree about which row is
+    current, which is the one way a red could be judged by neither.
+    """
+
+    winners: dict[str, dict[str, object]] = {}
+    ordering: dict[str, tuple[str, int]] = {}
+    for raw in drop_superseded_skips(check_runs):
+        name = str(raw.get("name") or "")
+        if not name:
+            continue
+        try:
+            run_id = int(str(raw.get("id") or 0))
+        except (TypeError, ValueError):
+            run_id = 0
+        key = (str(raw.get("started_at") or ""), run_id)
+        if name in ordering and key <= ordering[name]:
+            continue
+        ordering[name] = key
+        winners[name] = raw
+    return winners
+
+
+def evaluate_external_sweep(
+    check_runs: list[dict[str, object]] | None,
+    *,
+    expected: tuple[str, ...] = (),
+    in_run_names: frozenset[str] = frozenset(),
+    own_run_ids: frozenset[int] = frozenset(),
+    self_name: str = SELF_JOB_NAME,
+    exclusions: dict[str, SweepExclusion] | None = None,
+    events: dict[int, str] | None = None,
+    now: datetime | None = None,
+) -> tuple[list[str], list[str], list[str], list[str]]:
+    """L5 -- default-deny over every check-run nothing else accounts for.
+
+    A row written by THIS workflow run (``own_run_ids``, OMN-17427) is never
+    swept: it is one of this run's own jobs, which layers 1-3 judge from the
+    run's jobs payload, and a job not yet in that payload holds the verdict
+    PENDING there. ``in_run_names`` alone could not say that. It is the set
+    of names in the jobs payload at the moment it was fetched, and a job
+    created a second later -- a skippable gate whose ``needs:`` just finished
+    and which GitHub writes straight to ``skipped`` -- already has its
+    check-run on the head when the check-runs payload is fetched next. L5 then
+    judged the run's own skippable gate as a red "named by NOTHING else", and
+    the umbrella failed on a run whose every gate passed.
+
+    Returns ``(failures, in_flight, swept, excluded)``. ``failures`` fail the
+    umbrella; the rest are reporting, and ``swept`` is printed on every verdict
+    so a clean sweep records what it looked at rather than printing nothing.
+
+    ONE admission path and no second: :data:`EXTERNAL_SWEEP_EXCLUSIONS`,
+    every entry of which carries a reason, an owning ticket, an added date
+    and an absolute expiry. An entry may additionally name the producer that
+    declares itself advisory, and the suite refuses that entry if the
+    declaration is gone.
+
+    WHY ``in_flight`` DOES NOT HOLD THE VERDICT AT PENDING. Every other layer's
+    PENDING is backed by a presence PROMISE. An unregistered row carries none,
+    so waiting on one lets the poller's deadline -- and therefore a FAILURE on
+    a required context -- be spent on a job that never terminalizes. RESIDUAL:
+    a row that goes red AFTER the poller's last poll is not seen, bounded by
+    the poller running until every in-run gate and expected external context
+    has completed. The remedy for a name that matters is to REGISTER it.
+    """
+
+    if check_runs is None:
+        return [], [], [], []
+    if exclusions is None:
+        exclusions = EXTERNAL_SWEEP_EXCLUSIONS
+    events = events or {}
+    accounted = frozenset(expected) | in_run_names | {self_name}
+    active, _expired = active_sweep_exclusions(exclusions, now=now)
+
+    failures: list[str] = []
+    in_flight: list[str] = []
+    swept: list[str] = []
+    excluded: list[str] = []
+    for name, raw in sorted(latest_check_run_rows(check_runs).items()):
+        if name in accounted:
+            continue
+        if own_run_ids and check_run_workflow_run_id(raw) in own_run_ids:
+            continue
+        if resolve_check_run_event(raw, events) in SWEEP_NON_PR_EVENTS:
+            continue
+        if name in active:
+            excluded.append(name)
+            continue
+        swept.append(name)
+        status = str(raw.get("status") or "")
+        conclusion = raw.get("conclusion")
+        conclusion = None if conclusion is None else str(conclusion)
+        if status != "completed":
+            in_flight.append(name)
+            continue
+        if conclusion not in SWEEP_GOOD_CONCLUSIONS:
+            failures.append(f"{name} ({conclusion})")
+    return failures, in_flight, swept, excluded
+
+
+def evaluate_external_contexts(
+    check_runs: list[dict[str, object]] | None,
+    expected: tuple[str, ...],
+) -> tuple[list[str], list[str]]:
+    """Return ``(failures, missing_or_pending)`` for the declared external contexts.
+
+    ``check_runs is None`` means the caller could not fetch the head SHA's
+    check-runs. That is treated as **every** expected context being
+    unobserved -- PENDING, never success -- so a transient API failure
+    retries and a permanent one fails closed at the deadline.
+    """
+
+    if not expected:
+        return [], []
+    latest = latest_check_run_by_name(check_runs or [])
+    failures: list[str] = []
+    unresolved: list[str] = []
+    for context in expected:
+        state = latest.get(context)
+        if state is None or state.status != "completed":
+            unresolved.append(context)
+        elif state.conclusion not in EXTERNAL_GOOD_CONCLUSIONS:
+            failures.append(context)
+    return sorted(failures), sorted(unresolved)
+
+
+def _is_allowlisted(name: str, allowlist: frozenset[str]) -> bool:
+    """Prefix-aware allowlist check.
+
+    A reusable-workflow caller's inner jobs surface in the jobs API as
+    ``"<caller display name> / <inner job name>"``; matching the caller
+    segment lets a single allowlist entry cover all of its inner jobs.
+    """
+
+    if name in allowlist:
+        return True
+    caller = name.split(" / ", 1)[0]
+    return caller in allowlist
+
+
+def evaluate(
+    jobs: list[dict[str, object]],
+    *,
+    run_attempt: int | None = None,
+    self_name: str = SELF_JOB_NAME,
+    strict_gates: tuple[str, ...] = STRICT_GATE_JOBS,
+    skippable_gates: tuple[str, ...] = SKIPPABLE_GATE_JOBS,
+    allowlist: frozenset[str] = SOFT_ALLOWLIST,
+    check_runs: list[dict[str, object]] | None = None,
+    external_contexts: tuple[str, ...] = (),
+    sweep_external: bool = False,
+    sweep_exclusions: dict[str, SweepExclusion] | None = None,
+    workflow_runs: list[dict[str, object]] | None = None,
+    current_run_id: int | None = None,
+    now: datetime | None = None,
+) -> tuple[int, str]:
+    """Return ``(exit_code, human_report)`` for the current job snapshot.
+
+    ``sweep_external`` turns on the OMN-18972 L5 default-deny sweep. It is OFF
+    by default so every existing caller and test keeps its exact verdict, and
+    :func:`main` turns it on for ``pull_request`` only -- on a push run the
+    head is a merge commit whose check-runs are post-merge rows, not a verdict
+    about a pull request, and a swept failure there would make push CI
+    permanently red.
+
+    ``workflow_runs`` is the ``actions/runs?head_sha=`` payload L5 resolves
+    each row's triggering EVENT from. Omitting it resolves every event to
+    ``None``, which the sweep JUDGES -- a forgotten argument enforces.
+    """
+
+    latest = dedup_latest(jobs, run_attempt=run_attempt)
+    gate_names = frozenset(strict_gates) | frozenset(skippable_gates)
+
+    # (1) Strict aggregate gates: present + completed + conclusion == success.
+    strict_failures = sorted(
+        g
+        for g in strict_gates
+        if (
+            (st := latest.get(g)) is not None
+            and st.status == "completed"
+            and st.conclusion != "success"
+        )
+    )
+
+    # (2) Skippable aggregate gates: present + completed + success/skipped.
+    skippable_failures = sorted(
+        g
+        for g in skippable_gates
+        if (
+            (st := latest.get(g)) is not None
+            and st.status == "completed"
+            and st.conclusion not in GOOD_CONCLUSIONS
+        )
+    )
+
+    # (3) Default-deny sweep over every OTHER present job: fail completed
+    #     refusals and WAIT for running rows (PENDING, re-polled).
+    sweep_failures = sorted(
+        j.name
+        for name, j in latest.items()
+        if name != self_name
+        and name not in gate_names
+        and not _is_allowlisted(name, allowlist)
+        and j.status == "completed"
+        and j.conclusion not in GOOD_CONCLUSIONS
+    )
+    sweep_running = sorted(
+        j.name
+        for name, j in latest.items()
+        if name != self_name
+        and name not in gate_names
+        and not _is_allowlisted(name, allowlist)
+        and j.status != "completed"
+    )
+
+    # Completeness anchor: every gate must be present AND completed.
+    gate_missing_or_pending = [
+        g
+        for g in (*strict_gates, *skippable_gates)
+        if (latest.get(g) is None or latest[g].status != "completed")
+    ]
+
+    # (4) L4 external contexts: cross-workflow checks on the PR head.
+    external_failures, external_unresolved = evaluate_external_contexts(
+        check_runs, external_contexts
+    )
+
+    # (5) OMN-18972 L5 default-deny sweep: every check-run on the head that
+    #     layers 1-4 do not account for. `latest` is keyed by this run's own
+    #     job names, so subtracting it is what keeps L5 from re-judging a job
+    #     the L3 soft-allowlist already admitted.
+    if sweep_exclusions is None:
+        sweep_exclusions = EXTERNAL_SWEEP_EXCLUSIONS
+    exclusion_findings = (
+        validate_sweep_exclusions(sweep_exclusions) if sweep_external else []
+    )
+    _active, expired_exclusions = (
+        active_sweep_exclusions(sweep_exclusions, now=now)
+        if sweep_external
+        else (frozenset(), ())
+    )
+    (
+        ext_sweep_failures,
+        ext_sweep_in_flight,
+        ext_sweep_names,
+        ext_sweep_excluded,
+    ) = (
+        evaluate_external_sweep(
+            check_runs,
+            expected=external_contexts,
+            in_run_names=frozenset(latest),
+            own_run_ids=own_workflow_run_ids(jobs, current_run_id),
+            self_name=self_name,
+            exclusions=sweep_exclusions,
+            events=check_run_event_index(workflow_runs),
+            now=now,
+        )
+        if sweep_external
+        else ([], [], [], [])
+    )
+
+    all_failures = (
+        strict_failures
+        + skippable_failures
+        + sweep_failures
+        + external_failures
+        + ext_sweep_failures
+        # A malformed exclusion entry fails the gate outright: an unreviewable
+        # exception is worse than none, because it reads as a considered
+        # decision.
+        + [f"malformed sweep exclusion: {f}" for f in exclusion_findings]
+    )
+    all_unresolved = gate_missing_or_pending + sweep_running + external_unresolved
+
+    def _verdict(label: str) -> str:
+        return _report(
+            label,
+            latest,
+            strict_gates,
+            skippable_gates,
+            strict_failures,
+            skippable_failures,
+            sweep_failures,
+            gate_missing_or_pending,
+            external_contexts,
+            external_failures,
+            external_unresolved,
+            sweep_running=sweep_running,
+            sweep_names=ext_sweep_names,
+            sweep_external_failures=ext_sweep_failures,
+            sweep_in_flight=ext_sweep_in_flight,
+            sweep_excluded=ext_sweep_excluded,
+            sweep_expired=list(expired_exclusions),
+            sweep_findings=exclusion_findings,
+            sweep_external=sweep_external,
+        )
+
+    if all_failures:
+        return EXIT_FAILURE, _verdict("FAILURE")
+    if all_unresolved:
+        return EXIT_PENDING, _verdict("PENDING")
+    return EXIT_SUCCESS, _verdict("SUCCESS")
+
+
+def _report(
+    verdict: str,
+    latest: dict[str, JobState],
+    strict_gates: tuple[str, ...],
+    skippable_gates: tuple[str, ...],
+    strict_failures: list[str],
+    skippable_failures: list[str],
+    sweep_failures: list[str],
+    gate_missing_or_pending: list[str],
+    external_contexts: tuple[str, ...] = (),
+    external_failures: list[str] | None = None,
+    external_unresolved: list[str] | None = None,
+    *,
+    sweep_running: list[str] | None = None,
+    sweep_names: list[str] | None = None,
+    sweep_external_failures: list[str] | None = None,
+    sweep_in_flight: list[str] | None = None,
+    sweep_excluded: list[str] | None = None,
+    sweep_expired: list[str] | None = None,
+    sweep_findings: list[str] | None = None,
+    sweep_external: bool = False,
+) -> str:
+    lines = [f"CI Summary verdict: {verdict}", f"  jobs observed: {len(latest)}"]
+    lines.append("  strict gates:")
+    for g in strict_gates:
+        st = latest.get(g)
+        lines.append(
+            f"    - {g}: <absent>"
+            if st is None
+            else f"    - {g}: {st.status}/{st.conclusion}"
+        )
+    lines.append("  skippable gates:")
+    for g in skippable_gates:
+        st = latest.get(g)
+        lines.append(
+            f"    - {g}: <absent>"
+            if st is None
+            else f"    - {g}: {st.status}/{st.conclusion}"
+        )
+    if strict_failures:
+        lines.append(f"  strict-gate failures: {', '.join(strict_failures)}")
+    if skippable_failures:
+        lines.append(f"  skippable-gate failures: {', '.join(skippable_failures)}")
+    if sweep_failures:
+        lines.append(f"  default-deny sweep failures: {', '.join(sweep_failures)}")
+    if sweep_running:
+        lines.append(
+            "  default-deny sweep rows still running (PENDING, re-polled): "
+            + ", ".join(sweep_running)
+        )
+    if gate_missing_or_pending:
+        lines.append(f"  gates missing/pending: {', '.join(gate_missing_or_pending)}")
+    if external_contexts:
+        lines.extend(
+            _external_report_lines(
+                external_contexts, external_failures, external_unresolved
+            )
+        )
+    if sweep_external:
+        lines.extend(
+            _sweep_report_lines(
+                sweep_names,
+                sweep_external_failures,
+                sweep_excluded,
+                sweep_expired,
+                sweep_in_flight,
+                sweep_findings,
+            )
+        )
+    return "\n".join(lines)
+
+
+def _external_report_lines(
+    external_contexts: tuple[str, ...],
+    external_failures: list[str] | None,
+    external_unresolved: list[str] | None,
+) -> list[str]:
+    """The L4 external-context block of the verdict report."""
+
+    lines = [f"  external contexts asserted: {len(external_contexts)}"]
+    if external_failures:
+        lines.append(f"  external-context failures: {', '.join(external_failures)}")
+    if external_unresolved:
+        lines.append(
+            f"  external contexts missing/pending: {', '.join(external_unresolved)}"
+        )
+    return lines
+
+
+def _sweep_report_lines(
+    sweep_names: list[str] | None,
+    sweep_external_failures: list[str] | None,
+    sweep_excluded: list[str] | None,
+    sweep_expired: list[str] | None,
+    sweep_in_flight: list[str] | None,
+    sweep_findings: list[str] | None,
+) -> list[str]:
+    """The OMN-18972 L5 block of the verdict report.
+
+    The count line is unconditional, including on a clean run: a sweep that
+    finds nothing and says nothing is indistinguishable from a sweep that did
+    not run (rule 16).
+    """
+
+    lines = [
+        "  L5 external default-deny sweep: "
+        f"{len(sweep_names or [])} unregistered context(s) judged"
+    ]
+    if sweep_external_failures:
+        lines.append(
+            "  L5 sweep failures (red, and named by NOTHING else): "
+            + ", ".join(sweep_external_failures)
+        )
+    if sweep_excluded:
+        # Each name carries the admission path that let it through, so a
+        # permanent declared-advisory exemption and a dated temporary one never
+        # read the same in a log.
+        lines.append(
+            "  L5 sweep exemptions applied: " + ", ".join(sorted(sweep_excluded))
+        )
+    if sweep_expired:
+        lines.append(
+            "  L5 sweep exclusions EXPIRED (no longer excluding): "
+            + ", ".join(sorted(sweep_expired))
+        )
+    if sweep_in_flight:
+        lines.append(
+            "  L5 sweep rows still running (reported, not waited on): "
+            + ", ".join(sorted(sweep_in_flight))
+        )
+    if sweep_findings:
+        lines.append(
+            "  L5 sweep exclusion registry REFUSED: " + "; ".join(sweep_findings)
+        )
+    return lines
+
+
+def _load_jobs(path: str | None) -> list[dict[str, object]]:
+    if path is None or path == "-":
+        raw = sys.stdin.read()
+    else:
+        raw = Path(path).read_text(encoding="utf-8")
+    data = json.loads(raw)
+    # Accept either the raw endpoint object ({"jobs": [...]}) or a bare array.
+    jobs = data.get("jobs", []) if isinstance(data, dict) else data
+    if not isinstance(jobs, list):
+        msg = "jobs payload must be a list or an object with a 'jobs' array"
+        raise TypeError(msg)
+    return jobs
+
+
+def _load_check_runs(path: str | None) -> list[dict[str, object]] | None:
+    """Load ``commits/{sha}/check-runs``; return ``None`` when unavailable.
+
+    ``None`` is the fail-closed signal: :func:`evaluate_external_contexts`
+    reads it as "no context observed" -> PENDING -> FAILURE at the caller's
+    deadline. A missing, empty, or malformed payload must never green the gate.
+    """
+
+    if not path:
+        return None
+    try:
+        raw = Path(path).read_text(encoding="utf-8")
+    except OSError:
+        return None
+    if not raw.strip():
+        return None
+    try:
+        data = json.loads(raw)
+    except json.JSONDecodeError:
+        return None
+    if isinstance(data, dict):
+        data = data.get("check_runs", [])
+    if not isinstance(data, list):
+        return None
+    return [row for row in data if isinstance(row, dict)]
+
+
+def _load_workflow_runs(path: str | None) -> list[dict[str, object]] | None:
+    """Load ``actions/runs?head_sha=`` rows for the OMN-18972 event scoping.
+
+    ``None`` on a missing or unreadable file, which resolves every row's event
+    to ``None`` and therefore SWEEPS every row. Unreadable is the stricter
+    reading here, so a failed fetch cannot exempt anything.
+    """
+
+    if not path:
+        return None
+    try:
+        with Path(path).open(encoding="utf-8") as handle:
+            payload = json.load(handle)
+    except (OSError, json.JSONDecodeError):
+        return None
+    if isinstance(payload, dict):
+        runs = payload.get("workflow_runs")
+        return runs if isinstance(runs, list) else None
+    return payload if isinstance(payload, list) else None
+
+
+def main(argv: list[str] | None = None) -> int:
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument(
+        "--jobs-file",
+        default="-",
+        help="Path to the GitHub Actions jobs JSON (default: stdin). Accepts the "
+        "raw endpoint object or a bare array of job objects.",
+    )
+    parser.add_argument(
+        "--report-only",
+        action="store_true",
+        help="Print the verdict report and exit 0 regardless (diagnostics only).",
+    )
+    parser.add_argument(
+        "--run-attempt",
+        type=int,
+        default=None,
+        help="Evaluate only rows for this GitHub Actions run_attempt.",
+    )
+    parser.add_argument(
+        "--check-runs-file",
+        default=None,
+        help="Path to the PR head SHA's commits/{sha}/check-runs JSON, used to "
+        "assert EXPECTED_EXTERNAL_CONTEXTS. A missing/unreadable file is "
+        "PENDING, never success.",
+    )
+    parser.add_argument(
+        "--workflow-runs-file",
+        default=None,
+        help="Path to the head SHA's actions/runs JSON, used ONLY to resolve "
+        "which EVENT produced each check-run so the OMN-18972 L5 default-deny "
+        "sweep can skip non-pull-request rows. A missing/unreadable file "
+        "resolves every event as unknown, which SWEEPS every row -- the "
+        "stricter reading, so a failed fetch cannot exempt anything.",
+    )
+    parser.add_argument(
+        "--current-run-id",
+        type=int,
+        default=None,
+        help="This workflow run's id (github.run_id). Check-runs this run "
+        "wrote are its own jobs, judged from --jobs-file, and the L5 sweep "
+        "never re-judges them (OMN-17427).",
+    )
+    parser.add_argument(
+        "--event-name",
+        default="pull_request",
+        help="GitHub event name. External contexts are asserted on "
+        "'pull_request' only -- merge_group/workflow_dispatch have no "
+        "PR-scoped context set. Defaults to 'pull_request' so a FORGOTTEN "
+        "argument enforces rather than silently skips.",
+    )
+    args = parser.parse_args(argv)
+
+    jobs = _load_jobs(args.jobs_file)
+    external_contexts = (
+        EXPECTED_EXTERNAL_CONTEXTS if args.event_name == "pull_request" else ()
+    )
+    code, report = evaluate(
+        jobs,
+        run_attempt=args.run_attempt,
+        check_runs=_load_check_runs(args.check_runs_file),
+        external_contexts=external_contexts,
+        sweep_external=args.event_name == "pull_request",
+        workflow_runs=_load_workflow_runs(args.workflow_runs_file),
+        current_run_id=args.current_run_id,
+        # The observation time the OMN-18972 exclusion expiries are judged
+        # against. It is the process's own wall clock and has NO CLI surface,
+        # deliberately: a caller-assertable time would let a spent exclusion
+        # be held active indefinitely, which is the one way the expiry could
+        # become a bypass.
+        now=datetime.now(UTC),
+    )
+    print(report)
+    if args.report_only:
+        return EXIT_SUCCESS
+    return code
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

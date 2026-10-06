@@ -1,0 +1,129 @@
+---
+schema_version: "1.0.0"
+ticket_id: "OMN-14467"
+title: "RT-5 effect-assertion gate — deploy trigger producer fails closed on zero output (omnibase_infra)"
+summary: >
+  OCC DoD companion for omnibase_infra#2271 (RT-5, epic OMN-13674). The deploy trigger scripts/trigger_rebuild_on_merge.py:258
+  printed "KAFKA_BOOTSTRAP_SERVERS is not set -- skipping publish" then sys.exit(0) on a REAL runtime
+  change — a producer that "ran successfully" while publishing nothing, green every run (the deploy trigger
+  had never published once, run 29189239291). #2271 deletes that silent-skip path and routes the producer
+  through a shared, pure, fail-closed assertion util (src/omnibase_infra/utils/util_producer_effect_assertion.py:
+  require_producer_preconditions + assert_producer_emitted + ProducerZeroOutputError): a real runtime
+  change with a missing broker/creds/HMAC precondition, or a completed publish that delivered zero, now
+  exits 1 (RED); the legit no-ops (no runtime change / --dry-run) still exit 0. Independently verified
+  by an agent that did NOT implement RT-5 (implementer = rt5-builder; verifier = rt6-builder). A/B reproduced
+  against exists-but-WRONG: identical input (real runtime change + broker unset, not dry-run) — PRE-FIX
+  at origin/dev exits 0 GREEN (the bug), POST-FIX at #2271 head exits 1 RED. Every check below is a gh-api
+  CONTENT READ at #2271's head SHA (f304e13b64e011ee3ae081349178c4f7fd4f99a3) — workspace-INDEPENDENT
+  (the DoD runner cwd is the OCC clone, not the infra tree), each proven RED at omnibase_infra dev (e811995d72a0545918b7a33139f13c3f4e8ed9a3),
+  where the file EXISTS but is WRONG, and at a bogus SHA so the check is not vacuous. NOTE (scope, tracked
+  separately): the CLI acceptance test and the anti-regression policy gate live in tests/scripts/, which
+  the change-aware selector does not select for scripts/ changes, so they run at the dev->main full-suite
+  boundary but not on the dev PR; the in-PR enforcement follow-up is tracked in its own ticket. These
+  receipts prove the MECHANISM landed and is RED-against-exists-but-WRONG, not that the acceptance suite
+  is enforced in-PR.
+is_seam_ticket: false
+interface_change: false
+interfaces_touched: []
+evidence_requirements:
+  - kind: "manual"
+    description: "omnibase_infra#2271 head deletes the silent-skip publish path and routes the deploy-trigger
+      producer through the shared fail-closed effect-assertion util"
+    command: "see dod_evidence check_values"
+emergency_bypass:
+  enabled: false
+  justification: ""
+  follow_up_ticket_id: ""
+dod_evidence:
+  - id: "dod-2271-silent-skip-deleted-failclosed-wired"
+    description: >-
+      Asserts scripts/trigger_rebuild_on_merge.py at #2271's head both (a) routes the producer through
+      require_producer_preconditions (the fail-closed precondition gate, N>=1) AND (b) no longer contains
+      the silent-skip CODE PATH — a click.echo(...) call printing "skipping publish" (N==0). The deletion
+      clause deliberately matches the click.echo( CALL, not a bare "skipping publish" substring: the new
+      fail-closed block carries an explanatory COMMENT that quotes the old phrase ("... replaces printed
+      'KAFKA_BOOTSTRAP_SERVERS is not set -- skipping publish'"), so a naive substring check would false-RED
+      at #2271's head. Matching the click.echo( call distinguishes the deleted code from the surviving
+      comment (verified: at #2271's head "skipping publish" appears only on the comment line, never in
+      a click.echo call). The two clauses are combined so the check is not vacuous on absence: a bare
+      "click.echo skipping publish is absent" passes trivially at any ref with no file. RED PROVEN against
+      a ref where the artifact EXISTS BUT IS WRONG, not merely absent: omnibase_infra dev (e811995d72a0545918b7a33139f13c3f4e8ed9a3)
+      HAS trigger_rebuild_on_merge.py, but it still has the click.echo("... skipping publish") call then
+      sys.exit(0) and never calls require_producer_preconditions -> the require_ clause fails -> exit
+      1. Exit 1 at a bogus SHA (empty content -> require_ count 0). This is the exact exists-but-WRONG
+      defect: identical CLI input (real runtime change, broker unset, not --dry-run) exits 0 GREEN at
+      dev and exits 1 RED at #2271's head, reproduced live by the verifier.
+    source: "manual"
+    status: "verified"
+    checks:
+      - check_type: "command"
+        check_value: >-
+          C=$(gh api "repos/OmniNode-ai/omnibase_infra/contents/scripts/trigger_rebuild_on_merge.py?ref=f304e13b64e011ee3ae081349178c4f7fd4f99a3"
+          --jq .content 2>/dev/null | base64 -d 2>/dev/null); test "$(printf '%s' "$C" | grep -c 'require_producer_preconditions')"
+          -ge 1 && test "$(printf '%s' "$C" | grep -cE 'click\.echo\([^)]*skipping publish')" -eq 0
+  - id: "dod-2271-emit-count-assertion-wired"
+    description: >-
+      Asserts scripts/trigger_rebuild_on_merge.py at #2271's head calls assert_producer_emitted after
+      the publish, so a completed publish that delivered zero commands fails closed rather than reporting
+      success ("produced N>0, and here it is" is the only completion signal for a producer). RED PROVEN
+      at omnibase_infra dev, where the file EXISTS but never calls assert_producer_emitted (the symbol
+      does not exist pre-#2271) -> grep count 0 -> exit 1; exit 1 at a bogus SHA. Not vacuous: the assertion
+      is a positive presence check (>=1), which cannot pass on empty/absent content.
+    source: "manual"
+    status: "verified"
+    checks:
+      - check_type: "command"
+        check_value: >-
+          test "$(gh api "repos/OmniNode-ai/omnibase_infra/contents/scripts/trigger_rebuild_on_merge.py?ref=f304e13b64e011ee3ae081349178c4f7fd4f99a3"
+          --jq .content 2>/dev/null | base64 -d 2>/dev/null | grep -c 'assert_producer_emitted')" -ge
+          1
+  - id: "dod-2271-shared-failclosed-util-exists"
+    description: >-
+      Asserts the shared, pure fail-closed effect-assertion util src/omnibase_infra/utils/util_producer_effect_assertion.py
+      exists at #2271's head and defines all three primitives the invariant is built on: ProducerZeroOutputError,
+      require_producer_preconditions, and assert_producer_emitted (>=3 defining lines). This is the reusable
+      seam so the deploy trigger, publish step, pin cascade, and OCC publisher can share one "producing
+      zero fails closed" invariant. RED PROVEN at omnibase_infra dev: the file does NOT exist there (the
+      gh api content read returns nothing) -> grep count 0 -> exit 1; exit 1 at a bogus SHA. A positive
+      >=3 presence check, so it cannot pass vacuously.
+    source: "manual"
+    status: "verified"
+    checks:
+      - check_type: "command"
+        check_value: >-
+          test "$(gh api "repos/OmniNode-ai/omnibase_infra/contents/src/omnibase_infra/utils/util_producer_effect_assertion.py?ref=f304e13b64e011ee3ae081349178c4f7fd4f99a3"
+          --jq .content 2>/dev/null | base64 -d 2>/dev/null | grep -cE 'class ProducerZeroOutputError|def
+          require_producer_preconditions|def assert_producer_emitted')" -ge 3
+  - id: "dod-2271-acceptance-policy-tests-exist"
+    description: >-
+      Asserts tests/scripts/test_trigger_producer_effect_assertion.py at #2271's head carries BOTH the
+      RED-on-zero acceptance test (test_runtime_change_with_broker_unset_fails_closed — the exists-but-WRONG
+      regression: producer ran, emitted zero, must exit 1) AND the Rule-5 anti-regression policy gate
+      (test_producer_has_no_silent_skip_path — no producer may reintroduce a print-then-exit-0 silent
+      skip) (>=2 test defs). RED PROVEN at omnibase_infra dev: the test file does NOT exist there -> grep
+      count 0 -> exit 1; exit 1 at a bogus SHA. SCOPE (tracked separately, does not weaken this receipt):
+      these tests live under tests/scripts/, which the change-aware selector does not select for scripts/
+      changes, so they execute at the dev->main full-suite boundary but not on the dev PR — this receipt
+      proves the tests LANDED and encode the acceptance + anti-regression invariants, not that they are
+      enforced in-PR.
+    source: "manual"
+    status: "verified"
+    checks:
+      - check_type: "command"
+        check_value: >-
+          test "$(gh api "repos/OmniNode-ai/omnibase_infra/contents/tests/scripts/test_trigger_producer_effect_assertion.py?ref=f304e13b64e011ee3ae081349178c4f7fd4f99a3"
+          --jq .content 2>/dev/null | base64 -d 2>/dev/null | grep -cE 'def test_runtime_change_with_broker_unset_fails_closed|def
+          test_producer_has_no_silent_skip_path')" -ge 2
+  - id: "dod-occ-self-14467-2271"
+    description: >-
+      Self-bind item for THIS OCC companion PR. occ-preflight requires a PASS receipt bound to the PR
+      under check; this item asserts a fact ABOUT this PR (its branch name) and is a binding item, NOT
+      substantive evidence — the four entries above carry that, each a workspace-independent gh-api content
+      read at #2271's head proven RED at omnibase_infra dev (where the file exists but is wrong / does
+      not exist) and at a bogus SHA.
+    source: "manual"
+    status: "verified"
+    checks:
+      - check_type: "command"
+        check_value: >-
+          grep -q 'jonah/omn-14467-occ-companion' drift/dod_receipts/OMN-14467/dod-occ-self-14467-2271/command.yaml

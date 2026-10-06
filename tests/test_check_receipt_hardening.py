@@ -1,0 +1,2891 @@
+# SPDX-FileCopyrightText: 2025 OmniNode.ai Inc.
+# SPDX-License-Identifier: MIT
+
+"""Tests for the receipt hardening gate (OMN-13060, retro A-5; OMN-14411)."""
+
+from __future__ import annotations
+
+import copy
+import hashlib
+import json
+import os
+import subprocess
+from pathlib import Path
+
+import pytest
+import yaml
+from omnibase_core.enums.ticket.enum_receipt_status import EnumReceiptStatus
+from omnibase_core.models.contracts.ticket.model_dod_receipt import ModelDodReceipt
+from omnibase_core.validation.validator_receipt_gate import (
+    compute_contract_entry_sha256,
+)
+
+from onex_change_control.validation.commit_sha_resolver import CommitShaResolver
+from scripts.validation import check_receipt_hardening
+from scripts.validation.check_receipt_hardening import (
+    DENYLISTED_VERIFIERS,
+    check_contract_file,
+    check_receipt_file,
+    main,
+)
+
+POST_CUTOFF_TS = "2026-06-12T03:00:00+00:00"
+PRE_CUTOFF_TS = "2026-06-11T23:59:59+00:00"
+
+# OMN-15710 (ABS_PATH / STDOUT_EMIT) uses its OWN, later cutoff
+# (OMN_15710_CUTOFF, 2026-08-01) than the other rules' HARDENING_CUTOFF
+# (2026-06-12) — see that constant's comment in check_receipt_hardening.py.
+# POST_CUTOFF_TS above predates OMN_15710_CUTOFF, so it would silently
+# exempt every ABS_PATH/STDOUT_EMIT test; those tests must override
+# run_timestamp with this constant instead.
+POST_OMN15710_CUTOFF_TS = "2026-08-02T00:00:00+00:00"
+PRE_OMN15710_CUTOFF_TS = "2026-07-31T23:59:59+00:00"
+
+# OMN-15461 (COMMIT_SHA_EXISTS) uses its OWN, LATEST cutoff (OMN_15461_CUTOFF,
+# 2026-08-19T12:00Z) — later than both HARDENING_CUTOFF and
+# OMN_15710_CUTOFF. Every fixture above (including POST_OMN15710_CUTOFF_TS)
+# predates it, so none of the ~60 existing tests trip the new rule or need a
+# fake resolver; only these dedicated tests must set run_timestamp to
+# POST_OMN15461_CUTOFF_TS AND inject a fake resolver (never real
+# subprocess/network calls in a unit test).
+POST_OMN15461_CUTOFF_TS = "2026-08-19T13:00:00+00:00"
+PRE_OMN15461_CUTOFF_TS = "2026-08-19T11:00:00+00:00"
+FULL_LOCAL_SHA = "c" * 40
+FULL_REMOTE_SHA = "8" * 40
+OTHER_REMOTE_SHA = "7" * 40
+
+# OMN-15459 (S2 family binding): a supersession replacement must reference an
+# anchor the item it supersedes actually declares. The two wrappers below exist
+# to prove supersession records are NOT run through *plain-receipt* hardening;
+# with the generic default check_value ("uv run pytest tests/ -q") their
+# `== []` assertion would also have asserted "S2 never fires", which is the
+# opposite of what this gate is for. They therefore carry an item-bound check.
+# The S2-fires direction is covered by
+# tests/unit/scripts/test_supersession_binding_gate.py.
+ITEM_BOUND_CHECK = "test -s drift/dod_receipts/OMN-13060/dod-001/command.yaml"
+
+# OMN-13888: the body DECLARES the ``dod-001`` item every ``_receipt_data``
+# fixture names. It did not before, which made every whole-file-bound fixture
+# an ORPHAN receipt (no contract_entry_sha256 AND no declared entry) — the
+# shape the ORPHAN_BINDING rule refuses. The tests below are about the OTHER
+# rules, so the fixture is corrected rather than exempted; the orphan polarity
+# is covered in tests/unit/scripts/test_orphan_receipt_binding_gate_omn_13888.py.
+CONTRACT_BODY = (
+    "ticket_id: OMN-13060\n"
+    "title: test contract\n"
+    "dod_evidence:\n"
+    "  - id: dod-001\n"
+    "    summary: first item\n"
+    "    checks:\n"
+    "      - check_type: command\n"
+)
+
+# A contract shaped with real dod_evidence entries, for OMN-14411 per-entry
+# hash tests. schema_version is part of the immutable per-entry hash header
+# (HEADER_FIELDS in validator_receipt_gate.compute_contract_entry_sha256).
+ENTRY_CONTRACT_DATA: dict[str, object] = {
+    "ticket_id": "OMN-13060",
+    "schema_version": "1.0.0",
+    "title": "test contract",
+    "dod_evidence": [
+        {
+            "id": "dod-001",
+            "summary": "first item",
+            "checks": [{"check_type": "command"}],
+        },
+    ],
+}
+
+
+def _contract_sha(contract_path: Path) -> str:
+    return f"sha256:{hashlib.sha256(contract_path.read_bytes()).hexdigest()}"
+
+
+def _write_contract(tmp_path: Path, ticket: str = "OMN-13060") -> Path:
+    contracts_dir = tmp_path / "contracts"
+    contracts_dir.mkdir(exist_ok=True)
+    contract_path = contracts_dir / f"{ticket}.yaml"
+    contract_path.write_text(CONTRACT_BODY)
+    return contract_path
+
+
+def _write_entry_contract(
+    tmp_path: Path, contract_data: dict[str, object], ticket: str = "OMN-13060"
+) -> Path:
+    """Write a contract with a real dod_evidence list for per-entry tests."""
+    contracts_dir = tmp_path / "contracts"
+    contracts_dir.mkdir(exist_ok=True)
+    contract_path = contracts_dir / f"{ticket}.yaml"
+    contract_path.write_text(yaml.safe_dump(contract_data))
+    return contract_path
+
+
+def _receipt_data(**overrides: object) -> dict[str, object]:
+    data: dict[str, object] = {
+        "schema_version": "1.0.0",
+        "ticket_id": "OMN-13060",
+        "evidence_item_id": "dod-001",
+        "check_type": "command",
+        "check_value": "uv run pytest tests/ -q",
+        "status": "PASS",
+        "run_timestamp": POST_CUTOFF_TS,
+        "commit_sha": "abc1234def",
+        "runner": "worker-a",
+        "verifier": "receipt-gate-ci",
+        "probe_command": "uv run pytest tests/ -q",
+        "probe_stdout": "37 passed",
+    }
+    data.update(overrides)
+    return data
+
+
+def _write_receipt(tmp_path: Path, data: dict[str, object]) -> Path:
+    receipt_dir = tmp_path / "drift" / "dod_receipts" / "OMN-13060" / "dod-001"
+    receipt_dir.mkdir(parents=True, exist_ok=True)
+    receipt_path = receipt_dir / "command.yaml"
+    receipt_path.write_text(yaml.safe_dump(data))
+    return receipt_path
+
+
+def test_post_cutoff_receipt_with_matching_sha_passes(tmp_path: Path) -> None:
+    contract = _write_contract(tmp_path)
+    receipt = _write_receipt(
+        tmp_path, _receipt_data(contract_sha256=_contract_sha(contract))
+    )
+    assert check_receipt_file(receipt, tmp_path / "contracts") == []
+
+
+def test_post_cutoff_receipt_missing_sha_fails(tmp_path: Path) -> None:
+    _write_contract(tmp_path)
+    receipt = _write_receipt(tmp_path, _receipt_data())
+    violations = check_receipt_file(receipt, tmp_path / "contracts")
+    assert len(violations) == 1
+    assert "missing contract_sha256" in violations[0]
+
+
+def test_pre_cutoff_receipt_is_exempt(tmp_path: Path) -> None:
+    _write_contract(tmp_path)
+    receipt = _write_receipt(
+        tmp_path,
+        _receipt_data(run_timestamp=PRE_CUTOFF_TS, verifier="automated"),
+    )
+    assert check_receipt_file(receipt, tmp_path / "contracts") == []
+
+
+def test_hash_mismatch_fails(tmp_path: Path) -> None:
+    _write_contract(tmp_path)
+    receipt = _write_receipt(
+        tmp_path, _receipt_data(contract_sha256=f"sha256:{'0' * 64}")
+    )
+    violations = check_receipt_file(receipt, tmp_path / "contracts")
+    assert len(violations) == 1
+    assert "contract_sha256 mismatch" in violations[0]
+
+
+def test_missing_contract_file_fails(tmp_path: Path) -> None:
+    (tmp_path / "contracts").mkdir()
+    receipt = _write_receipt(
+        tmp_path, _receipt_data(contract_sha256=f"sha256:{'0' * 64}")
+    )
+    violations = check_receipt_file(receipt, tmp_path / "contracts")
+    assert len(violations) == 1
+    assert "does not exist" in violations[0]
+
+
+def test_denylisted_verifier_on_pass_fails(tmp_path: Path) -> None:
+    contract = _write_contract(tmp_path)
+    receipt = _write_receipt(
+        tmp_path,
+        _receipt_data(contract_sha256=_contract_sha(contract), verifier="automated"),
+    )
+    violations = check_receipt_file(receipt, tmp_path / "contracts")
+    assert len(violations) == 1
+    assert "session-local verifier alias" in violations[0]
+
+
+def test_denylisted_verifier_on_fail_status_is_exempt(tmp_path: Path) -> None:
+    contract = _write_contract(tmp_path)
+    receipt = _write_receipt(
+        tmp_path,
+        _receipt_data(
+            contract_sha256=_contract_sha(contract),
+            verifier="automated",
+            status="FAIL",
+        ),
+    )
+    assert check_receipt_file(receipt, tmp_path / "contracts") == []
+
+
+def test_container_id_verifier_fails(tmp_path: Path) -> None:
+    contract = _write_contract(tmp_path)
+    receipt = _write_receipt(
+        tmp_path,
+        _receipt_data(contract_sha256=_contract_sha(contract), verifier="a1b2c3d4e5f6"),
+    )
+    violations = check_receipt_file(receipt, tmp_path / "contracts")
+    assert len(violations) == 1
+    assert "session-local verifier alias" in violations[0]
+
+
+def test_self_attested_pass_is_demoted_not_denylist_checked(tmp_path: Path) -> None:
+    """verifier == runner demotes PASS to ADVISORY at parse; the denylist
+    rule only fires on receipts that remain PASS."""
+    contract = _write_contract(tmp_path)
+    receipt = _write_receipt(
+        tmp_path,
+        _receipt_data(
+            contract_sha256=_contract_sha(contract),
+            runner="automated",
+            verifier="automated",
+        ),
+    )
+    assert check_receipt_file(receipt, tmp_path / "contracts") == []
+
+
+def test_invalid_receipt_fails_model_validation(tmp_path: Path) -> None:
+    _write_contract(tmp_path)
+    data = _receipt_data()
+    del data["verifier"]
+    receipt = _write_receipt(tmp_path, data)
+    violations = check_receipt_file(receipt, tmp_path / "contracts")
+    assert len(violations) == 1
+    assert "ModelDodReceipt validation" in violations[0]
+
+
+def test_minimal_supersession_record_is_not_plain_receipt_hardened(
+    tmp_path: Path,
+) -> None:
+    """Supersession wrappers are validated by receipt-gate chain resolution."""
+    _write_contract(tmp_path)
+    receipt_dir = tmp_path / "drift" / "dod_receipts" / "OMN-13060" / "dod-001"
+    receipt_dir.mkdir(parents=True, exist_ok=True)
+    supersession = receipt_dir / "command.supersede.0001.yaml"
+    supersession.write_text(
+        yaml.safe_dump(
+            {
+                "schema_version": "1.0.0",
+                "ticket_id": "OMN-13060",
+                "evidence_item_id": "dod-001",
+                "check_type": "command",
+                "supersedes": "drift/dod_receipts/OMN-13060/dod-001/command.yaml",
+                "reason": "test correction",
+                "superseder": "pytest",
+                "created_at": POST_CUTOFF_TS,
+                "tombstone": False,
+                "replacement": _receipt_data(
+                    check_value=ITEM_BOUND_CHECK,
+                    probe_command=ITEM_BOUND_CHECK,
+                ),
+            }
+        )
+    )
+    assert check_receipt_file(supersession, tmp_path / "contracts") == []
+
+
+@pytest.mark.parametrize("malformed", [None, "replacement", "missing_reason"])
+def test_tombstone_invalidates_receipt_without_replacement(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, malformed: str | None
+) -> None:
+    """A valid invalidation needs no PASS replacement; malformed ones fail closed."""
+    from omnibase_core.validation.validator_receipt_supersession import (
+        resolve_supersession,
+    )
+
+    contract = _write_contract(tmp_path)
+    base = _write_receipt(
+        tmp_path, _receipt_data(contract_sha256=_contract_sha(contract))
+    )
+    record: dict[str, object] = {
+        "schema_version": "1.0.0",
+        "ticket_id": "OMN-13060",
+        "evidence_item_id": "dod-001",
+        "check_type": "command",
+        "supersedes": "drift/dod_receipts/OMN-13060/dod-001/command.yaml",
+        "reason": "The inherited probe did not prove the declared acceptance.",
+        "superseder": "independent-reviewer",
+        "created_at": POST_CUTOFF_TS,
+        "tombstone": True,
+    }
+    if malformed == "replacement":
+        record["replacement"] = _receipt_data()
+    elif malformed == "missing_reason":
+        del record["reason"]
+    tombstone = base.with_name("command.supersede.20315.yaml")
+    tombstone.write_text(yaml.safe_dump(record))
+    monkeypatch.chdir(tmp_path)
+    violations = check_receipt_file(tombstone.relative_to(tmp_path), Path("contracts"))
+    resolution = resolve_supersession(
+        tmp_path / "drift" / "dod_receipts", "OMN-13060", "dod-001", "command"
+    )
+    assert resolution is not None
+    if malformed is None:
+        assert violations == []
+        assert check_receipt_file(base.relative_to(tmp_path), Path("contracts")) == []
+        assert resolution.tombstoned
+        assert resolution.receipt is None
+    else:
+        assert violations
+        assert resolution.error is not None
+
+
+def test_timestamp_less_receipt_is_exempt(tmp_path: Path) -> None:
+    """No timestamp anywhere = pre-schema legacy artifact; the receipt
+    gate already rejects it as NONPASS, so this hook exempts it."""
+    _write_contract(tmp_path)
+    data = _receipt_data()
+    del data["run_timestamp"]
+    receipt = _write_receipt(tmp_path, data)
+    assert check_receipt_file(receipt, tmp_path / "contracts") == []
+
+
+def test_nested_verified_at_fallback_enforces_post_cutoff(tmp_path: Path) -> None:
+    """Legacy-shaped files with a nested post-cutoff verified_at are enforced."""
+    _write_contract(tmp_path)
+    data = _receipt_data()
+    del data["run_timestamp"]
+    data["evidence"] = {"verified_at": POST_CUTOFF_TS}
+    receipt = _write_receipt(tmp_path, data)
+    violations = check_receipt_file(receipt, tmp_path / "contracts")
+    assert len(violations) == 1
+    assert "ModelDodReceipt validation" in violations[0]
+
+
+def test_nested_verified_at_fallback_exempts_pre_cutoff(tmp_path: Path) -> None:
+    _write_contract(tmp_path)
+    data = _receipt_data()
+    del data["run_timestamp"]
+    data["evidence"] = {"verified_at": PRE_CUTOFF_TS}
+    receipt = _write_receipt(tmp_path, data)
+    assert check_receipt_file(receipt, tmp_path / "contracts") == []
+
+
+def test_non_mapping_yaml_fails(tmp_path: Path) -> None:
+    receipt_path = tmp_path / "command.yaml"
+    receipt_path.write_text("- just\n- a\n- list\n")
+    violations = check_receipt_file(receipt_path, tmp_path / "contracts")
+    assert len(violations) == 1
+    assert "not a mapping" in violations[0]
+
+
+def test_main_exit_codes(tmp_path: Path) -> None:
+    contract = _write_contract(tmp_path)
+    good = _write_receipt(
+        tmp_path, _receipt_data(contract_sha256=_contract_sha(contract))
+    )
+    assert main([str(good), "--contracts-dir", str(tmp_path / "contracts")]) == 0
+
+    bad_dir = tmp_path / "drift" / "dod_receipts" / "OMN-13060" / "dod-002"
+    bad_dir.mkdir(parents=True)
+    bad = bad_dir / "command.yaml"
+    bad.write_text(yaml.safe_dump(_receipt_data()))
+    assert main([str(bad), "--contracts-dir", str(tmp_path / "contracts")]) == 1
+
+
+def test_main_skips_missing_files(tmp_path: Path) -> None:
+    assert (
+        main(
+            [
+                str(tmp_path / "nope.yaml"),
+                "--contracts-dir",
+                str(tmp_path / "contracts"),
+            ]
+        )
+        == 0
+    )
+
+
+def test_supersession_record_is_not_plain_receipt_hardened(tmp_path: Path) -> None:
+    receipt_path = tmp_path / "command.supersede.0001.yaml"
+    receipt_path.write_text(
+        yaml.safe_dump(
+            {
+                "schema_version": "1.0.0",
+                "ticket_id": "OMN-13060",
+                "supersedes": ("drift/dod_receipts/OMN-13060/dod-001/command.yaml"),
+                "reason": "test supersession",
+                "superseder": "codex-gpt-5",
+                "created_at": POST_CUTOFF_TS,
+                "tombstone": False,
+                "replacement": _receipt_data(
+                    run_timestamp=POST_CUTOFF_TS,
+                    check_value=ITEM_BOUND_CHECK,
+                    probe_command=ITEM_BOUND_CHECK,
+                ),
+            }
+        )
+    )
+
+    assert check_receipt_file(receipt_path, tmp_path / "contracts") == []
+
+
+def test_denylist_is_lowercase_canonical() -> None:
+    assert all(v == v.strip().lower() for v in DENYLISTED_VERIFIERS)
+
+
+# --- OMN-14411: per-entry contract hash binding -----------------------------
+#
+# check_receipt_hardening.py previously validated a receipt's contract binding
+# against a WHOLE-FILE hash (compute_contract_sha256), even though the
+# append-only gate (validator_occ_append_only) already validates PER-ENTRY
+# (compute_contract_entry_sha256) and explicitly permits appending new
+# dod_evidence items. Because the contract file's bytes change on every
+# append, every previously-merged receipt's contract_sha256 went stale the
+# moment anyone appended a new item — even though nothing about that
+# receipt's own entry changed. ModelDodReceipt already carries
+# contract_entry_sha256 (OMN-13888) precisely because it is append-stable;
+# these tests prove the gate now binds to it correctly, and that doing so
+# does not weaken the gate (edits, unknown entries, and missing hashes still
+# fail closed).
+
+
+def test_entry_hash_matching_passes(tmp_path: Path) -> None:
+    """Baseline: a receipt bound via contract_entry_sha256 to its own,
+    unmodified entry passes."""
+    contract_data = copy.deepcopy(ENTRY_CONTRACT_DATA)
+    contract = _write_entry_contract(tmp_path, contract_data)
+    entry_hash = compute_contract_entry_sha256(contract_data, "dod-001")
+    receipt = _write_receipt(tmp_path, _receipt_data(contract_entry_sha256=entry_hash))
+    assert check_receipt_file(receipt, contract.parent) == []
+
+
+def test_entry_hash_edited_entry_fails(tmp_path: Path) -> None:
+    """Adversarial: if the attested dod_evidence entry is edited after the
+    receipt was minted, the per-entry hash must change and the gate must
+    FAIL — proving the new binding still detects tampering/drift on the
+    entry it actually covers."""
+    original_data = copy.deepcopy(ENTRY_CONTRACT_DATA)
+    entry_hash = compute_contract_entry_sha256(original_data, "dod-001")
+    receipt = _write_receipt(tmp_path, _receipt_data(contract_entry_sha256=entry_hash))
+
+    edited_data = copy.deepcopy(ENTRY_CONTRACT_DATA)
+    edited_data["dod_evidence"][0]["summary"] = "entry content changed"  # type: ignore[index]
+    contract = _write_entry_contract(tmp_path, edited_data)
+
+    violations = check_receipt_file(receipt, contract.parent)
+    assert len(violations) == 1
+    assert "contract_entry_sha256 mismatch" in violations[0]
+
+
+def test_entry_hash_missing_entry_fails(tmp_path: Path) -> None:
+    """Adversarial: a receipt pointing at a dod_evidence entry that does not
+    exist in the contract (renamed/removed id) must FAIL, not silently pass
+    because 'some hash was present'."""
+    contract_data = copy.deepcopy(ENTRY_CONTRACT_DATA)
+    # Hash a real entry so the value is a well-formed sha256:<hex>, then bind
+    # the receipt to an evidence_item_id absent from the contract.
+    entry_hash = compute_contract_entry_sha256(contract_data, "dod-001")
+    contract = _write_entry_contract(tmp_path, contract_data)
+    receipt = _write_receipt(
+        tmp_path,
+        _receipt_data(
+            evidence_item_id="dod-999-does-not-exist",
+            contract_entry_sha256=entry_hash,
+        ),
+    )
+    violations = check_receipt_file(receipt, contract.parent)
+    assert len(violations) == 1
+    assert "not found in" in violations[0]
+
+
+def test_missing_both_hash_fields_fails(tmp_path: Path) -> None:
+    """Adversarial: a receipt carrying neither contract_sha256 nor
+    contract_entry_sha256 must FAIL — no silent pass-through when both the
+    legacy and current binding fields are absent."""
+    contract_data = copy.deepcopy(ENTRY_CONTRACT_DATA)
+    _write_entry_contract(tmp_path, contract_data)
+    receipt = _write_receipt(tmp_path, _receipt_data())
+    violations = check_receipt_file(receipt, tmp_path / "contracts")
+    assert len(violations) == 1
+    assert "missing contract_sha256" in violations[0]
+
+
+def test_append_new_entry_does_not_invalidate_prior_receipt(tmp_path: Path) -> None:
+    """Load-bearing regression test for OMN-14411.
+
+    Mirrors the live incident on ``contracts/OMN-14400.yaml``: a receipt
+    minted with BOTH ``contract_sha256`` (legacy whole-file) and
+    ``contract_entry_sha256`` (OMN-13888 per-entry) set, both correct at
+    mint time. Appending a brand-new, unrelated dod_evidence item is a
+    supported, routine operation — ``validator_occ_append_only`` explicitly
+    allows it — but it changes the contract file's bytes, so the whole-file
+    hash goes stale regardless of which entry was appended. The per-entry
+    hash of ``dod-001`` is untouched, because it folds in only that entry
+    plus the immutable header (ticket_id, schema_version).
+
+    Proven RED against pre-fix ``check_receipt_hardening.py``: pre-fix code
+    validated only ``contract_sha256`` (``compute_contract_sha256``,
+    whole-file), so after the append the gate FAILED with a
+    'contract_sha256 mismatch' violation even though ``contract_entry_sha256``
+    was present and still correct — reproducing the exact silent-rot failure
+    mode from OMN-14411 (two independent actors hit this twice in 12
+    minutes). Post-fix, ``contract_entry_sha256`` is authoritative when
+    present, so the same receipt passes unchanged after the append.
+    """
+    original_data = copy.deepcopy(ENTRY_CONTRACT_DATA)
+    entry_hash = compute_contract_entry_sha256(original_data, "dod-001")
+    contract = _write_entry_contract(tmp_path, original_data)
+    receipt = _write_receipt(
+        tmp_path,
+        _receipt_data(
+            contract_sha256=_contract_sha(contract),
+            contract_entry_sha256=entry_hash,
+        ),
+    )
+    # Sanity: passes against the contract as originally minted.
+    assert check_receipt_file(receipt, contract.parent) == []
+
+    # Now append a brand-new, unrelated dod_evidence item — the supported,
+    # routine operation the append-only gate exists to allow.
+    appended_data = copy.deepcopy(original_data)
+    appended_data["dod_evidence"].append(  # type: ignore[attr-defined]
+        {"id": "dod-002", "summary": "second item", "checks": []}
+    )
+    _write_entry_contract(tmp_path, appended_data)
+
+    # The prior receipt, bound to dod-001's per-entry hash, must still pass:
+    # its own entry did not change, only the file grew a sibling entry. Its
+    # (legacy) contract_sha256 is now stale — that is exactly the condition
+    # contract_entry_sha256 exists to make irrelevant.
+    assert check_receipt_file(receipt, contract.parent) == []
+
+
+# ---------------------------------------------------------------------------
+# OMN-15710 — ABS_PATH: no machine-specific absolute paths in probe bodies.
+# ---------------------------------------------------------------------------
+
+
+def test_abs_path_in_probe_command_fails(tmp_path: Path) -> None:
+    contract = _write_contract(tmp_path)
+    receipt = _write_receipt(
+        tmp_path,
+        _receipt_data(
+            contract_sha256=_contract_sha(contract),
+            run_timestamp=POST_OMN15710_CUTOFF_TS,
+            probe_command=(
+                "grep -c 'x' /Users/jonah/Code/omni_home/docs/tracking/LEDGER.md"
+            ),
+            probe_stdout="4",
+        ),
+    )
+    violations = check_receipt_file(receipt, tmp_path / "contracts")
+    assert any("[ABS_PATH]" in v and "probe_command" in v for v in violations)
+
+
+def test_abs_path_in_check_value_fails(tmp_path: Path) -> None:
+    contract = _write_contract(tmp_path)
+    receipt = _write_receipt(
+        tmp_path,
+        _receipt_data(
+            contract_sha256=_contract_sha(contract),
+            run_timestamp=POST_OMN15710_CUTOFF_TS,
+            check_value="test -f /Volumes/data/marker.txt",
+        ),
+    )
+    violations = check_receipt_file(receipt, tmp_path / "contracts")
+    assert any("[ABS_PATH]" in v and "check_value" in v for v in violations)
+
+
+def test_abs_path_home_user_variant_fails(tmp_path: Path) -> None:
+    contract = _write_contract(tmp_path)
+    receipt = _write_receipt(
+        tmp_path,
+        _receipt_data(
+            contract_sha256=_contract_sha(contract),
+            run_timestamp=POST_OMN15710_CUTOFF_TS,
+            probe_command="cat /home/alice/notes.txt",
+            probe_stdout="ok",
+        ),
+    )
+    violations = check_receipt_file(receipt, tmp_path / "contracts")
+    assert any("[ABS_PATH]" in v for v in violations)
+
+
+def test_repo_relative_path_receipt_passes(tmp_path: Path) -> None:
+    """Negative control: a repo-relative path never trips ABS_PATH."""
+    contract = _write_contract(tmp_path)
+    receipt = _write_receipt(
+        tmp_path,
+        _receipt_data(
+            contract_sha256=_contract_sha(contract),
+            run_timestamp=POST_OMN15710_CUTOFF_TS,
+            probe_command="grep -c 'x' docs/tracking/ROLLING_WORK_LEDGER.md",
+            probe_stdout="4",
+        ),
+    )
+    violations = check_receipt_file(receipt, tmp_path / "contracts")
+    assert not any("[ABS_PATH]" in v for v in violations)
+
+
+def test_check_contract_file_abs_path_fails(tmp_path: Path) -> None:
+    contract_data = copy.deepcopy(ENTRY_CONTRACT_DATA)
+    contract_data["dod_evidence"][0]["checks"][0]["check_value"] = (  # type: ignore[index]
+        "grep -c pattern /Users/jonah/Code/omni_home/CLAUDE.md"
+    )
+    contract = _write_entry_contract(tmp_path, contract_data)
+    violations = check_contract_file(contract)
+    assert len(violations) == 1
+    assert "[ABS_PATH]" in violations[0]
+    assert "dod-001" in violations[0]
+
+
+def test_check_contract_file_repo_relative_passes(tmp_path: Path) -> None:
+    contract_data = copy.deepcopy(ENTRY_CONTRACT_DATA)
+    contract_data["dod_evidence"][0]["checks"][0]["check_value"] = (  # type: ignore[index]
+        "grep -c pattern docs/CLAUDE.md"
+    )
+    contract = _write_entry_contract(tmp_path, contract_data)
+    assert check_contract_file(contract) == []
+
+
+def test_check_contract_file_no_dod_evidence_passes(tmp_path: Path) -> None:
+    contract = _write_contract(tmp_path)  # CONTRACT_BODY has no dod_evidence key
+    assert check_contract_file(contract) == []
+
+
+# ---------------------------------------------------------------------------
+# OMN-15710 — STDOUT_EMIT: bounded terminal-command shape consistency.
+# ---------------------------------------------------------------------------
+
+
+def test_grep_c_prose_stdout_fails(tmp_path: Path) -> None:
+    """Regression for the live OCC#6080(a) defect shape: a grep -c terminal
+    command recorded prose instead of the integer it can only emit."""
+    contract = _write_contract(tmp_path)
+    receipt = _write_receipt(
+        tmp_path,
+        _receipt_data(
+            contract_sha256=_contract_sha(contract),
+            run_timestamp=POST_OMN15710_CUTOFF_TS,
+            probe_command=(
+                "gh pr view 769 --json state --jq '.state' ; "
+                "grep -c 'wave-0730/terraform' docs/tracking/LEDGER.md"
+            ),
+            probe_stdout=(
+                "OPEN\nledger citations of wave-0730/terraform confirmed present"
+            ),
+        ),
+    )
+    violations = check_receipt_file(receipt, tmp_path / "contracts")
+    assert any("[STDOUT_EMIT]" in v and "GREP_COUNT" in v for v in violations), (
+        violations
+    )
+
+
+def test_grep_c_integer_stdout_passes(tmp_path: Path) -> None:
+    contract = _write_contract(tmp_path)
+    receipt = _write_receipt(
+        tmp_path,
+        _receipt_data(
+            contract_sha256=_contract_sha(contract),
+            run_timestamp=POST_OMN15710_CUTOFF_TS,
+            probe_command="grep -c 'pattern' docs/CLAUDE.md",
+            probe_stdout="4",
+        ),
+    )
+    violations = check_receipt_file(receipt, tmp_path / "contracts")
+    assert not any("[STDOUT_EMIT]" in v for v in violations)
+
+
+def test_actual_output_paraphrase_is_documented_residual_not_flagged(
+    tmp_path: Path,
+) -> None:
+    """Documented residual (narrowed during OMN-15710 verification): the
+    occ6080-grammar-repair-note shape (probe_stdout byte-exact, actual_output
+    paraphrased) is NOT caught by STDOUT_EMIT — actual_output is out of
+    scope for every class because ModelDodReceipt.actual_output is
+    schema-sanctioned to be a "structured / truncated rendering" distinct
+    from probe_stdout. A corpus-wide dry run of the pre-narrowing design
+    against live dev found dozens of legitimate receipts using
+    actual_output that way; checking it for literal equality was a
+    systemic false positive, not a defect signal. See module docstring."""
+    contract = _write_contract(tmp_path)
+    receipt = _write_receipt(
+        tmp_path,
+        _receipt_data(
+            contract_sha256=_contract_sha(contract),
+            run_timestamp=POST_OMN15710_CUTOFF_TS,
+            check_value=(
+                "test -f contracts/OMN-13060.yaml "
+                "&& grep -q 'x' contracts/OMN-13060.yaml "
+                "&& printf 'diagnostic note anchor PASS\\n'"
+            ),
+            probe_command=(
+                "test -f contracts/OMN-13060.yaml "
+                "&& grep -q 'x' contracts/OMN-13060.yaml "
+                "&& printf 'diagnostic note anchor PASS\\n'"
+            ),
+            probe_stdout="diagnostic note anchor PASS",
+            actual_output=(
+                "Diagnostic note anchor independently re-probed live at "
+                "2026-08-05T02:16:43Z; contracts/OMN-13060.yaml contains "
+                "the anchor."
+            ),
+        ),
+    )
+    violations = check_receipt_file(receipt, tmp_path / "contracts")
+    assert not any("[STDOUT_EMIT]" in v for v in violations), violations
+
+
+def test_registry_class_skips_json_shaped_probe_stdout(tmp_path: Path) -> None:
+    """Regression for a live dev-tip corpus pattern: a JSON RED/GREEN
+    differential evidence bundle in probe_stdout is a distinct structured
+    proof format, not the bare integer GREP_COUNT expects — must not
+    false-positive."""
+    contract = _write_contract(tmp_path)
+    receipt = _write_receipt(
+        tmp_path,
+        _receipt_data(
+            contract_sha256=_contract_sha(contract),
+            run_timestamp=POST_OMN15710_CUTOFF_TS,
+            probe_command=(
+                "gh api 'repos/OmniNode-ai/x/contents/y.py?ref=abc' "
+                "--jq '.content' | base64 -d | grep -c 'def _seed'"
+            ),
+            probe_stdout=(
+                '{"evidence_ref":"abc123","green_exit":0,"red_exit":1,'
+                '"red_ref":"def456"}'
+            ),
+        ),
+    )
+    violations = check_receipt_file(receipt, tmp_path / "contracts")
+    assert not any("[STDOUT_EMIT]" in v for v in violations), violations
+
+
+def test_printf_literal_matching_actual_output_passes(tmp_path: Path) -> None:
+    contract = _write_contract(tmp_path)
+    receipt = _write_receipt(
+        tmp_path,
+        _receipt_data(
+            contract_sha256=_contract_sha(contract),
+            run_timestamp=POST_OMN15710_CUTOFF_TS,
+            check_value="printf 'diagnostic note anchor PASS\\n'",
+            probe_command="printf 'diagnostic note anchor PASS\\n'",
+            probe_stdout="diagnostic note anchor PASS",
+            actual_output="diagnostic note anchor PASS",
+        ),
+    )
+    violations = check_receipt_file(receipt, tmp_path / "contracts")
+    assert not any("[STDOUT_EMIT]" in v for v in violations)
+
+
+def test_echo_literal_mismatch_fails(tmp_path: Path) -> None:
+    contract = _write_contract(tmp_path)
+    receipt = _write_receipt(
+        tmp_path,
+        _receipt_data(
+            contract_sha256=_contract_sha(contract),
+            run_timestamp=POST_OMN15710_CUTOFF_TS,
+            check_value="echo 'anchor PASS'",
+            probe_command="echo 'anchor PASS'",
+            probe_stdout="something else entirely",
+        ),
+    )
+    violations = check_receipt_file(receipt, tmp_path / "contracts")
+    assert any("[STDOUT_EMIT]" in v for v in violations)
+
+
+def test_wc_l_integer_passes_and_prose_fails(tmp_path: Path) -> None:
+    contract = _write_contract(tmp_path)
+    passing = _write_receipt(
+        tmp_path,
+        _receipt_data(
+            contract_sha256=_contract_sha(contract),
+            run_timestamp=POST_OMN15710_CUTOFF_TS,
+            probe_command="wc -l docs/CLAUDE.md",
+            probe_stdout="120 docs/CLAUDE.md",
+        ),
+    )
+    assert not any(
+        "[STDOUT_EMIT]" in v
+        for v in check_receipt_file(passing, tmp_path / "contracts")
+    )
+
+    failing_dir = tmp_path / "drift" / "dod_receipts" / "OMN-13060" / "dod-002"
+    failing_dir.mkdir(parents=True, exist_ok=True)
+    failing = failing_dir / "command.yaml"
+    failing.write_text(
+        yaml.safe_dump(
+            _receipt_data(
+                evidence_item_id="dod-002",
+                contract_sha256=_contract_sha(contract),
+                run_timestamp=POST_OMN15710_CUTOFF_TS,
+                probe_command="wc -l docs/CLAUDE.md",
+                probe_stdout="lots of lines",
+            )
+        )
+    )
+    violations = check_receipt_file(failing, tmp_path / "contracts")
+    assert any("[STDOUT_EMIT]" in v and "WC_LINES" in v for v in violations)
+
+
+def test_jq_sha_hex_passes_and_prose_fails(tmp_path: Path) -> None:
+    contract = _write_contract(tmp_path)
+    passing = _write_receipt(
+        tmp_path,
+        _receipt_data(
+            contract_sha256=_contract_sha(contract),
+            run_timestamp=POST_OMN15710_CUTOFF_TS,
+            probe_command="gh pr view 1 --json mergeCommit --jq '.mergeCommit.oid'",
+            probe_stdout="3e24d9bd9aa1122334455667788990011223344",
+        ),
+    )
+    assert not any(
+        "[STDOUT_EMIT]" in v
+        for v in check_receipt_file(passing, tmp_path / "contracts")
+    )
+
+    failing_dir = tmp_path / "drift" / "dod_receipts" / "OMN-13060" / "dod-003"
+    failing_dir.mkdir(parents=True, exist_ok=True)
+    failing = failing_dir / "command.yaml"
+    failing.write_text(
+        yaml.safe_dump(
+            _receipt_data(
+                evidence_item_id="dod-003",
+                contract_sha256=_contract_sha(contract),
+                run_timestamp=POST_OMN15710_CUTOFF_TS,
+                probe_command="gh pr view 1 --json mergeCommit --jq '.mergeCommit.oid'",
+                probe_stdout="the merge commit sha",
+            )
+        )
+    )
+    violations = check_receipt_file(failing, tmp_path / "contracts")
+    assert any("[STDOUT_EMIT]" in v and "JQ_SHA" in v for v in violations)
+
+
+def test_stdout_emit_compound_jq_filter_is_undetectable_not_flagged(
+    tmp_path: Path,
+) -> None:
+    """Documented residual: a compound jq filter ([.a,.b] | @tsv) is out of
+    the closed registry's scope and must not false-positive."""
+    contract = _write_contract(tmp_path)
+    receipt = _write_receipt(
+        tmp_path,
+        _receipt_data(
+            contract_sha256=_contract_sha(contract),
+            run_timestamp=POST_OMN15710_CUTOFF_TS,
+            probe_command=(
+                "gh pr view 769 --json state,mergeCommit "
+                "--jq '[.state,.mergeCommit.oid] | @tsv'"
+            ),
+            probe_stdout="anything at all, not shape-checked",
+        ),
+    )
+    assert not any(
+        "[STDOUT_EMIT]" in v
+        for v in check_receipt_file(receipt, tmp_path / "contracts")
+    )
+
+
+def test_stdout_emit_skips_non_pass_status(tmp_path: Path) -> None:
+    """PENDING receipts are not asserting the check ran cleanly — out of scope."""
+    contract = _write_contract(tmp_path)
+    receipt = _write_receipt(
+        tmp_path,
+        _receipt_data(
+            status="PENDING",
+            contract_sha256=_contract_sha(contract),
+            run_timestamp=POST_OMN15710_CUTOFF_TS,
+            probe_command="grep -c 'x' docs/CLAUDE.md",
+            probe_stdout="not an integer at all",
+        ),
+    )
+    violations = check_receipt_file(receipt, tmp_path / "contracts")
+    assert not any("[STDOUT_EMIT]" in v for v in violations)
+
+
+def test_stdout_emit_unregistered_command_class_not_flagged(tmp_path: Path) -> None:
+    """A command shape outside the closed registry (curl) is a documented
+    false negative, not a false pass to be reported as clean-but-unchecked."""
+    contract = _write_contract(tmp_path)
+    receipt = _write_receipt(
+        tmp_path,
+        _receipt_data(
+            contract_sha256=_contract_sha(contract),
+            run_timestamp=POST_OMN15710_CUTOFF_TS,
+            probe_command="curl -sf https://example.invalid/health",
+            probe_stdout="anything the server happened to return",
+        ),
+    )
+    violations = check_receipt_file(receipt, tmp_path / "contracts")
+    assert not any("[STDOUT_EMIT]" in v for v in violations)
+
+
+def test_occ6084_fabricated_receipt_fixture_fails_both_rules(tmp_path: Path) -> None:
+    """Scratch reproduction of the merged OCC#6084(a) defect
+    (occ6080-attribution-fix-no-live-mutation): must fail with a pointed
+    message on BOTH new rules simultaneously."""
+    contract = _write_contract(tmp_path)
+    receipt = _write_receipt(
+        tmp_path,
+        _receipt_data(
+            contract_sha256=_contract_sha(contract),
+            run_timestamp=POST_OMN15710_CUTOFF_TS,
+            check_value=(
+                "gh pr view 769 --repo OmniNode-ai/omninode_infra "
+                "--json state,mergeCommit "
+                "--jq '[.state,.mergeCommit.oid] | @tsv' ; "
+                "grep -c 'wave-0730/terraform' "
+                "/Users/jonah/Code/omni_home/docs/tracking/LEDGER.md"
+            ),
+            probe_command=(
+                "gh pr view 769 --repo OmniNode-ai/omninode_infra "
+                "--json state,mergeCommit "
+                "--jq '[.state,.mergeCommit.oid] | @tsv' ; "
+                "grep -c 'wave-0730/terraform' "
+                "/Users/jonah/Code/omni_home/docs/tracking/LEDGER.md"
+            ),
+            probe_stdout=(
+                "MERGED\t3e24d9bd9\n"
+                "ledger citations of wave-0730/terraform confirmed present"
+            ),
+        ),
+    )
+    violations = check_receipt_file(receipt, tmp_path / "contracts")
+    assert any("[ABS_PATH]" in v for v in violations), violations
+    assert any("[STDOUT_EMIT]" in v and "GREP_COUNT" in v for v in violations), (
+        violations
+    )
+
+
+def test_omn_15710_cutoff_exempts_pre_existing_corpus_receipts(
+    tmp_path: Path,
+) -> None:
+    """The same fabricated shape as the test above, but timestamped just
+    before OMN_15710_CUTOFF: must be exempt from BOTH new rules, mirroring
+    HARDENING_CUTOFF's own migration-debt exemption for the other rules.
+    Regression for the corpus-wide false-positive volume ABS_PATH/STDOUT_EMIT
+    produced when applied retroactively (OMN-15710 verification)."""
+    contract = _write_contract(tmp_path)
+    receipt = _write_receipt(
+        tmp_path,
+        _receipt_data(
+            contract_sha256=_contract_sha(contract),
+            run_timestamp=PRE_OMN15710_CUTOFF_TS,
+            probe_command="grep -c 'x' /Users/jonah/Code/omni_home/notes.txt",
+            probe_stdout="not an integer at all",
+        ),
+    )
+    violations = check_receipt_file(receipt, tmp_path / "contracts")
+    assert not any("[ABS_PATH]" in v or "[STDOUT_EMIT]" in v for v in violations), (
+        violations
+    )
+
+
+def test_main_reports_both_rule_violations_exit_1(
+    tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    contract = _write_contract(tmp_path)
+    receipt = _write_receipt(
+        tmp_path,
+        _receipt_data(
+            contract_sha256=_contract_sha(contract),
+            run_timestamp=POST_OMN15710_CUTOFF_TS,
+            probe_command="grep -c 'x' /Users/jonah/notes.txt",
+            probe_stdout="not an integer",
+        ),
+    )
+    monkeypatch.chdir(tmp_path)
+    exit_code = main(
+        [
+            str(receipt.relative_to(tmp_path)),
+            "--contracts-dir",
+            "contracts",
+        ]
+    )
+    assert exit_code == 1
+    captured = capsys.readouterr()
+    assert "[ABS_PATH]" in captured.out
+    assert "[STDOUT_EMIT]" in captured.out
+
+
+# ---------------------------------------------------------------------------
+# OMN-15461 — COMMIT_SHA_EXISTS: receipt commit_sha must resolve to a real,
+# remote-reachable commit. All fixtures below use POST_OMN15461_CUTOFF_TS and
+# an injected resolver — never real subprocess/git/gh calls in a unit test.
+# ---------------------------------------------------------------------------
+
+
+def _receipt_model(**overrides: object) -> ModelDodReceipt:
+    data = _receipt_data(run_timestamp=POST_OMN15461_CUTOFF_TS, **overrides)
+    return ModelDodReceipt.model_validate(data)
+
+
+def _commit_resolver(
+    *,
+    local_shas: frozenset[str] = frozenset(),
+    remote_statuses: dict[tuple[str, str], int] | None = None,
+    rest_budget: int = 64,
+) -> CommitShaResolver:
+    """Build a no-network resolver fake for hardening-flow tests."""
+
+    statuses = remote_statuses or {}
+
+    def runner(command: list[str], **_: object) -> subprocess.CompletedProcess[str]:
+        if command[0] == "git":
+            return subprocess.CompletedProcess(
+                command, 0, stdout="\n".join(local_shas), stderr=""
+            )
+        endpoint = command[-1]
+        endpoint_parts = endpoint.split("/")
+        repo = "/".join(endpoint_parts[1:3])
+        sha = endpoint_parts[-1]
+        # A local origin ref is deliberately only an inventory hint in
+        # production.  This fake still supplies a matching mocked REST body
+        # for those known-good fixture SHAs so hardening-flow tests stay
+        # network-free while exercising the authoritative confirmation path.
+        status = statuses.get((repo, sha), 200 if sha in local_shas else 404)
+        body = json.dumps({"sha": sha}) if status == 200 else "{}"
+        return subprocess.CompletedProcess(
+            command,
+            0 if status == 200 else 1,
+            stdout=f"HTTP/2 {status}\n\n{body}",
+            stderr="",
+        )
+
+    return CommitShaResolver(rest_budget=rest_budget, runner=runner)
+
+
+def _recording_commit_resolver(
+    statuses: dict[tuple[str, str], int],
+) -> tuple[CommitShaResolver, list[str]]:
+    """Build a no-network resolver and retain every GitHub authority queried."""
+
+    queried_repos: list[str] = []
+
+    def runner(command: list[str], **_: object) -> subprocess.CompletedProcess[str]:
+        if command[0] == "git":
+            return subprocess.CompletedProcess(command, 0, stdout="", stderr="")
+        endpoint_parts = command[-1].split("/")
+        repo = "/".join(endpoint_parts[1:3])
+        sha = endpoint_parts[-1]
+        queried_repos.append(repo)
+        status = statuses[(repo, sha)]
+        body = json.dumps({"sha": sha}) if status == 200 else "{}"
+        return subprocess.CompletedProcess(
+            command,
+            0 if status == 200 else 1,
+            stdout=f"HTTP/2 {status}\n\n{body}",
+            stderr="",
+        )
+
+    return CommitShaResolver(runner=runner), queried_repos
+
+
+def test_pre_omn15461_cutoff_receipt_with_bad_sha_is_exempt(tmp_path: Path) -> None:
+    """Legacy migration debt: a pre-cutoff receipt is not retro-blocked."""
+    contract = _write_contract(tmp_path)
+    receipt = _write_receipt(
+        tmp_path,
+        _receipt_data(
+            contract_sha256=_contract_sha(contract),
+            run_timestamp=PRE_OMN15461_CUTOFF_TS,
+            commit_sha="deadbeef00",
+        ),
+    )
+    violations = check_receipt_file(receipt, tmp_path / "contracts")
+    assert not any("[COMMIT_SHA_EXISTS]" in v for v in violations), violations
+
+
+def test_commit_sha_local_only_never_pushed_fails() -> None:
+    """RED — a real commit object that exists nowhere on a remote (the .200
+    patch-transfer bug shape: local_reachable and remote_exists both False,
+    no cross-repo hint present)."""
+    receipt = _receipt_model(commit_sha="e658ec5d368fbecfa878c3ca0f427cdb385addb9")
+    violations = check_receipt_hardening._commit_sha_existence_violations(
+        receipt,
+        _commit_resolver(),
+        [],
+    )
+    assert len(violations) == 1
+    assert "[COMMIT_SHA_EXISTS]" in violations[0]
+    assert "e658ec5d368fbecfa878c3ca0f427cdb385addb9" in violations[0]
+
+
+def test_commit_sha_prefix_plausible_fabrication_fails() -> None:
+    """RED — OCC#6725 (2026-08-19): a hallucinated SHA sharing a real 10-hex
+    prefix with a genuine commit before diverging. A well-formed-hex regex
+    cannot distinguish this from a real SHA; only resolution can."""
+    fabricated = "3" * 40
+
+    receipt = _receipt_model(commit_sha=fabricated)
+    violations = check_receipt_hardening._commit_sha_existence_violations(
+        receipt, _commit_resolver(), []
+    )
+    assert len(violations) == 1
+    assert "[COMMIT_SHA_EXISTS]" in violations[0]
+    assert fabricated in violations[0]
+
+
+def test_commit_sha_nonexistent_cross_repo_fails() -> None:
+    """RED — commit_sha does not exist in the hinted cross-repo, either."""
+    receipt = _receipt_model(
+        commit_sha=("0" * 36) + "dead",
+        check_value="gh api repos/OmniNode-ai/omnimarket/commits/HEAD",
+    )
+    violations = check_receipt_hardening._commit_sha_existence_violations(
+        receipt, _commit_resolver(), []
+    )
+    assert len(violations) == 1
+    assert "[COMMIT_SHA_EXISTS]" in violations[0]
+
+
+def test_commit_sha_local_hint_still_requires_remote_confirmation() -> None:
+    """GREEN — a local origin hint remains clean only after mocked REST confirmation."""
+    receipt = _receipt_model(commit_sha=FULL_LOCAL_SHA)
+    violations = check_receipt_hardening._commit_sha_existence_violations(
+        receipt,
+        _commit_resolver(local_shas=frozenset({FULL_LOCAL_SHA})),
+        [],
+    )
+    assert violations == []
+
+
+def test_commit_sha_cross_repo_hint_resolves_passes() -> None:
+    """GREEN — trusted product authority is queried before OCC."""
+    real_omnimarket_sha = FULL_REMOTE_SHA
+    resolver, queried_repos = _recording_commit_resolver(
+        {
+            ("OmniNode-ai/omnimarket", real_omnimarket_sha): 200,
+        }
+    )
+    receipt = _receipt_model(
+        commit_sha=real_omnimarket_sha,
+        probe_command=(
+            f"gh api repos/OmniNode-ai/omnimarket/commits/{real_omnimarket_sha}"
+        ),
+    )
+    violations = check_receipt_hardening._commit_sha_existence_violations(
+        receipt,
+        resolver,
+        [],
+    )
+    assert violations == []
+    assert queried_repos == ["OmniNode-ai/omnimarket"]
+
+
+def test_commit_sha_rsd_hint_resolves_against_rsd() -> None:
+    """GREEN — OMN-18426: a cited RSD commit resolves in RSD, not in OCC."""
+    real_rsd_sha = FULL_REMOTE_SHA
+    resolver, queried_repos = _recording_commit_resolver(
+        {
+            ("OmniNode-ai/RSD", real_rsd_sha): 200,
+        }
+    )
+    receipt = _receipt_model(
+        commit_sha=real_rsd_sha,
+        probe_command=(
+            "gh api repos/OmniNode-ai/RSD/contents/.pre-commit-config.yaml"
+            f"?ref={real_rsd_sha} --jq .content"
+        ),
+    )
+    violations = check_receipt_hardening._commit_sha_existence_violations(
+        receipt,
+        resolver,
+        [],
+    )
+    assert violations == []
+    assert queried_repos == ["OmniNode-ai/RSD"]
+
+
+def test_product_authority_404_is_missing_without_occ_fallback() -> None:
+    receipt = _receipt_model(
+        commit_sha=FULL_REMOTE_SHA,
+        probe_command=(
+            f"gh api repos/OmniNode-ai/omnimarket/commits/{FULL_REMOTE_SHA}"
+        ),
+    )
+    resolver, queried_repos = _recording_commit_resolver(
+        {("OmniNode-ai/omnimarket", FULL_REMOTE_SHA): 404}
+    )
+
+    violations = check_receipt_hardening._commit_sha_existence_violations(
+        receipt, resolver, []
+    )
+
+    assert len(violations) == 1
+    assert "[COMMIT_SHA_EXISTS]" in violations[0]
+    assert queried_repos == ["OmniNode-ai/omnimarket"]
+
+
+@pytest.mark.parametrize("status", [422, 403, 429])
+def test_product_authority_unavailable_never_falls_back_to_occ(status: int) -> None:
+    receipt = _receipt_model(
+        commit_sha=FULL_REMOTE_SHA,
+        probe_command=(
+            f"gh api repos/OmniNode-ai/omnimarket/commits/{FULL_REMOTE_SHA}"
+        ),
+    )
+    resolver, queried_repos = _recording_commit_resolver(
+        {("OmniNode-ai/omnimarket", FULL_REMOTE_SHA): status}
+    )
+    diagnostics: list[str] = []
+
+    violations = check_receipt_hardening._commit_sha_existence_violations(
+        receipt, resolver, diagnostics
+    )
+
+    assert violations == []
+    assert diagnostics[0].startswith("[INFRASTRUCTURE_UNAVAILABLE]")
+    assert queried_repos == ["OmniNode-ai/omnimarket"]
+
+
+def test_product_authority_timeout_never_falls_back_to_occ() -> None:
+    receipt = _receipt_model(
+        commit_sha=FULL_REMOTE_SHA,
+        probe_command=(
+            f"gh api repos/OmniNode-ai/omnimarket/commits/{FULL_REMOTE_SHA}"
+        ),
+    )
+    queried_repos: list[str] = []
+
+    def runner(command: list[str], **_: object) -> subprocess.CompletedProcess[str]:
+        if command[0] == "git":
+            return subprocess.CompletedProcess(command, 0, stdout="", stderr="")
+        queried_repos.append("/".join(command[-1].split("/")[1:3]))
+        raise subprocess.TimeoutExpired(command, timeout=1)
+
+    diagnostics: list[str] = []
+    violations = check_receipt_hardening._commit_sha_existence_violations(
+        receipt, CommitShaResolver(runner=runner), diagnostics
+    )
+
+    assert violations == []
+    assert diagnostics[0].startswith("[INFRASTRUCTURE_UNAVAILABLE]")
+    assert queried_repos == ["OmniNode-ai/omnimarket"]
+
+
+def test_no_trusted_product_authority_uses_occ() -> None:
+    resolver, queried_repos = _recording_commit_resolver(
+        {("OmniNode-ai/onex_change_control", FULL_REMOTE_SHA): 200}
+    )
+
+    violations = check_receipt_hardening._commit_sha_existence_violations(
+        _receipt_model(commit_sha=FULL_REMOTE_SHA), resolver, []
+    )
+
+    assert violations == []
+    assert queried_repos == ["OmniNode-ai/onex_change_control"]
+
+
+def test_product_ref_must_bind_receipt_commit_sha() -> None:
+    receipt = _receipt_model(
+        commit_sha=FULL_REMOTE_SHA,
+        probe_command=(
+            "gh api repos/OmniNode-ai/omnimarket/contents/file.py?ref=" + "a" * 40
+        ),
+    )
+
+    violations = check_receipt_hardening._commit_sha_existence_violations(
+        receipt, _commit_resolver(), []
+    )
+
+    assert len(violations) == 1
+    assert "[COMMIT_SHA_REPOSITORY]" in violations[0]
+
+
+def test_conflicting_trusted_product_repositories_fail_closed() -> None:
+    receipt = _receipt_model(
+        check_value="gh pr view 1 --repo OmniNode-ai/omnimarket --json number",
+        probe_command="gh pr view 2 --repo OmniNode-ai/omnibase_compat --json number",
+    )
+
+    violations = check_receipt_hardening._commit_sha_existence_violations(
+        receipt, _commit_resolver(), []
+    )
+
+    assert len(violations) == 1
+    assert "[COMMIT_SHA_REPOSITORY]" in violations[0]
+
+
+# ---------------------------------------------------------------------------
+# OMN-17558 — a ticket must be able to carry a SECOND product PR. The autobind
+# mints one `.supersede.<consumer-pr>.yaml` per already-bound evidence item; in
+# every one of those the S2 family binding (OMN-15459) pins `check_value` to
+# the SUPERSEDED item's repo while `probe_command` cites the NEW consumer PR's
+# repo. Unioning hints across the two fields makes that shape permanently
+# ambiguous. Fixtures below are the byte-exact field triples from the two live
+# companions this defect closed: OCC#8099 (OMN-17549, consumers omnimarket#2274
+# then omnibase_infra#3148) and OCC#8105 (OMN-17695, consumers
+# omnibase_infra#3148 then omnibase_infra#3151 — SAME repo, so this is not a
+# cross-repo-only defect).
+# ---------------------------------------------------------------------------
+
+OMN17558_CONSUMER_SHA = "9550d0844c98cecda127b9910e39187a024978d2"
+OMN17558_SUPERSEDED_SHA = "69f6e0738e5ff412cfacd51b89e3a8786d520aed"
+
+
+def test_second_consumer_supersede_same_repo_resolves_against_consumer_pr_repo() -> (
+    None
+):
+    """OCC#8105 shape: an `occ-self-bind-*` supersede, both consumers in one repo.
+
+    `check_value` MUST keep naming onex_change_control (S2 family binding to
+    the superseded OCC self-bind entry); `probe_command` names the new
+    consumer PR. The receipt's own `pr_number` picks the authority.
+    """
+    receipt = _receipt_model(
+        commit_sha=OMN17558_CONSUMER_SHA,
+        evidence_item_id="occ-self-bind-pr-8104",
+        check_value=(
+            "gh pr view 8104 --repo OmniNode-ai/onex_change_control --json number,state"
+        ),
+        probe_command=(
+            "gh pr view 3151 --repo OmniNode-ai/omnibase_infra "
+            "--json number,state,headRefName"
+        ),
+        pr_number=3151,
+    )
+    resolver, queried_repos = _recording_commit_resolver(
+        {("OmniNode-ai/omnibase_infra", OMN17558_CONSUMER_SHA): 200}
+    )
+
+    violations = check_receipt_hardening._commit_sha_existence_violations(
+        receipt, resolver, []
+    )
+
+    assert violations == []
+    assert queried_repos == ["OmniNode-ai/omnibase_infra"]
+
+
+def test_second_consumer_supersede_cross_repo_resolves_against_consumer_pr_repo() -> (
+    None
+):
+    """OCC#8099 shape: 1st consumer omnimarket#2274, 2nd consumer infra#3148.
+
+    `check_value` still probes the omnimarket artifact at the omnimarket ref
+    it was minted against; the commit_sha is the omnibase_infra consumer head.
+    """
+    receipt = _receipt_model(
+        commit_sha=OMN17558_CONSUMER_SHA,
+        evidence_item_id="dod-OmniNode-ai-omnimarket-pr-2274",
+        check_value=(
+            "gh api repos/OmniNode-ai/omnimarket/contents/tests/chains/"
+            f"test_event_chain_gate_projection_write.py?ref={OMN17558_SUPERSEDED_SHA} "
+            "--jq '.content' | base64 -d | grep -c "
+            "'def test_a_write_that_produces_no_row_fails_closed'"
+        ),
+        probe_command=(
+            "gh pr view 3148 --repo OmniNode-ai/omnibase_infra "
+            "--json number,state,headRefName"
+        ),
+        pr_number=3148,
+    )
+    resolver, queried_repos = _recording_commit_resolver(
+        {("OmniNode-ai/omnibase_infra", OMN17558_CONSUMER_SHA): 200}
+    )
+
+    violations = check_receipt_hardening._commit_sha_existence_violations(
+        receipt, resolver, []
+    )
+
+    assert violations == []
+    assert queried_repos == ["OmniNode-ai/omnibase_infra"]
+
+
+def test_commit_sha_bound_citation_outranks_pr_bound_citation() -> None:
+    """A citation naming the commit itself is a stronger authority than one
+    naming only the PR number: `repos/<repo>/commits/<commit_sha>` asserts
+    where the commit lives, `gh pr view <n> --repo <repo>` asserts only where
+    a PR lives."""
+    receipt = _receipt_model(
+        commit_sha=FULL_REMOTE_SHA,
+        check_value=(
+            f"gh api repos/OmniNode-ai/omnimarket/commits/{FULL_REMOTE_SHA} --jq .sha"
+        ),
+        probe_command=(
+            "gh pr view 7 --repo OmniNode-ai/omnibase_compat --json number,state"
+        ),
+        pr_number=7,
+    )
+    resolver, queried_repos = _recording_commit_resolver(
+        {("OmniNode-ai/omnimarket", FULL_REMOTE_SHA): 200}
+    )
+
+    violations = check_receipt_hardening._commit_sha_existence_violations(
+        receipt, resolver, []
+    )
+
+    assert violations == []
+    assert queried_repos == ["OmniNode-ai/omnimarket"]
+
+
+def test_pr_number_matching_two_trusted_repositories_still_fails_closed() -> None:
+    """Disambiguation is evidence, not a tie-break. When the receipt's own
+    pr_number matches a citation in BOTH trusted repos, authority is still
+    ambiguous and the gate must refuse rather than pick one."""
+    receipt = _receipt_model(
+        check_value="gh pr view 5 --repo OmniNode-ai/omnimarket --json number",
+        probe_command="gh pr view 5 --repo OmniNode-ai/omnibase_compat --json number",
+        pr_number=5,
+    )
+
+    violations = check_receipt_hardening._commit_sha_existence_violations(
+        receipt, _commit_resolver(), []
+    )
+
+    assert len(violations) == 1
+    assert "[COMMIT_SHA_REPOSITORY]" in violations[0]
+
+
+def test_commit_sha_bound_in_two_trusted_repositories_still_fails_closed() -> None:
+    """Same rule at the stronger tier: two repos each citing this commit_sha
+    is ambiguous, and must NOT silently fall through to the weaker
+    pr_number tier."""
+    receipt = _receipt_model(
+        commit_sha=FULL_REMOTE_SHA,
+        check_value=(
+            f"gh api repos/OmniNode-ai/omnimarket/commits/{FULL_REMOTE_SHA} --jq .sha"
+        ),
+        probe_command=(
+            f"gh api repos/OmniNode-ai/omnibase_compat/commits/{FULL_REMOTE_SHA} "
+            "--jq .sha && gh pr view 9 --repo OmniNode-ai/omnibase_compat "
+            "--json number"
+        ),
+        pr_number=9,
+    )
+
+    violations = check_receipt_hardening._commit_sha_existence_violations(
+        receipt, _commit_resolver(), []
+    )
+
+    assert len(violations) == 1
+    assert "[COMMIT_SHA_REPOSITORY]" in violations[0]
+
+
+def test_pr_number_does_not_widen_the_trusted_repository_set() -> None:
+    """Adversarial: an untrusted repo cited alongside a matching pr_number is
+    still not an authority — disambiguation only ever *narrows* the already
+    trusted hint set."""
+    receipt = _receipt_model(
+        commit_sha="1" * 40,
+        check_value="gh pr view 11 --repo torvalds/linux --json number",
+        probe_command="gh pr view 11 --repo torvalds/linux --json number",
+        pr_number=11,
+    )
+
+    violations = check_receipt_hardening._commit_sha_existence_violations(
+        receipt, _commit_resolver(), []
+    )
+
+    assert len(violations) == 1
+    assert "[COMMIT_SHA_EXISTS]" in violations[0]
+
+
+OMN17558_SUPERSEDED_ARTIFACT_SHA = "021a590f0e8b48a27f7dfe9de2347823527ce39a"
+OMN17558_SECOND_CONSUMER_HEAD = "792c001497e69715302600f401f96871a136534c"
+
+
+def _omn17558_inherited_ref_receipt(**overrides: object) -> ModelDodReceipt:
+    """OCC#8109 shape: one repo, inherited ref pinned to the FIRST consumer.
+
+    Byte-exact fields from
+    drift/dod_receipts/OMN-17292/dod-OmniNode-ai-omnibase_infra-pr-3075/
+    command.supersede.3153.yaml on the OCC#8109 branch.
+    """
+    data: dict[str, object] = {
+        "commit_sha": OMN17558_SECOND_CONSUMER_HEAD,
+        "evidence_item_id": "dod-OmniNode-ai-omnibase_infra-pr-3075",
+        "check_value": (
+            "gh api repos/OmniNode-ai/omnibase_infra/contents/scripts/ci/"
+            "check_omnimarket_contract_pin_advance.py?ref="
+            f"{OMN17558_SUPERSEDED_ARTIFACT_SHA} --jq '.content' | base64 -d | "
+            "grep -c 'def _load_compare'"
+        ),
+        "probe_command": (
+            "gh pr view 3153 --repo OmniNode-ai/omnibase_infra "
+            "--json number,state,headRefName"
+        ),
+        "pr_number": 3153,
+    }
+    data.update(overrides)
+    return _receipt_model(**data)
+
+
+def test_supersede_replacement_may_keep_the_superseded_artifact_ref() -> None:
+    """S2 pins the inherited check_value to the first consumer's artifact while
+    the replacement's commit_sha is the second consumer's head. Requiring the
+    inherited ref to expose that head makes the record unsatisfiable."""
+    resolver, queried_repos = _recording_commit_resolver(
+        {("OmniNode-ai/omnibase_infra", OMN17558_SECOND_CONSUMER_HEAD): 200}
+    )
+
+    violations = check_receipt_hardening._commit_sha_existence_violations(
+        _omn17558_inherited_ref_receipt(),
+        resolver,
+        [],
+        is_supersession_replacement=True,
+    )
+
+    assert violations == []
+    assert queried_repos == ["OmniNode-ai/omnibase_infra"]
+
+
+def test_base_receipt_still_must_bind_the_exposed_product_ref() -> None:
+    """The relaxation is scoped to a supersession replacement and is threaded
+    from _valid_supersession_replacement — never inferred. The identical
+    receipt validated as a BASE receipt still fails."""
+    violations = check_receipt_hardening._commit_sha_existence_violations(
+        _omn17558_inherited_ref_receipt(), _commit_resolver(), []
+    )
+
+    assert len(violations) == 1
+    assert "[COMMIT_SHA_REPOSITORY]" in violations[0]
+
+
+def test_supersede_replacement_without_a_pr_bound_citation_still_fails() -> None:
+    """The escape requires the record to identify the consumer PR whose head
+    the commit_sha is. A replacement whose pr_number matches no citation of
+    the authority repository gets no relief."""
+    violations = check_receipt_hardening._commit_sha_existence_violations(
+        _omn17558_inherited_ref_receipt(pr_number=9999),
+        _commit_resolver(),
+        [],
+        is_supersession_replacement=True,
+    )
+
+    assert len(violations) == 1
+    assert "[COMMIT_SHA_REPOSITORY]" in violations[0]
+
+
+def test_supersession_replacement_flag_reaches_the_binding_path(
+    tmp_path: Path,
+) -> None:
+    """End-to-end through check_receipt_file: the same OCC#8109 shape, filed as
+    a real .supersede.<NNNN>.yaml sibling of its base, validates clean — the
+    flag reaches _product_ref_binds_commit through the real call chain, not
+    only when passed by hand. The base-receipt direction is asserted by
+    test_base_receipt_still_must_bind_the_exposed_product_ref."""
+    inherited_check = (
+        "gh api repos/OmniNode-ai/omnibase_infra/contents/scripts/ci/"
+        "check_omnimarket_contract_pin_advance.py?ref="
+        f"{OMN17558_SUPERSEDED_ARTIFACT_SHA} --jq '.content' | base64 -d | "
+        "grep -c 'def _load_compare'"
+    )
+    # S2 family binding (OMN-15459) is a separate, still-enforced rule: the
+    # replacement must reference the superseded item's OWN declared check. The
+    # merged-path supersede satisfies it by inheriting that check verbatim, so
+    # the fixture contract declares exactly it.
+    contract = _write_entry_contract(
+        tmp_path,
+        {
+            "ticket_id": "OMN-13060",
+            "schema_version": "1.0.0",
+            "title": "test contract",
+            "dod_evidence": [
+                {
+                    "id": "dod-001",
+                    "summary": "first item",
+                    "checks": [
+                        {"check_type": "command", "check_value": inherited_check}
+                    ],
+                }
+            ],
+        },
+    )
+    contract_sha = _contract_sha(contract)
+    replacement = _receipt_data(
+        run_timestamp=POST_OMN15461_CUTOFF_TS,
+        contract_sha256=contract_sha,
+        commit_sha=OMN17558_SECOND_CONSUMER_HEAD,
+        check_value=inherited_check,
+        probe_command=(
+            "gh pr view 3153 --repo OmniNode-ai/omnibase_infra "
+            "--json number,state,headRefName"
+        ),
+        probe_stdout='{"number":3153,"state":"OPEN"}',
+        pr_number=3153,
+    )
+    base_path = _write_receipt(tmp_path, dict(replacement))
+    supersede_path = base_path.parent / "command.supersede.3153.yaml"
+    supersede_path.write_text(
+        yaml.safe_dump(
+            {
+                "schema_version": "1.0.0",
+                "ticket_id": "OMN-13060",
+                "evidence_item_id": "dod-001",
+                "check_type": "command",
+                "supersedes": base_path.as_posix(),
+                "reason": (
+                    "2nd consumer OmniNode-ai/omnibase_infra#3153 re-binds prior "
+                    "entry dod-001 to this product PR without editing the merged "
+                    "base receipt (OMN-14623 merged-path supersede)."
+                ),
+                "superseder": "occ-evidence-source-autobind",
+                "created_at": POST_OMN15461_CUTOFF_TS,
+                "replacement": replacement,
+            }
+        )
+    )
+    resolver = _commit_resolver(
+        remote_statuses={
+            ("OmniNode-ai/omnibase_infra", OMN17558_SECOND_CONSUMER_HEAD): 200
+        }
+    )
+
+    assert (
+        check_receipt_hardening.check_receipt_file(
+            supersede_path, tmp_path / "contracts", commit_sha_resolver=resolver
+        )
+        == []
+    )
+
+
+def test_actual_output_narrative_cannot_supply_a_pr_bound_authority() -> None:
+    """`actual_output` is free-form narrative and is excluded from citation
+    parsing exactly as it is from hint extraction."""
+    receipt = _receipt_model(
+        check_value="gh pr view 1 --repo OmniNode-ai/omnimarket --json number",
+        probe_command="gh pr view 2 --repo OmniNode-ai/omnibase_compat --json number",
+        actual_output=(
+            "Narrative only: gh pr view 3 --repo OmniNode-ai/omnimarket said OPEN."
+        ),
+        pr_number=3,
+    )
+
+    violations = check_receipt_hardening._commit_sha_existence_violations(
+        receipt, _commit_resolver(), []
+    )
+
+    assert len(violations) == 1
+    assert "[COMMIT_SHA_REPOSITORY]" in violations[0]
+
+
+def test_commit_sha_resolver_is_threaded_through_receipt_validation(
+    tmp_path: Path,
+) -> None:
+    """One caller-owned resolver reaches the complete receipt validation path."""
+    contract = _write_contract(tmp_path)
+    receipt_path = _write_receipt(
+        tmp_path,
+        _receipt_data(
+            contract_sha256=_contract_sha(contract),
+            run_timestamp=POST_OMN15461_CUTOFF_TS,
+            commit_sha="badc0ffee0000000000000000000000000000000",
+        ),
+    )
+    sha = "badc0ffee0000000000000000000000000000000"
+    violations = check_receipt_file(
+        receipt_path, tmp_path / "contracts", commit_sha_resolver=_commit_resolver()
+    )
+    assert any("[COMMIT_SHA_EXISTS]" in v for v in violations), violations
+
+    violations = check_receipt_file(
+        receipt_path,
+        tmp_path / "contracts",
+        commit_sha_resolver=_commit_resolver(local_shas=frozenset({sha})),
+    )
+    assert not any("[COMMIT_SHA_EXISTS]" in v for v in violations), violations
+
+
+def test_repo_authority_extracts_owner_repo_from_probe_fields() -> None:
+    receipt = _receipt_model(
+        check_value="gh api repos/OmniNode-ai/omnibase_infra/commits/abc123"
+    )
+    assert (
+        check_receipt_hardening._repo_authority(receipt) == "OmniNode-ai/omnibase_infra"
+    )
+
+
+@pytest.mark.parametrize("repo", ["omnibase_internal", "omniclaude-internal"])
+@pytest.mark.parametrize("remote_status", [200, 404])
+def test_packaged_caller_repository_requires_remote_commit(
+    repo: str, remote_status: int
+) -> None:
+    """Canonical private callers still require the exact remote Git object."""
+    canonical_repo = f"OmniNode-ai/{repo}"
+    receipt = _receipt_model(
+        commit_sha=FULL_REMOTE_SHA,
+        check_value="uv run pytest tests/ -q",
+        probe_command=f"gh api repos/{canonical_repo}/commits/{FULL_REMOTE_SHA}",
+    )
+    assert check_receipt_hardening._repo_authority(receipt) == canonical_repo
+    resolver = _commit_resolver(
+        remote_statuses={(canonical_repo, FULL_REMOTE_SHA): remote_status}
+    )
+    violations = check_receipt_hardening._commit_sha_existence_violations(
+        receipt, resolver, []
+    )
+    if remote_status == 200:
+        assert violations == []
+    else:
+        assert any("[COMMIT_SHA_EXISTS]" in violation for violation in violations)
+
+
+def test_repo_authority_returns_none_when_absent() -> None:
+    receipt = _receipt_model(check_value="uv run pytest tests/ -q")
+    assert check_receipt_hardening._repo_authority(receipt) is None
+
+
+def test_repo_authority_extracts_from_gh_cli_repo_flag() -> None:
+    """The occ-evidence-source-autobind verifier's standard probe shape —
+    found live in the 2026-08-19 bounded audit, initially missed by a
+    narrower URL-path-only version of the hint regex (a real false-positive
+    class against genuine receipts, corrected before this PR landed)."""
+    receipt = _receipt_model(
+        check_value="gh pr view 903 --repo OmniNode-ai/omninode_infra --json number"
+    )
+    assert (
+        check_receipt_hardening._repo_authority(receipt) == "OmniNode-ai/omninode_infra"
+    )
+
+
+def test_repo_authority_falls_back_to_autobind_item_id() -> None:
+    """A cohort sibling (e.g. dod-occ-evidence-admissibility-validator) can
+    carry no repo-identifying text of its own; when the item's OWN id
+    follows the autobind naming convention, that is used instead."""
+    receipt = _receipt_model(
+        evidence_item_id="dod-OmniNode-ai-omnimarket-pr-2087",
+        check_value="uv run pytest tests/test_evidence_admissibility.py -q",
+    )
+    assert check_receipt_hardening._repo_authority(receipt) == "OmniNode-ai/omnimarket"
+
+
+def test_repo_authority_item_id_without_repo_pattern_returns_none() -> None:
+    receipt = _receipt_model(
+        evidence_item_id="dod-occ-evidence-admissibility-validator",
+        check_value="uv run pytest tests/test_evidence_admissibility.py -q",
+    )
+    assert check_receipt_hardening._repo_authority(receipt) is None
+
+
+def test_repo_authority_rejects_unrecognized_repo() -> None:
+    """Adversarial (found in independent verification, 2026-08-19): an
+    unrestricted hint match would let free-form probe/narrative text name
+    ANY repo — including one this org has no relationship to — and have a
+    real commit from THAT repo resolve as if it proved something about this
+    receipt. An unrecognized '<owner>/<repo>' must be treated as no hint at
+    all, not trusted."""
+    receipt = _receipt_model(
+        check_value="gh pr view 1 --repo torvalds/linux --json number"
+    )
+    assert check_receipt_hardening._repo_authority(receipt) is None
+
+
+def test_repo_authority_rejects_actual_output_narrative_injection() -> None:
+    """A recognized repo in free-form actual_output cannot redirect lookup."""
+    receipt = _receipt_model(
+        check_value="uv run pytest tests/ -q",
+        actual_output=(
+            "Narrative only: repos/OmniNode-ai/omnimarket/commits/"
+            f"{FULL_REMOTE_SHA} was allegedly checked."
+        ),
+    )
+    assert check_receipt_hardening._repo_authority(receipt) is None
+    assert check_receipt_hardening._commit_sha_repositories(receipt) == (
+        "OmniNode-ai/onex_change_control",
+    )
+
+
+def test_repo_authority_skips_unrecognized_match_to_find_a_recognized_one() -> None:
+    """A candidate repo mentioned earlier in the text that is NOT recognized
+    must not shadow a genuine, recognized hint appearing later — _repo_authority
+    scans every candidate in a field, not just the first."""
+    receipt = _receipt_model(
+        check_value=(
+            "see torvalds/linux for prior art; actual check: "
+            "gh pr view 42 --repo OmniNode-ai/omnimarket --json number"
+        )
+    )
+    assert check_receipt_hardening._repo_authority(receipt) == "OmniNode-ai/omnimarket"
+
+
+def test_commit_sha_resolver_does_not_bypass_via_unrecognized_repo_hint() -> None:
+    """End-to-end adversarial case: a fabricated commit_sha (never seen
+    locally or in OCC) paired with probe text naming an unrelated real repo
+    must still FAIL — the unrecognized hint must not let remote_exists get
+    called against it at all."""
+    receipt = _receipt_model(
+        commit_sha="1" * 40,
+        check_value="gh pr view 1 --repo torvalds/linux --json number",
+    )
+    violations = check_receipt_hardening._commit_sha_existence_violations(
+        receipt, _commit_resolver(), []
+    )
+    assert len(violations) == 1
+    assert "[COMMIT_SHA_EXISTS]" in violations[0]
+
+
+def test_commit_sha_existence_superseded_receipt_is_excused(tmp_path: Path) -> None:
+    """A merged receipt with a bad commit_sha is correctable via the same
+    append-only supersession path every other rule in this file already
+    honors — no new mechanism required."""
+    contract = _write_contract(tmp_path)
+    receipt_dir = tmp_path / "drift" / "dod_receipts" / "OMN-13060" / "dod-001"
+    receipt_dir.mkdir(parents=True, exist_ok=True)
+    base_path = receipt_dir / "command.yaml"
+    base_data = _receipt_data(
+        contract_sha256=_contract_sha(contract),
+        run_timestamp=POST_OMN15461_CUTOFF_TS,
+        commit_sha="0000000000000000000000000000000000dead",
+    )
+    base_path.write_text(yaml.safe_dump(base_data))
+
+    replacement_data = _receipt_data(
+        contract_sha256=_contract_sha(contract),
+        run_timestamp=POST_OMN15461_CUTOFF_TS,
+        commit_sha=FULL_LOCAL_SHA,
+    )
+    supersede_path = receipt_dir / "command.supersede.0001.yaml"
+    supersede_path.write_text(
+        yaml.safe_dump(
+            {
+                "supersedes": base_path.as_posix(),
+                "reason": "commit_sha 0000...dead never pushed to any remote",
+                "replacement": replacement_data,
+            }
+        )
+    )
+
+    # The replacement resolves while the immutable base remains unavailable.
+    real_sha = FULL_LOCAL_SHA
+    base_violations = check_receipt_file(
+        base_path,
+        tmp_path / "contracts",
+        commit_sha_resolver=_commit_resolver(local_shas=frozenset({real_sha})),
+    )
+    assert base_violations == [], base_violations
+
+
+def test_main_returns_two_for_unavailable_without_receipt_defect_wording(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    contract = _write_contract(tmp_path)
+    receipt = _write_receipt(
+        tmp_path,
+        _receipt_data(
+            contract_sha256=_contract_sha(contract),
+            run_timestamp=POST_OMN15461_CUTOFF_TS,
+            commit_sha=FULL_LOCAL_SHA,
+        ),
+    )
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setattr(
+        check_receipt_hardening,
+        "CommitShaResolver",
+        lambda **_kwargs: _commit_resolver(
+            remote_statuses={("OmniNode-ai/onex_change_control", FULL_LOCAL_SHA): 429}
+        ),
+    )
+
+    assert (
+        main([str(receipt.relative_to(tmp_path)), "--contracts-dir", "contracts"]) == 2
+    )
+    output = capsys.readouterr().out
+    assert "[INFRASTRUCTURE_UNAVAILABLE]" in output
+    assert "[COMMIT_SHA_EXISTS]" not in output
+    assert "[COMMIT_SHA_FORMAT]" not in output
+
+
+def test_changed_supersession_alone_validates_replacement_commit(
+    tmp_path: Path,
+) -> None:
+    contract = _write_contract(tmp_path)
+    receipt_dir = tmp_path / "drift" / "dod_receipts" / "OMN-13060" / "dod-001"
+    receipt_dir.mkdir(parents=True)
+    base = receipt_dir / "command.yaml"
+    base.write_text(
+        yaml.safe_dump(_receipt_data(contract_sha256=_contract_sha(contract)))
+    )
+    supersession = receipt_dir / "command.supersede.0002.yaml"
+    supersession.write_text(
+        yaml.safe_dump(
+            {
+                "supersedes": base.as_posix(),
+                "replacement": _receipt_data(
+                    contract_sha256=_contract_sha(contract),
+                    run_timestamp=POST_OMN15461_CUTOFF_TS,
+                    commit_sha="not-a-full-sha",
+                ),
+            }
+        )
+    )
+
+    violations = check_receipt_file(
+        supersession,
+        tmp_path / "contracts",
+        commit_sha_resolver=_commit_resolver(),
+    )
+    assert any("[COMMIT_SHA_FORMAT]" in violation for violation in violations), (
+        violations
+    )
+
+
+def test_highest_supersession_never_falls_back_to_lower_clean_sibling(
+    tmp_path: Path,
+) -> None:
+    contract = _write_contract(tmp_path)
+    receipt_dir = tmp_path / "drift" / "dod_receipts" / "OMN-13060" / "dod-001"
+    receipt_dir.mkdir(parents=True)
+    base = receipt_dir / "command.yaml"
+    base.write_text(
+        yaml.safe_dump(_receipt_data(contract_sha256=_contract_sha(contract)))
+    )
+    lower = receipt_dir / "command.supersede.0001.yaml"
+    lower.write_text(
+        yaml.safe_dump(
+            {
+                "supersedes": base.as_posix(),
+                "replacement": _receipt_data(
+                    contract_sha256=_contract_sha(contract),
+                    run_timestamp=POST_OMN15461_CUTOFF_TS,
+                    commit_sha=FULL_LOCAL_SHA,
+                ),
+            }
+        )
+    )
+    higher = receipt_dir / "command.supersede.0002.yaml"
+    higher.write_text(
+        yaml.safe_dump(
+            {
+                "supersedes": base.as_posix(),
+                "replacement": _receipt_data(
+                    contract_sha256=_contract_sha(contract),
+                    run_timestamp=POST_OMN15461_CUTOFF_TS,
+                    commit_sha="not-a-full-sha",
+                ),
+            }
+        )
+    )
+
+    violations = check_receipt_file(
+        base,
+        tmp_path / "contracts",
+        commit_sha_resolver=_commit_resolver(local_shas=frozenset({FULL_LOCAL_SHA})),
+    )
+    assert any(higher.as_posix() in violation for violation in violations)
+    assert any("[COMMIT_SHA_FORMAT]" in violation for violation in violations), (
+        violations
+    )
+
+
+def test_chained_supersession_fails_closed_for_base_and_chain_record(
+    tmp_path: Path,
+) -> None:
+    """A higher token may not evade direct-sibling authority through a chain."""
+    contract = _write_contract(tmp_path)
+    receipt_dir = tmp_path / "drift" / "dod_receipts" / "OMN-13060" / "dod-001"
+    receipt_dir.mkdir(parents=True)
+    base = receipt_dir / "command.yaml"
+    base.write_text(
+        yaml.safe_dump(_receipt_data(contract_sha256=_contract_sha(contract)))
+    )
+    direct = receipt_dir / "command.supersede.0001.yaml"
+    direct.write_text(
+        yaml.safe_dump(
+            {
+                "supersedes": base.as_posix(),
+                "replacement": _receipt_data(
+                    contract_sha256=_contract_sha(contract),
+                    run_timestamp=POST_OMN15461_CUTOFF_TS,
+                    commit_sha=FULL_LOCAL_SHA,
+                ),
+            }
+        )
+    )
+    chained = receipt_dir / "command.supersede.0001.supersede.0002.yaml"
+    chained.write_text(
+        yaml.safe_dump(
+            {
+                "supersedes": direct.as_posix(),
+                "replacement": _receipt_data(
+                    contract_sha256=_contract_sha(contract),
+                    run_timestamp=POST_OMN15461_CUTOFF_TS,
+                    commit_sha="not-a-full-sha",
+                ),
+            }
+        )
+    )
+
+    resolver = _commit_resolver(local_shas=frozenset({FULL_LOCAL_SHA}))
+    for target in (base, chained):
+        violations = check_receipt_file(
+            target,
+            tmp_path / "contracts",
+            commit_sha_resolver=resolver,
+        )
+        assert any("[SUPERSESSION_CHAIN]" in violation for violation in violations), (
+            violations
+        )
+        assert any(chained.as_posix() in violation for violation in violations), (
+            violations
+        )
+
+
+def test_paths_file0_preserves_newline_path_and_staged_discovery_is_nul_safe(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    newline_path = Path("drift/dod_receipts/OMN-13060/dod-001/command\nname.yaml")
+    receipt_path = tmp_path / newline_path
+    receipt_path.parent.mkdir(parents=True)
+    receipt_path.write_text(yaml.safe_dump(_receipt_data(run_timestamp=PRE_CUTOFF_TS)))
+    paths_file = tmp_path / "changed.paths0"
+    paths_file.write_bytes(os.fsencode(newline_path) + b"\0")
+    monkeypatch.chdir(tmp_path)
+
+    assert main(["--paths-file0", str(paths_file), "--contracts-dir", "contracts"]) == 0
+    assert check_receipt_hardening._read_paths_file0(paths_file) == [newline_path]
+
+
+def test_staged_discovery_uses_one_nul_delimited_git_call(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    calls: list[list[str]] = []
+
+    def fake_run(
+        command: list[str], **_kwargs: object
+    ) -> subprocess.CompletedProcess[bytes]:
+        calls.append(command)
+        return subprocess.CompletedProcess(
+            command,
+            0,
+            stdout=b"contracts/OMN-17501.yaml\0drift/dod_receipts/a\nfile.yaml\0",
+            stderr=b"",
+        )
+
+    monkeypatch.setattr(subprocess, "run", fake_run)
+    paths, error = check_receipt_hardening._discover_staged_paths()
+
+    assert error is None
+    assert paths == [
+        Path("contracts/OMN-17501.yaml"),
+        Path("drift/dod_receipts/a\nfile.yaml"),
+    ]
+    assert calls == [
+        [
+            "git",
+            "diff",
+            "--cached",
+            "--name-only",
+            "-z",
+            "--diff-filter=ACMRT",
+            "--",
+            "drift/dod_receipts/**/*.yaml",
+            "drift/dod_receipts/**/*.yml",
+            "contracts/*.yaml",
+            "contracts/*.yml",
+        ]
+    ]
+
+
+def test_staged_discovery_pathspecs_match_the_hook_files_pattern() -> None:
+    r"""Discovery must not be wider than the pre-commit ``files:`` that selects it.
+
+    OMN-16615 regression. The pathspecs used to be the bare directories, so a
+    non-YAML artifact staged under drift/dod_receipts/ — a .md evidence summary
+    beside its command.yaml — was routed into the receipt parser and hard-failed
+    the gate with "unreadable receipt YAML", despite the hook's own
+    ``files: ^(drift/dod_receipts/.*\.yaml|contracts/.*\.yaml)$`` never
+    selecting it. Discovery is now suffix-scoped to match.
+    """
+    calls: list[list[str]] = []
+
+    def fake_run(
+        command: list[str], **_kwargs: object
+    ) -> subprocess.CompletedProcess[bytes]:
+        calls.append(command)
+        return subprocess.CompletedProcess(command, 0, stdout=b"", stderr=b"")
+
+    with pytest.MonkeyPatch.context() as patch:
+        patch.setattr(subprocess, "run", fake_run)
+        check_receipt_hardening._discover_staged_paths()
+
+    pathspecs = calls[0][calls[0].index("--") + 1 :]
+    assert pathspecs, "discovery must pass explicit pathspecs, not scan the whole tree"
+    assert all(spec.endswith((".yaml", ".yml")) for spec in pathspecs), (
+        f"every pathspec must be suffix-scoped to YAML, got {pathspecs}"
+    )
+    assert any(spec.startswith("drift/dod_receipts/") for spec in pathspecs)
+    assert any(spec.startswith("contracts/") for spec in pathspecs)
+
+
+def test_commit_sha_wiring_static_check_passes_for_repository_config() -> None:
+    assert main(["--check-commit-sha-wiring"]) == 0
+
+
+def test_commit_sha_wiring_requires_rest_budget_flag(tmp_path: Path) -> None:
+    repo_root = Path(__file__).resolve().parents[1]
+    precommit_yaml = repo_root / ".pre-commit-config.yaml"
+    ci_text = (repo_root / ".github" / "workflows" / "ci.yml").read_text()
+    budget_argument = '--commit-sha-rest-budget "$rest_budget"'
+    assert budget_argument in ci_text
+
+    ci_yaml = tmp_path / "ci.yml"
+    ci_yaml.write_text(ci_text.replace(budget_argument, ""))
+    failures = check_receipt_hardening.check_commit_sha_wiring(precommit_yaml, ci_yaml)
+    assert any("--commit-sha-rest-budget" in failure for failure in failures)
+
+    ci_yaml.write_text(ci_text)
+    assert (
+        check_receipt_hardening.check_commit_sha_wiring(precommit_yaml, ci_yaml) == []
+    )
+
+
+def test_commit_sha_inventory_is_temp_only_and_resumable(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    receipt = _write_receipt(
+        tmp_path,
+        _receipt_data(
+            run_timestamp=POST_OMN15461_CUTOFF_TS,
+            commit_sha=FULL_LOCAL_SHA,
+        ),
+    )
+    output = tmp_path / "commit-sha-inventory.json"
+    monkeypatch.setattr(
+        check_receipt_hardening,
+        "CommitShaResolver",
+        lambda **_kwargs: _commit_resolver(local_shas=frozenset({FULL_LOCAL_SHA})),
+    )
+
+    assert main([str(receipt), "--commit-sha-inventory", str(output)]) == 0
+    inventory = yaml.safe_load(output.read_text())
+    assert inventory["complete"] is True
+    assert inventory["claims"] == [
+        {
+            "local_outcome": "REACHABLE_LOCAL",
+            "paths": [receipt.as_posix()],
+            "pending_remote": False,
+            "remote_outcome": "REACHABLE_REMOTE",
+            "repo": "OmniNode-ai/onex_change_control",
+            "reset_at": None,
+            "retry_after": None,
+            "sha": FULL_LOCAL_SHA,
+        }
+    ]
+
+
+def test_commit_sha_inventory_invalid_output_stops_before_inventory_write(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """An invalid output path terminates before the inventory writer can run."""
+
+    receipt = _write_receipt(
+        tmp_path,
+        _receipt_data(
+            run_timestamp=POST_OMN15461_CUTOFF_TS,
+            commit_sha=FULL_LOCAL_SHA,
+        ),
+    )
+    writer_called = False
+
+    def inventory_writer(*_args: object, **_kwargs: object) -> int:
+        nonlocal writer_called
+        writer_called = True
+        return 0
+
+    monkeypatch.setattr(
+        check_receipt_hardening, "_write_commit_sha_inventory", inventory_writer
+    )
+
+    with pytest.raises(SystemExit):
+        main(
+            [
+                str(receipt),
+                "--commit-sha-inventory",
+                str(Path.cwd() / "outside-system-temp.json"),
+            ]
+        )
+
+    assert writer_called is False
+
+
+def test_explicit_inventory_defaults_to_corpus_with_one_resolver_session(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Corpus truth is opt-in and deduplicates repeated commit claims.
+
+    The pre-commit hook deliberately remains ``--staged`` even under
+    ``pre-commit --all-files``.  An operator must instead invoke the explicit
+    inventory command when a bounded whole-corpus reconciliation is required.
+    """
+    first = _write_receipt(
+        tmp_path,
+        _receipt_data(
+            run_timestamp=POST_OMN15461_CUTOFF_TS,
+            commit_sha=FULL_LOCAL_SHA,
+        ),
+    )
+    duplicate = first.with_name("command-duplicate.yaml")
+    duplicate.write_text(first.read_text())
+    output = tmp_path / "commit-sha-corpus-inventory.json"
+    instances: list[CommitShaResolver] = []
+
+    def resolver_factory(**_kwargs: object) -> CommitShaResolver:
+        resolver = _commit_resolver(local_shas=frozenset({FULL_LOCAL_SHA}))
+        instances.append(resolver)
+        return resolver
+
+    monkeypatch.setattr(check_receipt_hardening, "CommitShaResolver", resolver_factory)
+
+    assert (
+        main(
+            [
+                "--receipts-root",
+                str(tmp_path / "drift" / "dod_receipts"),
+                "--commit-sha-inventory",
+                str(output),
+            ]
+        )
+        == 0
+    )
+    inventory = yaml.safe_load(output.read_text())
+    assert len(instances) == 1
+    assert instances[0].remote_calls == 1
+    assert inventory["remote_calls"] == 1
+    assert inventory["claims"][0]["paths"] == sorted(
+        [first.as_posix(), duplicate.as_posix()]
+    )
+
+
+def test_commit_sha_inventory_marks_budget_skipped_claims_pending(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Inventory resumes after a bounded run rather than implying completion."""
+    first = _write_receipt(
+        tmp_path,
+        _receipt_data(
+            run_timestamp=POST_OMN15461_CUTOFF_TS,
+            commit_sha=FULL_LOCAL_SHA,
+        ),
+    )
+    second = first.with_name("command-second.yaml")
+    second.write_text(
+        yaml.safe_dump(
+            _receipt_data(
+                run_timestamp=POST_OMN15461_CUTOFF_TS,
+                commit_sha="d" * 40,
+            )
+        )
+    )
+    output = tmp_path / "commit-sha-inventory-budget.json"
+    monkeypatch.setattr(
+        check_receipt_hardening, "_inventory_source_commit", lambda: "mocked"
+    )
+
+    exit_code = check_receipt_hardening._write_commit_sha_inventory(
+        output,
+        [first, second],
+        _commit_resolver(rest_budget=1),
+    )
+
+    inventory = yaml.safe_load(output.read_text())
+    assert exit_code == 2
+    assert inventory["complete"] is False
+    assert inventory["source_commit"] == "mocked"
+    assert inventory["remote_calls"] == 1
+    assert inventory["claims"][1]["pending_remote"] is True
+    assert inventory["claims"][1]["remote_outcome"] == "NOT_ATTEMPTED"
+
+
+# ---------------------------------------------------------------------------
+# OMN-17943 — the shape the omnimarket diff-derived behavior-proof backfill
+# generates must clear this gate with no hand edit.
+# ---------------------------------------------------------------------------
+
+# The generator lives one repo over (omnimarket
+# `scripts/ci/occ_behavior_proof_backfill.py::build_backfill_receipt`) and is
+# not importable here, so its output shape is pinned as a fixture instead. That
+# is the honest limit of this test and worth stating: it proves THIS GATE
+# accepts the shape, not that the generator still emits it. The generator's own
+# suite pins the other half against this gate's regex, restated there with the
+# same citation, so a change on either side fails on one side or the other.
+_BACKFILL_HEAD_SHA = "b" * 40
+_BACKFILL_MERGE_SHA = "c" * 40
+
+
+def _behavior_proof_backfill_receipt(commit_sha: str) -> ModelDodReceipt:
+    """A receipt in the exact shape the OMN-17943 backfill mints."""
+    return _receipt_model(
+        commit_sha=commit_sha,
+        evidence_item_id="dod-occ-diff-derived-behavior-proof",
+        check_type="test_passes",
+        check_value="uv run pytest tests/k8s/test_omn_16558_preflight.py -q",
+        probe_command=(
+            f"gh api repos/OmniNode-ai/omninode_infra/commits/{_BACKFILL_HEAD_SHA}"
+            "/check-runs --paginate --jq "
+            '\'[.check_runs[]|select(.conclusion|IN("success","skipped",'
+            '"neutral")|not)]|length\''
+        ),
+        pr_number=1048,
+    )
+
+
+def test_behavior_proof_backfill_receipt_bound_to_the_probed_head_is_accepted() -> None:
+    """The post-fix generated receipt clears repository authority unedited.
+
+    `commit_sha` is the PR head the recorded check-runs probe actually ran
+    against, so the exposed `/commits/<sha>` segment names it and
+    `_product_ref_binds_commit` is satisfied. This is what makes the backfill
+    landable without a hand commit.
+    """
+    resolver, queried_repos = _recording_commit_resolver(
+        {("OmniNode-ai/omninode_infra", _BACKFILL_HEAD_SHA): 200}
+    )
+
+    violations = check_receipt_hardening._commit_sha_existence_violations(
+        _behavior_proof_backfill_receipt(_BACKFILL_HEAD_SHA), resolver, []
+    )
+
+    assert violations == []
+    assert queried_repos == ["OmniNode-ai/omninode_infra"]
+
+
+def test_behavior_proof_backfill_receipt_bound_to_the_merge_commit_is_refused() -> None:
+    """Positive control: the PRE-FIX shape is exactly what this gate refused.
+
+    Without this the test above would pass on a gate that accepted anything.
+    The generator wrote the MERGE commit into `commit_sha` while probing the
+    head, and every mint failed here — the only merged output (OCC#8344) needed
+    a hand edit to land.
+    """
+    violations = check_receipt_hardening._commit_sha_existence_violations(
+        _behavior_proof_backfill_receipt(_BACKFILL_MERGE_SHA), _commit_resolver(), []
+    )
+
+    assert len(violations) == 1
+    assert "[COMMIT_SHA_REPOSITORY]" in violations[0]
+
+
+# ---------------------------------------------------------------------------
+# OMN-18778 — DERIVED_VERIFIER.
+#
+# The rule these tests pin exists because the platform's only runner/verifier
+# comparison, ``ModelDodReceipt`` Rule 1, is raw string equality: measured over
+# every receipt on dev carrying both fields on 2026-09-18, it had a surface of
+# 28 files out of 27,449 and zero in the preceding fourteen days, while 1,380
+# post-cutoff PASS receipts named a verifier that was the runner handle plus or
+# minus one segment. The fixture in
+# ``test_incident_receipt_is_refused_by_the_live_gate`` is the 2026-09-18
+# occurrence itself, byte-for-byte from
+# ``drift/dod_receipts/OMN-18543/dod-omn18543-ac1-dormant-member-excused/command.yaml``.
+# ---------------------------------------------------------------------------
+
+DERIVED_VERIFIER_TAG = "[DERIVED_VERIFIER]"
+
+# Verbatim from the 2026-09-18T20:45:45Z occurrence. Only the fields the gate
+# reads are carried; the handles are exact.
+INCIDENT_RUNNER = "omn18543-ac-binding"
+INCIDENT_VERIFIER = "omn18543-ac-binding-verifier"
+
+
+def _derived_verifier_violations(tmp_path: Path, **overrides: object) -> list[str]:
+    """Run the gate over one receipt and return only DERIVED_VERIFIER fragments."""
+    contract = _write_contract(tmp_path)
+    receipt = _write_receipt(
+        tmp_path,
+        _receipt_data(contract_sha256=_contract_sha(contract), **overrides),
+    )
+    return [
+        v
+        for v in check_receipt_file(receipt, tmp_path / "contracts")
+        if DERIVED_VERIFIER_TAG in v
+    ]
+
+
+def test_incident_receipt_is_refused_by_the_live_gate(tmp_path: Path) -> None:
+    """The 2026-09-18 occurrence, as its own handles, is refused.
+
+    This is the positive control for the whole rule: before OMN-18778 these
+    four receipts merged carrying a verifier that was the runner plus
+    ``-verifier``, and every gate in the repo passed them.
+    """
+    violations = _derived_verifier_violations(
+        tmp_path, runner=INCIDENT_RUNNER, verifier=INCIDENT_VERIFIER
+    )
+    assert len(violations) == 1
+    assert INCIDENT_VERIFIER in violations[0]
+    assert "verifier extends runner" in violations[0]
+
+
+def test_incident_receipt_passed_every_pre_existing_rule() -> None:
+    """Negative control on the OLD controls: the incident shape defeats them.
+
+    ``ModelDodReceipt`` Rule 1 does not demote it (the strings differ) and the
+    verifier denylist does not name it (it is not a generic alias). If this
+    test ever fails, some other rule started covering the shape and
+    DERIVED_VERIFIER's justification needs re-reading rather than patching.
+    """
+    receipt = ModelDodReceipt.model_validate(
+        _receipt_data(runner=INCIDENT_RUNNER, verifier=INCIDENT_VERIFIER)
+    )
+    assert receipt.status is not EnumReceiptStatus.ADVISORY
+    assert not check_receipt_hardening._is_denylisted_verifier(INCIDENT_VERIFIER)
+
+
+def test_verifier_extending_runner_fails(tmp_path: Path) -> None:
+    """The dominant corpus shape: ``claude-code`` -> ``claude-code-review``."""
+    violations = _derived_verifier_violations(
+        tmp_path, runner="claude-code", verifier="claude-code-review"
+    )
+    assert len(violations) == 1
+    assert "verifier extends runner" in violations[0]
+
+
+def test_runner_extending_verifier_fails(tmp_path: Path) -> None:
+    """The converse shape: ``codex-local`` -> ``codex``, 206 receipts on dev."""
+    violations = _derived_verifier_violations(
+        tmp_path, runner="codex-local", verifier="codex"
+    )
+    assert len(violations) == 1
+    assert "runner extends verifier" in violations[0]
+
+
+def test_separator_laundered_equality_fails(tmp_path: Path) -> None:
+    """``claude/x`` and ``claude-x`` are one handle; the core model's raw ``==``
+    does not see it, so this rule is not redundant with Rule 1."""
+    data = _receipt_data(
+        runner="claude-omn15717-reland", verifier="claude/omn15717-reland"
+    )
+    parsed = ModelDodReceipt.model_validate(data)
+    assert parsed.status is EnumReceiptStatus.PASS, (
+        "premise: the core model leaves this PASS, which is why the rule exists"
+    )
+
+    violations = _derived_verifier_violations(
+        tmp_path,
+        runner="claude-omn15717-reland",
+        verifier="claude/omn15717-reland",
+    )
+    assert len(violations) == 1
+    assert "identical" in violations[0]
+
+
+def test_mechanical_producer_pair_passes(tmp_path: Path) -> None:
+    """The honest population is untouched.
+
+    ``node_pr_lifecycle_fix_effect`` / ``node_occ_companion_compute`` /
+    ``node_occ_observation_effect`` account for 11,405 PASS receipts on dev and
+    none of them derives. A change that reddens this test has broken the gate
+    for every mechanically minted receipt in the repo.
+    """
+    for runner, verifier in (
+        ("node_pr_lifecycle_fix_effect", "occ-evidence-source-autobind"),
+        ("node_occ_companion_compute", "occ-evidence-source-autobind"),
+        ("node_occ_observation_effect", "occ-observation-append"),
+        ("codex", "jonah"),
+        ("jonah-local", "jonahgabriel"),
+    ):
+        assert (
+            _derived_verifier_violations(tmp_path, runner=runner, verifier=verifier)
+            == []
+        ), f"{runner!r} -> {verifier!r} is not a derivation"
+
+
+def test_shared_token_is_not_a_derivation(tmp_path: Path) -> None:
+    """Token overlap is deliberately NOT refused.
+
+    ``manual`` -> ``lakshman-manual-focused-test`` shares a token, and the
+    verifier names a different person. A token-subset predicate was measured
+    against the corpus and rejected for exactly this case.
+    """
+    assert (
+        _derived_verifier_violations(
+            tmp_path, runner="manual", verifier="lakshman-manual-focused-test"
+        )
+        == []
+    )
+
+
+def test_extension_is_segment_bounded_not_substring(tmp_path: Path) -> None:
+    """``codex`` -> ``codexter`` is a different handle, not an extension."""
+    assert (
+        _derived_verifier_violations(tmp_path, runner="codex", verifier="codexter")
+        == []
+    )
+
+
+def test_derived_verifier_on_non_pass_status_is_exempt(tmp_path: Path) -> None:
+    """A FAIL receipt makes no independence claim, so there is none to refuse."""
+    assert (
+        _derived_verifier_violations(
+            tmp_path,
+            status="FAIL",
+            runner=INCIDENT_RUNNER,
+            verifier=INCIDENT_VERIFIER,
+        )
+        == []
+    )
+
+
+def test_derived_verifier_pre_cutoff_is_exempt(tmp_path: Path) -> None:
+    """Legacy receipts stay exempt, like every other rule in this gate."""
+    assert (
+        _derived_verifier_violations(
+            tmp_path,
+            run_timestamp=PRE_CUTOFF_TS,
+            runner=INCIDENT_RUNNER,
+            verifier=INCIDENT_VERIFIER,
+        )
+        == []
+    )
+
+
+def test_baseline_suppresses_derived_verifier_and_nothing_else(
+    tmp_path: Path,
+) -> None:
+    """A baselined path loses DERIVED_VERIFIER and keeps every other rule."""
+    contract = _write_contract(tmp_path)
+    receipt = _write_receipt(
+        tmp_path,
+        _receipt_data(
+            contract_sha256=_contract_sha(contract),
+            runner=INCIDENT_RUNNER,
+            verifier=INCIDENT_VERIFIER,
+        ),
+    )
+    unsuppressed = check_receipt_file(receipt, tmp_path / "contracts")
+    assert any(DERIVED_VERIFIER_TAG in v for v in unsuppressed)
+
+    suppressed = check_receipt_file(
+        receipt,
+        tmp_path / "contracts",
+        derived_verifier_baseline=frozenset({receipt.as_posix()}),
+    )
+    assert not any(DERIVED_VERIFIER_TAG in v for v in suppressed)
+
+    # Same baselined path, now also carrying a denylisted verifier: the OTHER
+    # rule still fires, so suppression is rule-scoped rather than file-scoped.
+    # ``local-pytest`` is on the denylist AND is a prefix of the runner, so one
+    # receipt trips both rules and only DERIVED_VERIFIER may be suppressed.
+    denylisted = _write_receipt(
+        tmp_path,
+        _receipt_data(
+            contract_sha256=_contract_sha(contract),
+            runner="local-pytest-rerun",
+            verifier="local-pytest",
+        ),
+    )
+    still_flagged = check_receipt_file(
+        denylisted,
+        tmp_path / "contracts",
+        derived_verifier_baseline=frozenset({denylisted.as_posix()}),
+    )
+    assert not any(DERIVED_VERIFIER_TAG in v for v in still_flagged)
+    assert any("session-local verifier alias" in v for v in still_flagged)
+
+
+def test_derived_verifier_relation_table() -> None:
+    """The pure predicate, stated as a table."""
+    relation = check_receipt_hardening.derived_verifier_relation
+    assert relation("x", "x") == "identical"
+    assert relation("X ", " x") == "identical"
+    assert relation("a/b", "a-b") == "identical"
+    assert relation("x", "x-readback") == "verifier extends runner"
+    assert relation("x-readback", "x") == "runner extends verifier"
+    assert relation("x", "xy") is None
+    assert relation("x", "y") is None
+    assert relation("", "x") is None
+    assert relation("x", "   ") is None
+
+
+def test_incident_receipts_are_open_repairs_not_suppressed() -> None:
+    """The five 2026-09-18 receipts are named by the gate, not hidden by it.
+
+    They are merged and immutable, so the rule cannot retroactively block
+    them — but putting them in ``violations:`` would suppress the one shape
+    this ticket exists to refuse. They live in ``open_repairs:`` instead,
+    which is a corpus member that is NOT suppressed.
+    """
+    repo_root = Path(__file__).resolve().parents[1]
+    baseline = repo_root / check_receipt_hardening.DERIVED_VERIFIER_BASELINE_PATH
+    suppressed = check_receipt_hardening.load_derived_verifier_baseline(baseline)
+    open_repairs = check_receipt_hardening.load_derived_verifier_open_repairs(baseline)
+
+    incident = {
+        "drift/dod_receipts/OMN-10856/dod-omn10856-ac5-load-and-drain/command.yaml",
+        "drift/dod_receipts/OMN-18543/dod-omn18543-ac1-dormant-member-excused/command.yaml",
+        "drift/dod_receipts/OMN-18543/dod-omn18543-ac2-carve-out-is-earned/command.yaml",
+        "drift/dod_receipts/OMN-18543/dod-omn18543-ac3-reconciler-notes-unreachable/command.yaml",
+        "drift/dod_receipts/OMN-18543/dod-omn18543-ac4-fail-closed-direction/command.yaml",
+    }
+    assert incident <= open_repairs
+    assert not (incident & suppressed)
+
+
+def test_baseline_is_shrink_only_against_the_live_corpus(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Every baselined path still derives, so the baseline names real debt.
+
+    A stale entry means a receipt was repaired and the baseline was not shrunk
+    in the same PR; a missing one means a producer regressed.
+    """
+    repo_root = Path(__file__).resolve().parents[1]
+    baseline_path = repo_root / check_receipt_hardening.DERIVED_VERIFIER_BASELINE_PATH
+    expected = check_receipt_hardening.load_derived_verifier_corpus_expected(
+        baseline_path
+    )
+    # The scan emits paths relative to the root it is handed, and the baseline
+    # holds repo-relative ones, so it runs from the repo root exactly as the
+    # --derived-verifier-corpus CLI mode does.
+    monkeypatch.chdir(repo_root)
+    observed = set(
+        check_receipt_hardening._derived_verifier_findings(Path("drift/dod_receipts"))
+    )
+    assert observed - expected == set(), "new derived-verifier receipts, not baselined"
+    assert expected - observed == set(), "stale baseline entries; shrink the baseline"
+
+
+# ---------------------------------------------------------------------------
+# OMN-16360: the operator diagnostic must name the CAUSE, not just the status.
+#
+# These assert on the rendered text rather than on the resolution object, so
+# they are meaningful against any implementation that emits the diagnostic.
+# ---------------------------------------------------------------------------
+
+
+def _occurrence_resolver(
+    status: int,
+    headers: dict[str, str],
+    message: str | None,
+) -> CommitShaResolver:
+    """A no-network resolver that replays one recorded GitHub answer."""
+
+    header_lines = "\n".join(f"{k}: {v}" for k, v in headers.items())
+    body = json.dumps({"message": message}) if message is not None else "{}"
+
+    def runner(command: list[str], **_: object) -> subprocess.CompletedProcess[str]:
+        if command[0] == "git":
+            return subprocess.CompletedProcess(command, 0, stdout="", stderr="")
+        return subprocess.CompletedProcess(
+            command,
+            1,
+            stdout=f"HTTP/2 {status}\n{header_lines}\n\n{body}",
+            stderr="",
+        )
+
+    return CommitShaResolver(runner=runner)
+
+
+def test_spent_quota_diagnostic_is_not_mistakable_for_a_permission_fault() -> None:
+    """The 2026-09-20 occurrence, replayed at the text layer.
+
+    The rendered line carried only ``http_status=403``, which reads as a
+    credential or installation-scope fault. The quota reset four minutes
+    later and the identical gate passed, so the text sent the reader to the
+    wrong remedy.
+    """
+
+    receipt = _receipt_model(
+        commit_sha=FULL_REMOTE_SHA,
+        probe_command=(
+            f"gh api repos/OmniNode-ai/omnibase_infra/commits/{FULL_REMOTE_SHA}"
+        ),
+    )
+    resolver = _occurrence_resolver(
+        403,
+        {"x-ratelimit-remaining": "0", "x-ratelimit-reset": "1789900200"},
+        "API rate limit exceeded for installation ID 12345678.",
+    )
+    diagnostics: list[str] = []
+
+    violations = check_receipt_hardening._commit_sha_existence_violations(
+        receipt, resolver, diagnostics
+    )
+
+    # Fail-closed is unchanged: no receipt-defect label, and the caller still
+    # receives an infrastructure diagnostic it must treat as nonzero.
+    assert violations == []
+    assert len(diagnostics) == 1
+    line = diagnostics[0]
+    assert line.startswith("[INFRASTRUCTURE_UNAVAILABLE]")
+    assert "category=RATE_LIMIT_PRIMARY" in line
+    assert "rate_limit_remaining=0" in line
+    assert "rate_limit_reset=1789900200" in line
+    assert "OmniNode-ai/omnibase_infra" in line
+    assert FULL_REMOTE_SHA in line
+    assert "remedy=" in line
+    assert "NOT a permission" in line
+
+
+def test_permission_diagnostic_states_that_re_running_will_not_help() -> None:
+    receipt = _receipt_model(
+        commit_sha=FULL_REMOTE_SHA,
+        probe_command=(
+            f"gh api repos/OmniNode-ai/omnibase_infra/commits/{FULL_REMOTE_SHA}"
+        ),
+    )
+    resolver = _occurrence_resolver(
+        403,
+        {"x-ratelimit-remaining": "4998"},
+        "Resource not accessible by integration",
+    )
+    diagnostics: list[str] = []
+
+    violations = check_receipt_hardening._commit_sha_existence_violations(
+        receipt, resolver, diagnostics
+    )
+
+    assert violations == []
+    line = diagnostics[0]
+    assert "category=PERMISSION" in line
+    assert "re-running will not help" in line
+    assert "RATE_LIMIT" not in line
+
+
+def test_diagnostic_prints_retry_after_on_a_secondary_limit() -> None:
+    receipt = _receipt_model(
+        commit_sha=FULL_REMOTE_SHA,
+        probe_command=(
+            f"gh api repos/OmniNode-ai/omnibase_infra/commits/{FULL_REMOTE_SHA}"
+        ),
+    )
+    resolver = _occurrence_resolver(
+        403,
+        {"retry-after": "60", "x-ratelimit-remaining": "4998"},
+        "You have exceeded a secondary rate limit",
+    )
+    diagnostics: list[str] = []
+
+    check_receipt_hardening._commit_sha_existence_violations(
+        receipt, resolver, diagnostics
+    )
+
+    assert "category=RATE_LIMIT_SECONDARY" in diagnostics[0]
+    assert "retry_after=60" in diagnostics[0]
+
+
+def test_upstream_5xx_is_not_rendered_as_a_rate_limit_or_a_permission() -> None:
+    receipt = _receipt_model(
+        commit_sha=FULL_REMOTE_SHA,
+        probe_command=(
+            f"gh api repos/OmniNode-ai/omnibase_infra/commits/{FULL_REMOTE_SHA}"
+        ),
+    )
+    resolver = _occurrence_resolver(502, {}, "Server Error")
+    diagnostics: list[str] = []
+
+    check_receipt_hardening._commit_sha_existence_violations(
+        receipt, resolver, diagnostics
+    )
+
+    assert "category=UPSTREAM_ERROR" in diagnostics[0]
+    assert "RATE_LIMIT" not in diagnostics[0]
+    assert "PERMISSION" not in diagnostics[0]
+
+
+def test_a_second_receipt_in_a_halted_session_is_not_reported_as_probed() -> None:
+    """The half of the occurrence that was a fabricated measurement.
+
+    Two diagnostics were emitted for two SHAs in two repositories. Only the
+    first was ever sent to GitHub: the second replayed the first's detail
+    under its own repo and SHA with the status stripped, so the line asserts
+    a probe that did not happen.
+    """
+
+    first = _receipt_model(
+        commit_sha=FULL_REMOTE_SHA,
+        probe_command=(
+            f"gh api repos/OmniNode-ai/omnibase_infra/commits/{FULL_REMOTE_SHA}"
+        ),
+    )
+    second = _receipt_model(
+        commit_sha=OTHER_REMOTE_SHA,
+        probe_command=(
+            f"gh api repos/OmniNode-ai/onex_change_control/commits/{OTHER_REMOTE_SHA}"
+        ),
+    )
+    resolver = _occurrence_resolver(
+        403,
+        {"x-ratelimit-remaining": "0", "x-ratelimit-reset": "1789900200"},
+        "API rate limit exceeded for installation ID 12345678.",
+    )
+    diagnostics: list[str] = []
+
+    check_receipt_hardening._commit_sha_existence_violations(
+        first, resolver, diagnostics
+    )
+    check_receipt_hardening._commit_sha_existence_violations(
+        second, resolver, diagnostics
+    )
+
+    assert len(diagnostics) == 2
+    replayed = diagnostics[1]
+    assert "category=SESSION_HALTED" in replayed
+    assert "not_probed=true" in replayed
+    assert f"halted_by=OmniNode-ai/omnibase_infra@{FULL_REMOTE_SHA}" in replayed
+    assert "http_status=" not in replayed, (
+        "a replay must not present the halting probe's status as its own"
+    )
+
+
+def test_positive_control_a_resolvable_sha_emits_no_diagnostic_at_all() -> None:
+    """The control for the four assertions above.
+
+    Each test above asserts a substring is PRESENT in a diagnostic, and two
+    assert substrings are ABSENT. An absence assertion passes vacuously if no
+    diagnostic is produced, so this is the input known to produce the other
+    outcome: a resolvable SHA yields zero diagnostics and zero violations,
+    which proves the list above was populated by the failure and not by the
+    harness.
+    """
+
+    receipt = _receipt_model(
+        commit_sha=FULL_REMOTE_SHA,
+        probe_command=(
+            f"gh api repos/OmniNode-ai/omnibase_infra/commits/{FULL_REMOTE_SHA}"
+        ),
+    )
+    resolver, queried_repos = _recording_commit_resolver(
+        {("OmniNode-ai/omnibase_infra", FULL_REMOTE_SHA): 200}
+    )
+    diagnostics: list[str] = []
+
+    violations = check_receipt_hardening._commit_sha_existence_violations(
+        receipt, resolver, diagnostics
+    )
+
+    assert violations == []
+    assert diagnostics == []
+    assert queried_repos == ["OmniNode-ai/omnibase_infra"]
+
+
+def test_rate_limit_remedies_warn_off_the_check_that_cannot_answer() -> None:
+    """The obvious check a reader reaches for is the one that misleads them.
+
+    Two lanes independently ran `gh api rate_limit` on 2026-09-20 and drew
+    opposite wrong conclusions from it. It reports the PRIMARY bucket of
+    whoever runs it, so in CI it describes a different identity from the
+    step's token, and it cannot see a secondary limit at all — one lane's
+    shell was refused as rate-limited for six minutes while that endpoint
+    read a full quota. A remedy that names a rate limit without saying this
+    sends the reader to a command that is structurally incapable of
+    confirming or refuting it.
+    """
+
+    receipt = _receipt_model(
+        commit_sha=FULL_REMOTE_SHA,
+        probe_command=(
+            f"gh api repos/OmniNode-ai/omnibase_infra/commits/{FULL_REMOTE_SHA}"
+        ),
+    )
+    primary: list[str] = []
+    check_receipt_hardening._commit_sha_existence_violations(
+        receipt,
+        _occurrence_resolver(
+            403,
+            {"x-ratelimit-remaining": "0", "x-ratelimit-reset": "1789900200"},
+            "API rate limit exceeded for installation ID 12345678.",
+        ),
+        primary,
+    )
+    secondary: list[str] = []
+    check_receipt_hardening._commit_sha_existence_violations(
+        receipt,
+        _occurrence_resolver(
+            403,
+            {"retry-after": "60", "x-ratelimit-remaining": "4998"},
+            "You have exceeded a secondary rate limit",
+        ),
+        secondary,
+    )
+
+    assert "gh api rate_limit" in primary[0]
+    assert "different identity" in primary[0]
+    assert "gh api rate_limit" in secondary[0]
+    assert "cannot see a secondary limit" in secondary[0]
+    # Still fail-closed, and still the right category on each.
+    assert "category=RATE_LIMIT_PRIMARY" in primary[0]
+    assert "category=RATE_LIMIT_SECONDARY" in secondary[0]

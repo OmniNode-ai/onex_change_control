@@ -1,0 +1,86 @@
+---
+schema_version: "1.0.0"
+ticket_id: "OMN-14513"
+title: "fix(OMN-14513): reconcile projection baselines to producer schema"
+summary: >-
+  Central OCC evidence for omnimarket PR #1768, which realigns node_projection_baselines with the authoritative
+  omnibase_infra ModelBaselinesSnapshotEvent producer schema. The branch was refreshed onto current dev
+  at f0b9661891a061bb8af87f8db9bcd13d9e7c3c82 and keeps the newer OMN-14630 ROI/quality sibling-node implementation
+  from dev while preserving this PR's base projection repair.
+is_seam_ticket: true
+interface_change: true
+interfaces_touched:
+  - "events"
+  - "topics"
+  - "public_api"
+emergency_bypass:
+  enabled: false
+  justification: ""
+  follow_up_ticket_id: ""
+dod_evidence:
+  - id: "dod-omnimarket-pr-1768-product-head"
+    description: >-
+      Product-head verification for omnimarket PR #1768 at f0b9661891a061bb8af87f8db9bcd13d9e7c3c82. The
+      proof reads live PR metadata and changed files from GitHub, then checks the branch is based on dev,
+      carries the expected OMN-14513 title, includes the projection-baselines handler/contract, migration,
+      and seam test surfaces, and records the post-conflict repair commit.
+    source: "manual"
+    status: "verified"
+    checks:
+      - check_type: "command"
+        check_value: >-
+          PRODUCT_PR_NUMBER=1768; PRODUCT_REPO=OmniNode-ai/omnimarket; PRODUCT_HEAD=f0b9661891a061bb8af87f8db9bcd13d9e7c3c82;
+          d="$(mktemp -d)" && gh pr view "${PRODUCT_PR_NUMBER}" --repo "${PRODUCT_REPO}" --json headRefOid,baseRefName,title,body,files
+          --jq '.headRefOid + "\n" + .baseRefName + "\n" + .title + "\n" + .body + "\n" + ((.files | map(.path))
+          | join("\n"))' > "${d}/pr.txt" && grep -Fq "${PRODUCT_HEAD}" "${d}/pr.txt" && grep -Fxq dev
+          "${d}/pr.txt" && grep -Fq 'fix(OMN-14513): reconcile node_projection_baselines to real producer
+          schema' "${d}/pr.txt" && grep -Fq 'f0b9661891a061bb8af87f8db9bcd13d9e7c3c82' "${d}/pr.txt" &&
+          for p in src/omnimarket/nodes/node_projection_baselines/contract.yaml src/omnimarket/nodes/node_projection_baselines/handlers/handler_projection_baselines.py
+          src/omnimarket/nodes/node_projection_baselines/migrations/0002_realign_child_tables_to_producer_schema.sql
+          tests/test_omn14513_baselines_seam.py tests/test_projection_handlers.py tests/test_golden_chain_projection_baselines.py;
+          do grep -Fq "$p" "${d}/pr.txt"; done
+  - id: "dod-omnimarket-pr-1768-conflict-repair"
+    description: >-
+      Conflict repair verification for omnimarket PR #1768. Codex merged current dev, resolved ROI/quality
+      sibling-node conflicts to the newer OMN-14630 implementation already on dev, and recorded the local
+      post-merge verification results in the product PR body.
+    source: "manual"
+    status: "verified"
+    checks:
+      - check_type: "command"
+        check_value: >-
+          PRODUCT_PR_NUMBER=1768; PRODUCT_REPO=OmniNode-ai/omnimarket; PRODUCT_HEAD=f0b9661891a061bb8af87f8db9bcd13d9e7c3c82;
+          gh pr view "${PRODUCT_PR_NUMBER}" --repo "${PRODUCT_REPO}" --json headRefOid,body --jq '.headRefOid
+          == "'${PRODUCT_HEAD}'" and (.body | contains("Merge-sweep conflict repair evidence")) and (.body
+          | contains("OMN-14630 real-producer-schema implementation")) and (.body | contains("73 passed"))
+          and (.body | contains("git diff --check: PASS")) and (.body | contains("commit hooks with OMNI_HOME
+          and OMNIBASE_INFRA_PATH: PASS"))' | grep -qx true
+  - id: "dod-omnimarket-pr-1768-deploy-scope"
+    description: >-
+      Deploy-scope audit for omnimarket PR #1768. The diff is limited to omnimarket code, contracts, tests,
+      and node migrations; it does not perform a live deploy, restart, .201 mutation, systemd change,
+      compose change, or deploy-script change.
+    source: "manual"
+    status: "verified"
+    checks:
+      - check_type: "command"
+        check_value: >-
+          PRODUCT_PR_NUMBER=1768; PRODUCT_REPO=OmniNode-ai/omnimarket; PRODUCT_HEAD=f0b9661891a061bb8af87f8db9bcd13d9e7c3c82;
+          gh pr view "${PRODUCT_PR_NUMBER}" --repo "${PRODUCT_REPO}" --json headRefOid,files --jq '.headRefOid
+          == "'${PRODUCT_HEAD}'" and ((.files | map(.path)) | all((startswith("src/omnimarket/") or startswith("tests/")
+          or startswith(".github/workflows/") or startswith("scripts/ci/adequacy_receipts/")) and (. |
+          test("(^|/)(systemd|deploy/scripts|docker/compose)(/|$)") | not)))' | grep -qx true
+  - id: "dod-occ-self-bind-pr-4216"
+    description: >-
+      OCC companion self-binding for onex_change_control PR #4216. Verifies the PR is on the expected
+      OMN-14513 evidence branch and contains initial evidence commit f985f0f6d32a0a9fca0e4943843b9c6ff635cf59.
+    source: "manual"
+    status: "verified"
+    checks:
+      - check_type: "command"
+        check_value: >-
+          OCC_PR_NUMBER=4216; OCC_REPO=OmniNode-ai/onex_change_control; OCC_BRANCH=jonah/omn-14513-occ-market-1768;
+          INITIAL_EVIDENCE_COMMIT=f985f0f6d32a0a9fca0e4943843b9c6ff635cf59; gh api "repos/${OCC_REPO}/pulls/${OCC_PR_NUMBER}"
+          --jq '.head.ref == "'$OCC_BRANCH'" and ((.state == "open") or (.state == "closed" and .merged_at
+          != null))' | grep -qx true && gh api "repos/${OCC_REPO}/pulls/${OCC_PR_NUMBER}/commits" --jq
+          '.[].sha' | grep -Fx "$INITIAL_EVIDENCE_COMMIT"

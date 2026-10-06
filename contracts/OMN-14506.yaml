@@ -1,0 +1,151 @@
+---
+schema_version: "1.0.0"
+ticket_id: "OMN-14506"
+title: "OCC companion for omnimarket#1732 — node_projection_registration consumes the canonical ModelNodeHeartbeatEvent;
+  heartbeat metrics no longer dropped, and heartbeats now actually land on a row"
+summary: >
+  OCC evidence companion for OmniNode-ai/omnimarket#1732 (OMN-14506, landed in the same PR as its sibling
+  OMN-14490 — same file, same handler, same defect class). node_projection_registration locally redefined
+  ModelNodeHeartbeatEvent (extra="ignore", 6 fields: service_name, node_id, node_name, health_status,
+  timestamp, uptime_seconds) while the producer (omnibase_infra MixinNodeIntrospection) publishes the
+  canonical extra="forbid" omnibase_infra.models.registration.ModelNodeHeartbeatEvent (9 fields) on the
+  same topic onex.evt.platform.node-heartbeat.v1. Because the consumer copy was extra="ignore", every
+  heartbeat SILENTLY DROPPED node_type, node_version, active_operations_count, memory_usage_mb, cpu_usage_percent
+  and correlation_id — and heartbeats are high-frequency, so this bled continuously. The fix imports the
+  canonical producer model, deletes the slim copy, and persists the full model_dump() into the metadata
+  JSONB (MERGED, not replaced, so a heartbeat never clobbers the rich introspection metadata OMN-14490
+  persists on the same row). Both consumer paths are fixed: HandlerProjectionRegistration AND the sibling
+  RegistrationProjectionRunner (the live Kafka->Postgres projector, whose heartbeat UPDATE previously
+  bound only health_status + service_name and persisted none of the metrics). ROW-IDENTITY BUG found en
+  route and fixed in the same PR, because without it the field-drop fix would be cosmetic: node_service_registry
+  is keyed by service_name, which introspection resolves to node_name, but the canonical heartbeat carries
+  NO service_name and NO node_name — only node_id. So every heartbeat resolved to a UUID key that matched
+  ZERO introspection rows; in the runner path, "UPDATE ... WHERE service_name = <uuid>" affected 0 rows
+  and heartbeats never landed at all. Verified empirically against real producer payloads (introspection
+  key "node_build_loop" vs heartbeat key "11111111-2222-...", MATCH=False). Both paths now join through
+  the node_id that introspection persists into the metadata JSONB.
+is_seam_ticket: true
+interface_change: false
+interfaces_touched: []
+evidence_requirements:
+  - kind: "tests"
+    description: "omnimarket#1732 head consumes the canonical omnibase_infra ModelNodeHeartbeatEvent,
+      deletes the slim extra=ignore copy, persists the six previously-dropped health metrics, and joins
+      the heartbeat to its introspection row via node_id — proven by a cross-boundary seam test driving
+      the producer's real wire dump through BOTH consumer paths, reproduced RED (pre-fix) then GREEN."
+    command: "see dod_evidence check_values"
+emergency_bypass:
+  enabled: false
+  justification: ""
+  follow_up_ticket_id: ""
+dod_evidence:
+  - id: "dod-verify-1732-slim-heartbeat-copy-deleted"
+    description: >-
+      Product-observing check against omnimarket#1732 head 96438e9531b6da07e16852cf45a5aaab443e2c0e. Reads
+      handler_projection_registration.py from the PR head and asserts the locally-redefined slim ModelNodeHeartbeatEvent
+      class is GONE and the module now imports the canonical producer model from omnibase_infra.models.registration.model_node_heartbeat_event.
+      Note the file retains exactly one extra="ignore" model, ModelNodeStateChangeEvent, which is explicitly
+      OUT OF SCOPE per the operator ruling (dead topic, no producer anywhere — OMN-14508).
+    source: "generated"
+    status: "verified"
+    checks:
+      - check_type: "command"
+        check_value: >-
+          f="$(mktemp)" && gh api "repos/OmniNode-ai/omnimarket/contents/src/omnimarket/nodes/node_projection_registration/handlers/handler_projection_registration.py?ref=96438e9531b6da07e16852cf45a5aaab443e2c0e"
+          --jq .content | base64 -d > "$f" && ! grep -Eq '^class ModelNodeHeartbeatEvent\(BaseModel\):'
+          "$f" && grep -Fq -- 'from omnibase_infra.models.registration.model_node_heartbeat_event import'
+          "$f" && grep -Fq -- 'ModelNodeHeartbeatEvent.model_validate(' "$f"
+  - id: "dod-verify-1732-heartbeat-metrics-persisted"
+    description: >-
+      Product-observing check against the PR head. Asserts BOTH consumer paths now persist the heartbeat
+      payload rather than discarding it. The handler path writes the full canonical model_dump() into
+      the metadata JSONB; the runner path (the live Kafka->Postgres projector) now binds a metrics JSON
+      and MERGES it into the existing metadata with the jsonb concat operator (||) instead of the previous
+      UPDATE that bound only health_status + service_name. The merge — rather than a replace — is what
+      stops a heartbeat clobbering the rich introspection metadata that OMN-14490 persists on the same
+      row.
+    source: "generated"
+    status: "verified"
+    checks:
+      - check_type: "command"
+        check_value: >-
+          h="$(mktemp)" && r="$(mktemp)" && gh api "repos/OmniNode-ai/omnimarket/contents/src/omnimarket/nodes/node_projection_registration/handlers/handler_projection_registration.py?ref=96438e9531b6da07e16852cf45a5aaab443e2c0e"
+          --jq .content | base64 -d > "$h" && gh api "repos/OmniNode-ai/omnimarket/contents/src/omnimarket/nodes/node_projection_registration/handlers/handler_registration.py?ref=96438e9531b6da07e16852cf45a5aaab443e2c0e"
+          --jq .content | base64 -d > "$r" && grep -Fq -- 'metadata.update(event.model_dump(mode="json"))'
+          "$h" && grep -Fq -- "COALESCE(metadata, '{{}}'::jsonb) || \$3::jsonb" "$r"
+  - id: "dod-verify-1732-heartbeat-joins-introspection-row"
+    description: >-
+      Product-observing check against the PR head for the row-identity bug. Without this join the field-drop
+      fix would be cosmetic: the canonical heartbeat has no service_name/node_name, so keying on str(node_id)
+      points every heartbeat at a row that introspection (keyed on node_name) never created — the runner's
+      UPDATE matched ZERO rows. Asserts the handler path resolves its row via a node_id join helper (_find_registry_row)
+      and the runner's heartbeat UPDATE matches on metadata->>'node_id' in addition to service_name.
+    source: "generated"
+    status: "verified"
+    checks:
+      - check_type: "command"
+        check_value: >-
+          h="$(mktemp)" && r="$(mktemp)" && gh api "repos/OmniNode-ai/omnimarket/contents/src/omnimarket/nodes/node_projection_registration/handlers/handler_projection_registration.py?ref=96438e9531b6da07e16852cf45a5aaab443e2c0e"
+          --jq .content | base64 -d > "$h" && gh api "repos/OmniNode-ai/omnimarket/contents/src/omnimarket/nodes/node_projection_registration/handlers/handler_registration.py?ref=96438e9531b6da07e16852cf45a5aaab443e2c0e"
+          --jq .content | base64 -d > "$r" && grep -Fq -- 'def _find_registry_row(' "$h" && grep -Fq --
+          "metadata->>'node_id'" "$r"
+  - id: "dod-verify-1732-heartbeat-seam-test"
+    description: >-
+      Product-observing check against the PR head. Asserts the cross-boundary seam suite covers the heartbeat
+      on BOTH consumer paths and asserts each of the six previously-dropped fields survives, plus a test
+      proving the heartbeat lands on the introspection row rather than creating a phantom one.
+    source: "generated"
+    status: "verified"
+    checks:
+      - check_type: "command"
+        check_value: >-
+          f="$(mktemp)" && gh api "repos/OmniNode-ai/omnimarket/contents/tests/test_omn14490_omn14506_registration_seam.py?ref=96438e9531b6da07e16852cf45a5aaab443e2c0e"
+          --jq .content | base64 -d > "$f" && grep -Fq -- 'def test_heartbeat_health_metrics_survive('
+          "$f" && grep -Fq -- 'def test_heartbeat_lands_on_the_introspection_row(' "$f" && grep -Fq --
+          'active_operations_count' "$f" && grep -Fq -- 'memory_usage_mb' "$f" && grep -Fq -- 'cpu_usage_percent'
+          "$f" && grep -Fq -- 'correlation_id' "$f"
+  - id: "dod-verify-1732-red-green-reproduced"
+    description: >-
+      Independent RED-then-GREEN reproduction for the heartbeat half, not trusting the implementer's commit
+      message. Reverting the handler sources to origin/dev (restoring the slim extra="ignore" heartbeat
+      copy) and re-running the identical seam test failed with KeyError: 'metadata' on the handler path
+      (the slim heartbeat row carried no metadata column at all) and IndexError on the runner path (its
+      heartbeat UPDATE bound only 2 SQL params, so the metrics bind did not exist) — a real EXISTS-but-WRONG
+      RED against the live defect. GREEN against the canonical model. The pre-existing heartbeat tests
+      were REWRITTEN, not weakened: they had built payloads carrying service_name/health_status, which
+      the canonical producer never sends, so they encoded the slim copy's fictional shape rather than
+      the real wire contract. A new test asserts an unknown wire field now fails loud (ValidationError)
+      instead of vanishing.
+    source: "manual"
+    status: "verified"
+    checks:
+      - check_type: "command"
+        check_value: >-
+          grep -q '^status: PASS$' drift/dod_receipts/OMN-14506/dod-verify-1732-red-green-reproduced/command.yaml
+          && grep -q '4 failed' drift/dod_receipts/OMN-14506/dod-verify-1732-red-green-reproduced/command.yaml
+          && grep -q "KeyError: 'metadata'" drift/dod_receipts/OMN-14506/dod-verify-1732-red-green-reproduced/command.yaml
+          && grep -q '12881 passed' drift/dod_receipts/OMN-14506/dod-verify-1732-red-green-reproduced/command.yaml
+  - id: "dod-deploy-assessment-head-96438e95"
+    description: >-
+      Deploy assessment for omnimarket PR #1732 at head 96438e9531b6da07e16852cf45a5aaab443e2c0e. The
+      PR changes a projection consumer (node_projection_registration) and its tests; this evidence package
+      performs no live deploy, runtime restart, docker exec, rpk topic produce, database mutation, or
+      .201/.200 runtime mutation. No prod promotion is requested or performed here.
+    source: "manual"
+    status: "verified"
+    checks:
+      - check_type: "command"
+        check_value: >-
+          grep -q '^status: PASS$' drift/dod_receipts/OMN-14506/dod-deploy-assessment-head-96438e95/command.yaml
+          && grep -qi 'no live deploy' drift/dod_receipts/OMN-14506/dod-deploy-assessment-head-96438e95/command.yaml
+  - id: "dod-occ-self-commit"
+    description: >-
+      Self-bind item for this OCC companion PR. Asserts a fact about this companion branch so validator_occ_merge_eligibility
+      can bind a PASS receipt to the OCC PR under check via commit_sha before a PR number exists. Product-observing
+      evidence is carried by the entries above; this item is binding only.
+    source: "manual"
+    status: "verified"
+    checks:
+      - check_type: "command"
+        check_value: >-
+          grep -q 'jonah/omn-14490-occ-companion-registration-seam' drift/dod_receipts/OMN-14506/dod-occ-self-commit/command.yaml

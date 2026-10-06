@@ -1,0 +1,115 @@
+---
+schema_version: 1.0.0
+ticket_id: OMN-15266
+title: Fix the prior business-proof driver seam defects (x-api-key + required task_type + the missing
+  cross-boundary test)
+summary: "OCC companion for omninode_infra's OMN-15266 change. The prior business-proof gate landed a
+  fail-closed terminal business-proof gate whose DRIVER could never pass: scripts/post-deploy-business-proof.sh
+  sent the static gateway API key as `Authorization: Bearer`, and docker/onex-api/routers/workflows.py::_resolve_principal
+  deliberately refuses to downgrade a Bearer request to API-key auth (it returns None before the x-api-key
+  branch is reachable), so every submission 401s for ANY token value; independently, the payload omitted
+  task_type, which the shipped docker/onex-api/workflow-contracts.yaml declares REQUIRED for delegation-inference
+  under additionalProperties:false, so the submission is rejected 400 at the gateway before auth is even
+  consulted. The gate is fail-closed and merged, so every push/workflow_run staging deploy has been red.
+  This change moves the DRIVER only — the API's Bearer refusal is correct and is untouched. ROOT CAUSE,
+  and the reason both defects shipped green: the earlier gate had two individually-green suites (the decision
+  engine, the workflow YAML) and NOTHING validating the driver's rendered REQUEST against the gateway's
+  CONTRACT — the OMN-14208 failure class exactly. The remedy is one cross-boundary seam test that EXECUTES
+  the real driver against a capturing edge and validates the request it ACTUALLY sent: the payload half
+  runs the gateway's OWN validate_workflow_payload against the SHIPPED catalog (no re-implementation of
+  JSON-Schema and no restatement of the schema), and the auth half derives the expected header name from
+  the shipped auth_api_keys.py via ast rather than hardcoding it, so a gateway-side rename fails the test.
+  Evidence below is RED-before/GREEN-after on the SAME unmodified test module against two drivers — a
+  real prove-RED-against-exists-but-wrong, not a RED-against-missing. Additionally the business-proof
+  step is scoped to workflow_dispatch only until secrets.BUSINESS_PROOF_TOKEN exists; that narrowing is
+  a VISIBLE workflow condition with an inline re-arm block naming OMN-15267, held by a test that fails
+  if the narrowing exists without its re-arm ticket — deliberately NOT a runtime silent-skip on secret
+  absence, which is the F-02/F-04 anti-pattern the 2026-07-27 friction report names. NOT CLAIMED: no live
+  proof run has executed this gate against staging, nothing was deployed, and no cloud resource or repo
+  secret was mutated by this lane; the live run remains OMN-15101 and the re-arm remains OMN-15267. Gates
+  ran on .200 per rule 11a in patch-transfer mode with every changed file sha256-verified byte-identical
+  before each run, so no gate ran against an unedited copy."
+is_seam_ticket: true
+interface_change: false
+# Empty on purpose, and consistent with interface_change: false. This IS a seam
+# ticket (is_seam_ticket: true) -- the seam is the gateway's public ingress,
+# POST /v1/workflows: its credential header and its contract-declared
+# payload_schema. But NO interface changed. The gateway's accepted shape is
+# byte-for-byte what it already was; the CALLER was wrong and the caller moved.
+# Declaring public_api here would assert the gateway's contract shifted, which
+# would be false and would misdirect anyone auditing downstream compatibility.
+interfaces_touched: []
+evidence_requirements:
+  - kind: ci
+    description: Product PR CI green on omninode_infra (full repo-root tests/ suite, pre-commit, ruff)
+    command: gh pr checks ${PR_NUMBER} --repo ${REPO}
+emergency_bypass:
+  enabled: false
+  justification: ''
+  follow_up_ticket_id: ''
+dod_evidence:
+  - id: dod-omn15266-seam-test-red-before-green-after
+    description: "The load-bearing proof, and the one that makes this a real regression test rather than
+      a restatement of the fix. The SAME unmodified tests/scripts/test_business_proof_request_seam.py
+      was executed twice on .200 against two drivers, changing nothing else: against the driver exactly
+      as it merged in omninode_infra#699 (sha256 f57be0bd...) it FAILS 5 of 9 assertions across BOTH defects
+      independently; against the fixed driver (sha256 37362abf...) all 9 pass. The four assertions that
+      stay green pre-fix are the control — the module discriminates between the two defects and the surrounding
+      behaviour rather than failing wholesale. RED-against-exists-but-wrong: the pre-fix driver exists,
+      runs and completes; it is its REQUEST that violates the contract."
+    source: manual
+    checks:
+      - check_type: command
+        check_value: >-
+          grep -qx 'PRODUCT_HEAD=25bfef234b88e27596f3ce523ac985c8c155de51' docs/evidence/OMN-15266/business-proof-seam-fix-probes.md
+          && grep -qx 'SEAM_TESTS_RED_PREFIX=5' docs/evidence/OMN-15266/business-proof-seam-fix-probes.md
+          && grep -qx 'SEAM_TESTS_GREEN_POSTFIX=9' docs/evidence/OMN-15266/business-proof-seam-fix-probes.md
+  - id: dod-omn15266-auth-seam-fixed
+    description: "The driver sends the credential on x-api-key and NEVER as a bearer token. Asserted as
+      a pair of counts, not a single positive: a check that only proves x-api-key was ADDED would still
+      pass if the broken Bearer header were left in place alongside it, and the gateway short-circuits
+      on Authorization before it ever reads the api-key header — so the Bearer count MUST be zero for
+      the fix to be real."
+    source: manual
+    checks:
+      - check_type: command
+        check_value: >-
+          grep -qx 'DRIVER_XAPIKEY_HEADERS=1' docs/evidence/OMN-15266/business-proof-seam-fix-probes.md
+          && grep -qx 'DRIVER_BEARER_TOKEN_HEADERS=0' docs/evidence/OMN-15266/business-proof-seam-fix-probes.md
+  - id: dod-omn15266-payload-seam-fixed
+    description: "The submitted payload carries task_type and the driver defaults it to the proven round-trip
+      value, and the workflow exposes the override. delegation-inference is required:[prompt, task_type]
+      with additionalProperties:false, so this is a 400 at the gateway before auth — an independent defect
+      from the auth seam, which is why it is a separate DoD entry."
+    source: manual
+    checks:
+      - check_type: command
+        check_value: >-
+          grep -qx 'DRIVER_PAYLOAD_TASK_TYPE=1' docs/evidence/OMN-15266/business-proof-seam-fix-probes.md
+          && grep -qx 'DRIVER_TASK_TYPE_DEFAULT=1' docs/evidence/OMN-15266/business-proof-seam-fix-probes.md
+          && grep -qx 'WORKFLOW_TASK_TYPE_WIRED=1' docs/evidence/OMN-15266/business-proof-seam-fix-probes.md
+  - id: dod-omn15266-interim-narrowing-is-ticketed
+    description: "The workflow_dispatch-only narrowing exists AND names its re-arm ticket. Both counts
+      are asserted together on purpose: the narrowing without the ticket is precisely how an interim goes
+      permanent silently, which is the failure this entry exists to prevent. A test in the product repo
+      enforces the same pairing, so the ticket reference cannot be deleted while the narrowing remains."
+    source: manual
+    checks:
+      - check_type: command
+        check_value: >-
+          grep -qx 'WORKFLOW_NARROWING=2' docs/evidence/OMN-15266/business-proof-seam-fix-probes.md &&
+          grep -qx 'WORKFLOW_REARM_TICKET=3' docs/evidence/OMN-15266/business-proof-seam-fix-probes.md
+  - id: dod-omn15266-gates-on-200
+    description: "Full repo-root suite, mypy, shellcheck and pre-commit all-files green on .200 per rule
+      11a, in patch-transfer mode with every changed file sha256-verified byte-identical before each run
+      (the edit-locality trap: Edit/Write land on this Mac, only ssh-Bash reaches .200, so an unverified
+      transfer yields a vacuous green). The repo-wide ruff baseline of 40 errors / 8 unformatted files
+      is pre-existing — verified identical on a clean origin/dev checkout — and is neither touched nor
+      claimed here."
+    source: manual
+    checks:
+      - check_type: command
+        check_value: >-
+          grep -qx 'FULL_SUITE=384 passed' docs/evidence/OMN-15266/business-proof-seam-fix-probes.md &&
+          grep -qx 'PRECOMMIT_ALL_FILES=pass' docs/evidence/OMN-15266/business-proof-seam-fix-probes.md
+          && grep -qx 'SHELLCHECK=clean (scripts/post-deploy-business-proof.sh)' docs/evidence/OMN-15266/business-proof-seam-fix-probes.md

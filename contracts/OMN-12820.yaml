@@ -1,0 +1,230 @@
+---
+schema_version: "1.0.0"
+ticket_id: "OMN-12820"
+title: "Wire node-deploy executor route for SEA generation close-loop"
+summary: >-
+  Fixes the stability-test close-loop blocker discovered after OMN-12851 landed: the generation consumer
+  successfully emitted the node-deploy command, but runtime dispatcher construction had no explicit command
+  route for omnimarket.node-deploy and sent the command to DLQ. The omnimarket fix adds explicit command
+  routing for both node-generation-requested and node-deploy, wires node-deploy to HandlerGeneratedExecutor,
+  and exposes the executor's runtime handle entrypoint so the command -> dispatcher -> handler -> terminal
+  generated-node-invoked chain can be validated on stability-test after merge. A follow-up stability-test
+  direct-bus probe then proved node-deploy now reaches the executor but fails because runtime validation
+  passes a typed ModelNodeDeploy instance while the executor still assumed dict payloads. omnimarket PR
+  #1131 fixes that typed payload boundary. A post-#1131 stability-test rebuild then proved the executor
+  consumed node-deploy but failed to write generated sandbox files because its default sandbox path resolved
+  to unwritable .onex_state inside the image working directory. omnimarket PR #1132 moves that default
+  under ONEX_STATE_DIR/ONEX_STATE_ROOT and requires another stability-test rebuild before loop closure
+  can be claimed.
+is_seam_ticket: false
+interface_change: false
+interfaces_touched: []
+emergency_bypass:
+  enabled: false
+  justification: ""
+  follow_up_ticket_id: ""
+dod_evidence:
+  - id: "dod-runtime-blocker-observed"
+    description: >-
+      Stability-test was rebuilt onto the intended dev baseline and proved the second-hop regression:
+      omnimarket.node-deploy had no dispatcher route and was sent to DLQ.
+    source: "manual"
+    status: "verified"
+    checks:
+      - check_type: "command"
+        check_value: >-
+          grep -q '^status: PASS$' "$CONTRACT_REPO_DIR/drift/dod_receipts/OMN-12820/dod-runtime-blocker-observed/command.yaml"
+          && grep -q 'omnimarket.node-deploy' "$CONTRACT_REPO_DIR/drift/dod_receipts/OMN-12820/dod-runtime-blocker-observed/command.yaml"
+  - id: "dod-market-pr-1128"
+    description: >-
+      omnimarket PR #1128 carries the node-deploy route fix and is bound to the downstream PR head SHA
+      for receipt-gate eligibility.
+    source: "manual"
+    status: "verified"
+    checks:
+      - check_type: "command"
+        check_value: >-
+          grep -q '^status: PASS$' "$CONTRACT_REPO_DIR/drift/dod_receipts/OMN-12820/dod-market-pr-1128/command.yaml"
+          && grep -q '^pr_number: 1128$' "$CONTRACT_REPO_DIR/drift/dod_receipts/OMN-12820/dod-market-pr-1128/command.yaml"
+  - id: "dod-focused-tests"
+    description: >-
+      Focused executor tests prove the contract routes node-deploy to HandlerGeneratedExecutor, keeps
+      generation requests on HandlerGenerationConsumer, and exposes handle() as the runtime entrypoint
+      for node-deploy.
+    source: "manual"
+    status: "verified"
+    checks:
+      - check_type: "command"
+        check_value: >-
+          grep -q '^status: PASS$' "$CONTRACT_REPO_DIR/drift/dod_receipts/OMN-12820/dod-focused-tests/command.yaml"
+  - id: "dod-node-generation-suite"
+    description: >-
+      The broader node_generation_consumer unit suite remains green after the route split, covering adjacent
+      generation, deploy, registration, escalation, and executor behavior.
+    source: "manual"
+    status: "verified"
+    checks:
+      - check_type: "command"
+        check_value: >-
+          grep -q '^status: PASS$' "$CONTRACT_REPO_DIR/drift/dod_receipts/OMN-12820/dod-node-generation-suite/command.yaml"
+  - id: "dod-ci-escape-analysis"
+    description: >-
+      Records why existing CI missed the regression: boot, health, and consumer checks proved the process
+      and subscription existed, while no CI guard asserted every subscribed command topic had a generated
+      dispatcher route and callable handler entrypoint.
+    source: "manual"
+    status: "verified"
+    checks:
+      - check_type: "command"
+        check_value: >-
+          grep -q '^status: PASS$' "$CONTRACT_REPO_DIR/drift/dod_receipts/OMN-12820/dod-ci-escape-analysis/command.yaml"
+  - id: "dod-deploy-assessment"
+    description: >-
+      Deployment is required after omnimarket PR #1128 merges because stability-test must rebuild onto
+      the fixed contract and handler route before SEA L1/L2 generation evidence can be trusted. This receipt
+      records that assessment without claiming a live deploy happened in the OCC PR.
+    source: "manual"
+    status: "verified"
+    checks:
+      - check_type: "command"
+        check_value: >-
+          grep -q '^status: PASS$' "$CONTRACT_REPO_DIR/drift/dod_receipts/OMN-12820/dod-deploy-assessment/command.yaml"
+  - id: "dod-occ-pr-2367"
+    description: >-
+      OCC PR #2367 carries the central OMN-12820 contract and PASS receipts, including the downstream
+      omnimarket PR binding and deploy-required assessment.
+    source: "manual"
+    status: "verified"
+    checks:
+      - check_type: "command"
+        check_value: >-
+          grep -q '^status: PASS$' "$CONTRACT_REPO_DIR/drift/dod_receipts/OMN-12820/dod-occ-pr-2367/command.yaml"
+          && grep -q '^pr_number: 2367$' "$CONTRACT_REPO_DIR/drift/dod_receipts/OMN-12820/dod-occ-pr-2367/command.yaml"
+  - id: "dod-occ-pr-2369"
+    description: >-
+      OCC PR #2369 carries the typed ModelNodeDeploy follow-up receipts and self-binds this evidence update
+      to the current central change-control PR for OCC eligibility.
+    source: "manual"
+    status: "verified"
+    checks:
+      - check_type: "command"
+        check_value: >-
+          grep -q '^status: PASS$' "$CONTRACT_REPO_DIR/drift/dod_receipts/OMN-12820/dod-occ-pr-2369/command.yaml"
+          && grep -q '^pr_number: 2369$' "$CONTRACT_REPO_DIR/drift/dod_receipts/OMN-12820/dod-occ-pr-2369/command.yaml"
+  - id: "dod-occ-pr-2371"
+    description: >-
+      OCC PR #2371 carries the generated executor runtime-state sandbox receipts and self-binds this evidence
+      update to the current central change-control PR for OCC eligibility.
+    source: "manual"
+    status: "verified"
+    checks:
+      - check_type: "command"
+        check_value: >-
+          grep -q '^status: PASS$' "$CONTRACT_REPO_DIR/drift/dod_receipts/OMN-12820/dod-occ-pr-2371/command.yaml"
+          && grep -q '^pr_number: 2371$' "$CONTRACT_REPO_DIR/drift/dod_receipts/OMN-12820/dod-occ-pr-2371/command.yaml"
+  - id: "dod-typed-deploy-blocker-observed"
+    description: >-
+      Stability-test direct-bus generation after omnimarket#1128 proved node-deploy now routes to the
+      executor, but the executor failed on the typed ModelNodeDeploy payload with AttributeError before
+      terminal generated-node-invoked evidence could be emitted.
+    source: "manual"
+    status: "verified"
+    checks:
+      - check_type: "command"
+        check_value: >-
+          grep -q '^status: PASS$' "$CONTRACT_REPO_DIR/drift/dod_receipts/OMN-12820/dod-typed-deploy-blocker-observed/command.yaml"
+          && grep -q 'ModelNodeDeploy' "$CONTRACT_REPO_DIR/drift/dod_receipts/OMN-12820/dod-typed-deploy-blocker-observed/command.yaml"
+  - id: "dod-market-pr-1131"
+    description: >-
+      omnimarket PR #1131 carries the typed ModelNodeDeploy payload fix and is bound to the downstream
+      PR head SHA for receipt-gate eligibility.
+    source: "manual"
+    status: "verified"
+    checks:
+      - check_type: "command"
+        check_value: >-
+          grep -q '^status: PASS$' "$CONTRACT_REPO_DIR/drift/dod_receipts/OMN-12820/dod-market-pr-1131/command.yaml"
+          && grep -q '^pr_number: 1131$' "$CONTRACT_REPO_DIR/drift/dod_receipts/OMN-12820/dod-market-pr-1131/command.yaml"
+  - id: "dod-typed-deploy-focused-tests"
+    description: >-
+      Focused executor tests prove the runtime handle() entrypoint accepts typed ModelNodeDeploy payloads
+      after auto-wiring validation, preserving the sandbox terminal event shape.
+    source: "manual"
+    status: "verified"
+    checks:
+      - check_type: "command"
+        check_value: >-
+          grep -q '^status: PASS$' "$CONTRACT_REPO_DIR/drift/dod_receipts/OMN-12820/dod-typed-deploy-focused-tests/command.yaml"
+  - id: "dod-typed-deploy-suite"
+    description: >-
+      The broader node_generation_consumer unit suite, focused Ruff checks, and strict mypy typecheck
+      remain green after accepting typed deploy payloads.
+    source: "manual"
+    status: "verified"
+    checks:
+      - check_type: "command"
+        check_value: >-
+          grep -q '^status: PASS$' "$CONTRACT_REPO_DIR/drift/dod_receipts/OMN-12820/dod-typed-deploy-suite/command.yaml"
+  - id: "dod-typed-deploy-assessment"
+    description: >-
+      Deployment is required after omnimarket PR #1131 merges because stability-test must rebuild onto
+      the typed deploy payload fix before generated-node-invoked evidence can be trusted.
+    source: "manual"
+    status: "verified"
+    checks:
+      - check_type: "command"
+        check_value: >-
+          grep -q '^status: PASS$' "$CONTRACT_REPO_DIR/drift/dod_receipts/OMN-12820/dod-typed-deploy-assessment/command.yaml"
+  - id: "dod-state-sandbox-blocker-observed"
+    description: >-
+      Stability-test direct-bus generation after omnimarket#1131 proved node-deploy is consumed with typed
+      payloads, but the executor failed to write sandbox files because .onex_state was not writable in
+      the runtime image working directory.
+    source: "manual"
+    status: "verified"
+    checks:
+      - check_type: "command"
+        check_value: >-
+          grep -q '^status: PASS$' "$CONTRACT_REPO_DIR/drift/dod_receipts/OMN-12820/dod-state-sandbox-blocker-observed/command.yaml"
+          && grep -q 'Permission denied' "$CONTRACT_REPO_DIR/drift/dod_receipts/OMN-12820/dod-state-sandbox-blocker-observed/command.yaml"
+  - id: "dod-market-pr-1132"
+    description: >-
+      omnimarket PR #1132 carries the generated executor runtime state sandbox fix and is bound to the
+      downstream PR head SHA for receipt-gate eligibility.
+    source: "manual"
+    status: "verified"
+    checks:
+      - check_type: "command"
+        check_value: >-
+          grep -q '^status: PASS$' "$CONTRACT_REPO_DIR/drift/dod_receipts/OMN-12820/dod-market-pr-1132/command.yaml"
+          && grep -q '^pr_number: 1132$' "$CONTRACT_REPO_DIR/drift/dod_receipts/OMN-12820/dod-market-pr-1132/command.yaml"
+  - id: "dod-state-sandbox-focused-tests"
+    description: >-
+      Focused executor tests prove the default sandbox resolves under ONEX_STATE_DIR/ONEX_STATE_ROOT in
+      runtime while preserving the relative default when no runtime state env is present.
+    source: "manual"
+    status: "verified"
+    checks:
+      - check_type: "command"
+        check_value: >-
+          grep -q '^status: PASS$' "$CONTRACT_REPO_DIR/drift/dod_receipts/OMN-12820/dod-state-sandbox-focused-tests/command.yaml"
+  - id: "dod-state-sandbox-suite"
+    description: >-
+      The broader node_generation_consumer unit suite, focused Ruff checks, and strict mypy typecheck
+      remain green after moving the generated executor default sandbox under runtime state.
+    source: "manual"
+    status: "verified"
+    checks:
+      - check_type: "command"
+        check_value: >-
+          grep -q '^status: PASS$' "$CONTRACT_REPO_DIR/drift/dod_receipts/OMN-12820/dod-state-sandbox-suite/command.yaml"
+  - id: "dod-state-sandbox-deploy-assessment"
+    description: >-
+      Deployment is required after omnimarket PR #1132 merges because stability-test must rebuild onto
+      the runtime-state sandbox fix before generated-node-invoked evidence can be trusted.
+    source: "manual"
+    status: "verified"
+    checks:
+      - check_type: "command"
+        check_value: >-
+          grep -q '^status: PASS$' "$CONTRACT_REPO_DIR/drift/dod_receipts/OMN-12820/dod-state-sandbox-deploy-assessment/command.yaml"

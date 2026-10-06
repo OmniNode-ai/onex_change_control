@@ -1,0 +1,101 @@
+---
+schema_version: "1.0.0"
+ticket_id: "OMN-12964"
+title: "P1.7: Quality-gate calibration — graded delegation score + prose document DoD + calibration CI
+  ratchet"
+summary: >
+  The delegation quality gate (node_delegation_quality_gate_reducer.delta) scored 0.000 on the document
+  task on BOTH tiers (live CID a604cd40), making the quality signal useless for Experiments 1-3 (OMN-12944
+  / P0.2) — a scoring artifact masqueraded as an ON/OFF effect. Root cause was two compounding defects:
+  (1) a degenerate scorer — quality_score collapsed to {0.0, 1.0}: ANY failing DoD check forced 0.0 and
+  only a full pass returned 1.0, so a near-perfect output and an outright refusal scored identically;
+  (2) a DoD-definition defect — the `document` task class declared code-docstring checks (docstring_present,
+  follows_google_style, covers_args_returns_raises) that a prose document never satisfies, hard-failing
+  docstring_present deterministically. Fix introduces a graded band-weighted quality_score (fraction of
+  DoD checks satisfied, deterministic band 0.6 > heuristic 0.4) while preserving the binary passed / fail_category
+  gate (deterministic failure still hard-blocks injection), and reassigns the `document` task class to
+  prose checks (response_non_empty + accurate) — the docstring DoD stays on the `documentation` task class.
+  Enforcement ratchet: scripts/ci/run_quality_gate_calibration.py scores a known-good/known-bad corpus
+  through the real delta() and FAILs CI on degenerate distribution, narrow score range, weak good-vs-bad
+  margin, band overlap, or corpus-vs-shipped DoD drift; wired as a required step in .github/workflows/ci.yml.
+  No topic schema, envelope wire, or contract API change.
+is_seam_ticket: false
+interface_change: false
+interfaces_touched: []
+emergency_bypass:
+  enabled: false
+  justification: ""
+  follow_up_ticket_id: ""
+dod_evidence:
+  - id: "dod-omnimarket-pr-1173"
+    description: >
+      omnimarket PR #1173 carries the graded quality-gate score (handler_quality_gate._graded_quality_score),
+      the corrected `document` task-class DoD in task_class_contracts.v1.yaml, the calibration corpus
+      (tests/unit/delegation/quality_gate_calibration_corpus.yaml), the enforcement gate (scripts/ci/run_quality_gate_calibration.py),
+      its CI wiring, and the committed proof packet under docs/evidence/OMN-12964/. Evidence anchor: omnimarket
+      branch head commit a3a1d8e08. mypy --strict clean (2324 files); 36 focused quality-gate tests pass;
+      calibration gate PASS with 7 distinct scores spanning the full 0.0-1.0 range, mean(good)=1.0 vs
+      mean(bad)=0.543, no band overlap.
+    source: "manual"
+    checks:
+      - check_type: "command"
+        check_value: "grep -Eq '^status: \"?PASS\"?$' drift/dod_receipts/OMN-12964/dod-omnimarket-pr-1173/command.yaml
+          && grep -q '^pr_number: 1173$' drift/dod_receipts/OMN-12964/dod-omnimarket-pr-1173/command.yaml
+          && grep -q 'run_quality_gate_calibration' drift/dod_receipts/OMN-12964/dod-omnimarket-pr-1173/command.yaml"
+  - id: "dod-occ-pr-2483"
+    description: >
+      Self-binding OCC eligibility receipt: onex_change_control PR #2483 carries the OMN-12964 contract
+      and the OMN-12964 dod receipts on this branch, satisfying the receipt-to-PR binding required by
+      validator_occ_merge_eligibility (at least one PASS receipt must bind to the OCC PR or one of its
+      commit SHAs).
+    source: "manual"
+    checks:
+      - check_type: "command"
+        check_value: "grep -Eq '^status: \"?PASS\"?$' drift/dod_receipts/OMN-12964/dod-occ-pr-2483/command.yaml
+          && grep -q '^pr_number: 2483$' drift/dod_receipts/OMN-12964/dod-occ-pr-2483/command.yaml"
+  - id: "dod-deploy-assessment"
+    description: >
+      Deploy assessment: omnimarket PR #1173 changes a pure reducer scoring function, a config contract
+      (task_class_contracts.v1.yaml), a CI script, and test/doc artifacts. No runtime topology, Kafka
+      topic, envelope wire, or contract API change. The graded score reaches live delegation projections
+      only on the standard post-merge stability image rebuild, which is BATCHED by the orchestrator behind
+      the in-flight P0.1/P0.1c verifications; no live dev/stability/prod mutation is performed by this
+      PR. The batch rebuild must verify that a live `document`-class delegation at the prior failing CID
+      surfaces a non-zero, graded quality_score in the delegation projection (no longer 0.000 on both
+      tiers).
+    source: "manual"
+    checks:
+      - check_type: "command"
+        check_value: "gh api repos/OmniNode-ai/omnimarket/pulls/1173/files --jq '.[].filename' | grep
+          -q 'run_quality_gate_calibration' && echo 'deploy: pure reducer + config + CI gate + test/doc
+          only; graded score reaches projections on batched post-merge stability rebuild; no prod mutation'"
+  - id: "dod-omnimarket-pr-1195"
+    description: >-
+      omnimarket PR #1195 (M2.4 follow-through) fixes quality-gate per-class margins by adding min_length_chars_200
+      to the document heuristic DoD, min_length_chars_50 to documentation, and min_length_chars_100 to
+      summarization in task_class_contracts.v1.yaml. Corpus bad cases updated so each class has max_bad
+      scoring set (doc_prose_refusal updated to fail accurate, summary_uncertain updated to fail no_refusal).
+      New ratchet test test_per_class_margin_meets_threshold (_MIN_PER_CLASS_MARGIN=0.3) locks the per-class
+      floor. Post-fix margins: document=0.400, documentation=0.300, summarization=0.300. ruff/pre-commit
+      clean; 5 calibration tests pass; 171 delegation unit tests pass; calibration harness PASS with distinct=[0.1,
+      0.267, 0.3, 0.6, 0.7, 0.867, 0.9, 1.0] range=0.9 mean_good=1.0 mean_bad=0.467. Evidence anchor:
+      omnimarket HEAD commit dd2e2a761085494847a1718c6a50378a881720aa. Fence: no node_generation_consumer
+      src touched.
+    source: "manual"
+    status: "verified"
+    checks:
+      - check_type: "command"
+        check_value: >-
+          grep -q '^status: PASS$' "$CONTRACT_REPO_DIR/drift/dod_receipts/OMN-12964/dod-omnimarket-pr-1195/command.yaml"
+          && grep -q '^pr_number: 1195$' "$CONTRACT_REPO_DIR/drift/dod_receipts/OMN-12964/dod-omnimarket-pr-1195/command.yaml"
+  - id: "dod-occ-pr-2564"
+    description: >-
+      Self-binding OCC eligibility receipt: onex_change_control PR #2564 carries the OMN-12964 M2.4 contract
+      extension and dod receipts on this branch, satisfying the receipt-to-PR binding required by validator_occ_merge_eligibility
+      (at least one PASS receipt must bind to the OCC PR or one of its commit SHAs).
+    source: "manual"
+    status: "verified"
+    checks:
+      - check_type: "command"
+        check_value: "grep -Eq '^status: PASS$' drift/dod_receipts/OMN-12964/dod-occ-pr-2564/command.yaml
+          && grep -q '^pr_number: 2564$' drift/dod_receipts/OMN-12964/dod-occ-pr-2564/command.yaml"

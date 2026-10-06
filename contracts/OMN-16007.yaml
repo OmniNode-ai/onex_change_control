@@ -1,0 +1,85 @@
+---
+schema_version: "1.0.0"
+ticket_id: "OMN-16007"
+title: "OCC CI Summary — replace needs-gated aggregator with fail-closed no-needs poller"
+summary: "Replaces onex_change_control's needs:-gated CI Summary aggregator (dev's sole umbrella required
+  context) with the proven no-needs poller pattern in scripts/ci/ci_summary_gate.py: L1 STRICT_GATE_JOBS
+  (present+completed+success only), L2 SKIPPABLE_GATE_JOBS re-derived from each job's own if:, L3 default-deny
+  sweep over every other in-run job behind a reason-carrying SOFT_ALLOWLIST, and L4 EXPECTED_EXTERNAL_CONTEXTS
+  asserted against the PR head's commits/{sha}/check-runs. Closes two live defects: the contract-compliance
+  needs-graph omission (a PR merged with Contract Compliance Check = failure and CI Summary = success
+  on the same head SHA) and the skip-as-pass class (12 jobs carried an undocumented base_ref != 'dev'
+  clause that skipped them on every dev-targeting PR while the generic rollup read skipped as passing).
+  Also closes the verifier-reproduced zone-filter fail-open: zone-filter sat in SOFT_ALLOWLIST while all
+  12 docs_only-tier SKIPPABLE jobs need: it, so a FAILED zone-filter cascaded them all to tolerated-skipped
+  and the gate returned SUCCESS with zero tests and zero type-checks having run. zone-filter is now in
+  a reason-carrying CLASSIFICATION_ONLY bucket — accounted for by the completeness test, still swept by
+  L3. Self-authored by the implementer for this ticket's OWN carrier PR #6435 (not a companion pattern)
+  — a self-contained, gate-mechanical change, per the repo convention this contract's OMN-15710 precedent
+  established."
+is_seam_ticket: false
+interface_change: false
+interfaces_touched: []
+evidence_requirements:
+  - kind: "ci"
+    description: "OCC PR CI checks green"
+    command: "gh pr checks ${PR_NUMBER} --repo ${REPO}"
+emergency_bypass:
+  enabled: false
+  justification: ""
+  follow_up_ticket_id: ""
+dod_evidence:
+  - id: "dod-omn16007-ci-summary-gate-suite-pass"
+    description: "The full behavioral suite for the new fail-closed poller passes — strict/skippable/sweep/external
+      semantics, latest-attempt-wins, latest-check-run resolution, the red-replay fixture for the contract-compliance
+      needs-graph-omission incident, and the falsification control parametrized over every EXPECTED_EXTERNAL_CONTEXTS
+      entry. Falsifiable: reverting scripts/ci/ci_summary_gate.py while keeping the suite fails this exact
+      command."
+    source: "manual"
+    status: "verified"
+    checks:
+      - check_type: "command"
+        check_value: "uv run pytest tests/ci/test_ci_summary_gate.py -q"
+  - id: "dod-omn16007-classification-completeness"
+    description: "The completeness test parses every .github/workflows/*.yml, derives every job reachable
+      from a pull_request trigger against dev, and asserts that set equals STRICT union SKIPPABLE union
+      SOFT_ALLOWLIST union CLASSIFICATION_ONLY union EXTERNAL union EXEMPT. This is the anti-drift mechanism:
+      a newly added, unclassified job fails it. Falsifiable: adding an unclassified pull_request job to
+      any workflow file fails this exact command."
+    source: "manual"
+    status: "verified"
+    checks:
+      - check_type: "command"
+        check_value: "uv run pytest tests/ci/test_ci_summary_gate.py::test_every_pr_triggered_job_is_classified
+          -q"
+  - id: "dod-omn16007-zone-filter-fail-open-closed"
+    description: "Regression pin for the verifier-reproduced zone-filter fail-open, parametrized over
+      both name shapes GitHub surfaces for a reusable caller (bare id, and '<caller> / <inner job>').
+      Drives the real evaluate() against a snapshot where zone-filter FAILED and all 12 docs_only-tier
+      SKIPPABLE jobs cascaded to skipped, and asserts exit 1. Proven RED against the pre-fix SOFT_ALLOWLIST
+      and GREEN after the fix — see the receipt's actual_output for the recorded differential."
+    source: "manual"
+    status: "verified"
+    checks:
+      - check_type: "command"
+        check_value: "uv run pytest tests/ci/test_ci_summary_gate.py::test_failed_zone_filter_cascade_is_not_a_vacuous_success
+          -q"
+  - id: "dod-omn16007-skip-vectors-removed"
+    description: "Anti-regression pin that regex-scans every workflow file for the base_ref-vs-dev exemption
+      shape and asserts zero occurrences, so the 12 removed skip vectors cannot be silently re-added.
+      Falsifiable: re-adding a single base_ref exemption clause to any job fails this exact command."
+    source: "manual"
+    status: "verified"
+    checks:
+      - check_type: "command"
+        check_value: "uv run pytest tests/ci/test_ci_summary_gate.py::test_no_job_carries_a_base_ref_dev_exemption
+          -q"
+  - id: "occ-self-bind-pr-6435"
+    description: "Self-bind: OCC PR 6435 is this ticket's own carrier PR, proven by its own file list
+      containing scripts/ci/ci_summary_gate.py — the gate module this ticket introduces."
+    source: "manual"
+    status: "verified"
+    checks:
+      - check_type: "command"
+        check_value: "gh pr view 6435 --repo OmniNode-ai/onex_change_control --json files --jq '.files[].path'
+          | grep -cxF 'scripts/ci/ci_summary_gate.py'"

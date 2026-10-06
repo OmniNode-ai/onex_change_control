@@ -1,0 +1,78 @@
+---
+schema_version: "1.0.0"
+ticket_id: "OMN-13356"
+evidence_item_id: "dod-omnimarket-pr-1323"
+check_type: "command"
+check_value: "uv run pytest tests/test_golden_chain_tool_reuse_short_circuit_real_bus.py tests/unit/nodes/node_generation_consumer/
+  tests/test_no_cross_node_reach_in.py -m 'not kafka' -q"
+status: PASS
+run_timestamp: "2026-06-20T19:24:00Z"
+commit_sha: "833a0f9903bd43a7b3617a00de564ce63955bab8"
+runner: "claude-omn13356-wire-tool-reuse-worker"
+verifier: "claude-receipt-review"
+contract_sha256: "sha256:f86d2c9b8b41fadd76ea568b36591cfc75e5bf9c2fb2dd8abec72dddbab321b2"
+branch: "jonah/omn-13356-wire-tool-reuse-into-generation"
+working_dir: "/Users/jonah/Code/omni_home/omni_worktrees/OMN-13356/omnimarket"
+pr_number: 1323
+probe_command: "uv run pytest tests/test_golden_chain_tool_reuse_short_circuit_real_bus.py tests/unit/nodes/node_generation_consumer/test_generation_rides_ladder_omn13359.py
+  tests/test_no_cross_node_reach_in.py -m 'not kafka' -q --no-header -p no:cacheprovider"
+probe_stdout: |
+  ...........                                                              [100%]
+  11 passed in 1.29s
+actual_output: |
+  omnimarket PR #1323 FINISHES OMN-13356 by wiring node_tool_reuse_matcher_compute
+  (landed unwired in #1311) into node_generation_consumer. 5 files changed
+  (+705 / -5):
+    - node_generation_consumer/contract.yaml: declare the match-request command
+      (publish) onex.cmd.omnimarket.tool-reuse-match-requested.v1 and the verdict
+      terminals (subscribe) onex.evt.omnimarket.tool-reuse-matched.v1 /
+      .tool-reuse-no-match.v1. Topics resolved from contract, never hardcoded.
+    - handler_generation_consumer.py: injectable bus event_consumer (same shape
+      node_context_roi_runner uses) + _try_tool_reuse_short_circuit pre-check run
+      BEFORE any LLM work. SEMANTIC strategy (the contract signature is unknown
+      pre-generation, so the matcher's lexical path over the task description is the
+      only honest strategy). A dedicated UUID correlates the request/verdict
+      round-trip; the human-facing generation correlation_id is preserved. On
+      MATCHED: emit a reuse benchmark (contract_passed=True, reused_tool_id set,
+      zero attempts/cost), publish it on the bus, record the replay marker, skip
+      deploy/register (the reused tool already exists). Fail-open: timeout /
+      NO_MATCH / no matcher wired all proceed to fresh generation.
+    - model_generation.py: additive reused_tool_id field on ModelGenerationBenchmark.
+    - node_delegation_routing_reducer/handlers/handler_delegation_routing.py:
+      re-export ModelRoutingDecision from the routing-authority handler module
+      (__all__) so the consumer annotates against the authority surface instead of
+      reaching into the reducer's private models package — clears the cross-node
+      model reach-in guard violation introduced by the OMN-13359 ladder import
+      (the allowlist was at its baseline=84 cap, so the reach-in had to be
+      eliminated, not allowlisted).
+    - tests/test_golden_chain_tool_reuse_short_circuit_real_bus.py: a REAL
+      bus-level golden chain (EventBusInmemory transport, real HandlerToolReuseMatcher
+      over a real InMemoryGeneratedToolRegistry subscribed to the contract-declared
+      request topic, real HandlerGenerationConsumer driven over bus-backed sync
+      adapters via run_coroutine_threadsafe). NOT a handler-isolation in-process
+      call (memory feedback_real_dispatch_path_tests). Proves: MATCHED ->
+      short-circuit (reused_tool_id set, attempt_count==0, LLM effect NEVER called,
+      matched verdict on the bus, command published); NO_MATCH -> generation runs
+      (LLM effect called once, no-match verdict on the bus); empty registry ->
+      generation runs.
+  Verification on the omnimarket worktree (head 833a0f99):
+    - Full suite: uv run pytest tests/ -m "not kafka" (no -k) -> 7697 passed,
+      62 skipped.
+    - Focused: golden chain + generation consumer unit suite + cross-node reach-in
+      guard -> 11 passed (probe above; reach-in guard PASS); OMN-13359 ladder tests
+      pass; delegation routing reducer suite 73 passed.
+    - mypy --strict on changed handlers + models + test: Success, no issues.
+    - ruff format + ruff check: clean.
+    - scripts/ci/run_runtime_sweep.py: 316/316 entry points OK.
+    - scripts/ci/check_node_metadata_dependencies.py: PASS;
+      check_no_hardcoded_topics.py: OK; tests/test_demo_runtime_path.py: PASS.
+    - pre-commit run --files <staged>: 0 failures (node-purity, no-hardcoded-topics,
+      topic-naming-lint, routing-authority-demo-gate, golden-chain-coverage-gate,
+      delegation env-read gate, ...).
+  Verifier (claude-receipt-review, distinct from the runner) re-ran the focused
+  suite and confirmed 11 passed; probe_stdout above is the verifier's captured
+  output. No prod / judge / stability / dev lane was started, restarted, deployed,
+  or mutated — this is a bus-wiring change, deploy-equivalent proof is the runtime
+  sweep (316/316) plus the real-bus golden chain.
+exit_code: 0
+duration_ms: 1290

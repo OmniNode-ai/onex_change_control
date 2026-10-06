@@ -1,0 +1,53 @@
+---
+schema_version: 1.0.0
+ticket_id: OMN-16493
+evidence_item_id: dod-omn16493-ac2-uuid-col-cast-readback
+check_type: command
+check_value: |
+  gh api 'repos/OmniNode-ai/omnibase_infra/contents/docker/migrations/forward/nodes/node_projection_delegation/0037_delegation_events_uuid_mixed_representation_guard_before_set_role.sql?ref=3dfe23e5e5e41f6b0c8a7501e0a6883e2dbd0a42' --jq '.content' | base64 -d | grep -c 'ALTER COLUMN tenant_id TYPE UUID'
+contract_sha256: sha256:4a0c6e9ce31e4afbb935bf3b4d9b17415cabdf6c37a962841d198f988fa89105
+contract_entry_sha256: sha256:a4f76d82737a3b093c1c719bbacf496373231d1c9b7826a2e87e5852c579dc48
+status: PASS
+run_timestamp: '2026-09-10T02:04:45Z'
+commit_sha: 3dfe23e5e5e41f6b0c8a7501e0a6883e2dbd0a42
+runner: claude-local-worktree
+verifier: omn16493-ac6-readback-close
+probe_command: |
+  gh api 'repos/OmniNode-ai/omnibase_infra/contents/docker/migrations/forward/nodes/node_projection_delegation/0037_delegation_events_uuid_mixed_representation_guard_before_set_role.sql?ref=3dfe23e5e5e41f6b0c8a7501e0a6883e2dbd0a42' --jq '.content' | base64 -d | grep -c 'ALTER COLUMN tenant_id TYPE UUID'
+probe_stdout: |
+  2
+actual_output: |
+  PASS. AC2 -- post-apply live readback showing the column is uuid and the policy predicate carries the
+  ::uuid cast. Read-only, 2026-09-10, DEV-SYSTEM instance i-06169517a92b45f86, `aws ssm send-command
+  --comment omn16493-ac6-readback-close`, through the pod that actually serves
+  (onex-api-65566495dd-kp4fg, container onex-api) on its own OMNIDASH_ANALYTICS_DB_URL.
+
+  The DSN was resolved and printed host-only BEFORE connecting, because a pod-local masquerade would
+  invalidate the reading:
+
+    DSN_HOST omninode-dev-postgres.cqjkkokeaqd2.us-east-1.rds.amazonaws.com PORT 5432
+    DB omnidash_analytics USER role_omnidash
+    --WHOAMI--
+    role_omnidash omnidash_analytics 10.40.160.37 PostgreSQL 16.13
+    --BYPASSRLS--
+    role_omnidash False False
+
+  That is the managed RDS instance, read under FORCE RLS as a non-superuser with rolbypassrls = f --
+  the same posture a tenant-scoped caller has.
+
+    --COLTYPE--   delegation_events.tenant_id   uuid   NO        (data_type uuid, is_nullable NO)
+    --RLS--       relrowsecurity True  relforcerowsecurity True
+    --POLICY--    tenant_isolation  (tenant_id = (current_setting('app.tenant_id'::text, true))::uuid)
+
+  The pre-apply state recorded in this ticket's own body was `text` with the uncast predicate
+  `tenant_isolation (tenant_id = current_setting('app.tenant_id'::text, true))`. Both the type and the
+  cast changed.
+
+  EXECUTION SCOPE: the readback targets a private VPC instance reachable only over SSM and is not
+  re-executable from a CI runner. The transcript above is the receipt; the checks are the re-executable
+  half -- the merged 0037 SQL declares both halves of what was read back (ALTER COLUMN tenant_id TYPE
+  UUID, and the restated policy carrying ::uuid on USING and WITH CHECK) and its merge sha is an
+  ancestor of omnibase_infra dev, so the bundle the Job pulled carries it.
+exit_code: 0
+pr_number: 3340
+branch: dev

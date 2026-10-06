@@ -1,0 +1,63 @@
+---
+schema_version: "1.0.0"
+ticket_id: "OMN-13554"
+title: "Subscription probe discovers live per-topic split-groups instead of stale monolithic group name"
+summary: >-
+  The contract-sweep subscription probe (omnibase_infra.verification.probes.probe_subscription) derived
+  the legacy monolithic consumer-group name local.runtime_config.registration-orchestrator.consume.1.0.0
+  from a stale runtime_config.yaml identity. That group no longer exists on the broker: the live runtime
+  subscribes via per-topic split-groups under a different base name (local.omnibase_infra.node_registration_orchestrator.consume.1.1.1.__i.<instance>.__t.<topic>),
+  so the probe reported a recurring false "7/7 missing subscriptions" FAIL for node_registration_orchestrator.
+  The same false FAIL was auto-filed and closed repeatedly (OMN-9420, OMN-9557, OMN-9648) as a runtime-wiring
+  gap; the actual root cause is the probe's expected group name not matching the runtime's current per-topic
+  split-group scheme. This change makes probe_subscription discover the runtime's actual per-topic split-groups
+  by contract name and parse each topic directly from the live group name (resilient to instance/version/service-name
+  drift); _rpk_fallback falls through to that discovery when the derived base group does not exist on
+  the broker. A probe unit test pins the per-topic split-group naming so a future convention change fails
+  the test rather than silently re-emitting a false FAIL. This OCC PR carries the central contract consumed
+  by the omnibase_infra PR Receipt Gate via Evidence-Source.
+is_seam_ticket: false
+interface_change: false
+interfaces_touched: []
+emergency_bypass:
+  enabled: false
+  justification: ""
+  follow_up_ticket_id: ""
+dod_evidence:
+  - id: "dod-001"
+    description: >-
+      The subscription probe discovers the runtime's actual per-topic split-group names (...__i.<instance>.__t.<topic>)
+      rather than the legacy monolithic local.runtime_config.registration-orchestrator.consume.1.0.0.
+      New probe unit tests assert the per-topic split-group naming is matched (TestTopicFromSplitGroupName,
+      TestDiscoverSplitGroupTopics) and that the stale-base-group scenario falls through to contract-name
+      discovery and resolves PASS (TestRpkFallbackDiscoversSplitGroupsByContract), so a future convention
+      change fails the test rather than silently re-emitting a false FAIL. The full verification unit
+      suite (437 tests) stays green; ruff + mypy --strict clean on the changed source.
+    source: "manual"
+    status: "verified"
+    checks:
+      - check_type: "command"
+        check_value: "grep -q 'PASS' drift/dod_receipts/OMN-13554/dod-001/command.yaml"
+  - id: "dod-live"
+    description: >-
+      Live proof against the dev-lane broker (192.168.86.201, project omnibase-infra): the new discovery
+      resolves all 7 contract-declared subscribe_topics from the real per-topic split-groups (479 live
+      consumer groups captured from the broker via rpk group list; zero declared topics missing), and
+      check_subscriptions returns 7/7 PASS even with the stale runtime_config EXACT identity that previously
+      produced the false 7/7-missing FAIL. Verifier (claude-code-review) is distinct from the runner (the
+      live broker on .201).
+    source: "manual"
+    status: "verified"
+    checks:
+      - check_type: "command"
+        check_value: "grep -q 'PASS' drift/dod_receipts/OMN-13554/dod-live/command.yaml"
+  - id: "dod-occ-pr"
+    description: >-
+      Self-binding receipt for this OCC PR, which carries the central contract consumed by the omnibase_infra
+      PR Receipt Gate via Evidence-Source. The probe greps the OCC tree and proves contracts/OMN-13554.yaml
+      is present with ticket_id OMN-13554.
+    source: "manual"
+    status: "verified"
+    checks:
+      - check_type: "command"
+        check_value: "grep -c '^ticket_id: \"OMN-13554\"$' contracts/OMN-13554.yaml"

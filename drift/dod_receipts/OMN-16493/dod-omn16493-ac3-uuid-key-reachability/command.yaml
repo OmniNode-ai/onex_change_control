@@ -1,0 +1,69 @@
+---
+schema_version: 1.0.0
+ticket_id: OMN-16493
+evidence_item_id: dod-omn16493-ac3-uuid-key-reachability
+check_type: command
+check_value: |
+  gh api 'repos/OmniNode-ai/omnibase_infra/contents/docker/migrations/forward/nodes/node_projection_delegation/0037_delegation_events_uuid_mixed_representation_guard_before_set_role.sql?ref=3dfe23e5e5e41f6b0c8a7501e0a6883e2dbd0a42' --jq '.content' | base64 -d | grep -c 'm.tenant_uuid::text = d.tenant_id'
+contract_sha256: sha256:4a0c6e9ce31e4afbb935bf3b4d9b17415cabdf6c37a962841d198f988fa89105
+contract_entry_sha256: sha256:a3819d429c0e915cf67954d828cbea76b7543641dede764f09d98ae560952715
+status: PASS
+run_timestamp: '2026-09-10T02:04:45Z'
+commit_sha: 3dfe23e5e5e41f6b0c8a7501e0a6883e2dbd0a42
+runner: claude-local-worktree
+verifier: omn16493-ac6-readback-close
+probe_command: |
+  gh api 'repos/OmniNode-ai/omnibase_infra/contents/docker/migrations/forward/nodes/node_projection_delegation/0037_delegation_events_uuid_mixed_representation_guard_before_set_role.sql?ref=3dfe23e5e5e41f6b0c8a7501e0a6883e2dbd0a42' --jq '.content' | base64 -d | grep -c 'm.tenant_uuid::text = d.tenant_id'
+probe_stdout: |
+  3
+actual_output: |
+  PASS. AC3 -- the UUID key resolves the beta tenant's rows, and no row was orphaned by the conversion.
+  Same read-only session as AC2.
+
+    set_config('app.tenant_id','91c74442-1233-4c97-b191-911a10346fdf') then count(*)  ->  198
+    (0 before the apply, per this ticket's own defect probe)
+
+  Split on the apply instant 2026-09-09T01:09:18.051491Z: 179 of those rows were written BEFORE the
+  cutover -- the converted population, the rows the slug key used to answer for -- and 19 after, by the
+  live writer.
+
+  The criterion's literal form (count-equal against the slug count taken immediately before the apply)
+  is NOT re-derivable eight hours later against a live writer. Saying so is the honest reading. The
+  count-equal half is discharged exactly, on AC4's tenant, whose population is frozen at 43.
+
+  ON PRIMARY-KEY EQUALITY: a literally RLS-bypassing ground-truth query is available to NO identity
+  this lane may use. pg_roles reports exactly one role on the instance with rolbypassrls -- rdsadmin --
+  and it is RDS-internal. The substitute is total reachability, and it is stronger than a spot check:
+
+    beta-business-proof              91c74442-1233-4c97-b191-911a10346fdf   198
+    omninode                         820272f9-4aaf-5add-a2df-0af942852ab2    43
+    omn18011-proof-20260906205608    f157eaa4-2b50-4df9-bdae-14f815815d66     4
+    beta-refusal-probe-b             a64840b6-17c8-479c-823b-3cfef8e8a31e     1
+    c19-synth-b-20260909             d7c18755-30a3-4918-a9a7-c5a5b136ee1b     1
+    d5-e2e-0b5ae67c                  18ae3951-376b-4400-af83-c34a137bfda1     1
+    delegation-spotcheck-1786977419  7e7e6e72-1a02-4a66-a98a-dae317e72e00     1
+    t-1lostguy1                      e9c62089-2fe8-4190-8fc2-1c40b757b7b1     1
+    SUM_OVER_ALL_MIRROR_TENANTS 250   DISTINCT_PK 250   N_LIVE_TUP 250
+
+  All 18 tenant_registry_mirror rows were enumerated; 8 are non-empty. Sum, distinct-primary-key count
+  and the table's own pg_stat_user_tables.n_live_tup agree at 250, so every row in the table is
+  reachable under some canonical UUID key and none is stranded. t-1lostguy1 is the externally-owned
+  customer whose row 0034's ELSE-less CASE would have turned to NULL; it resolves.
+
+  THREE NEGATIVE CONTROLS, same session:
+    set_config('app.tenant_id','beta-business-proof') -> InvalidTextRepresentation
+        invalid input syntax for type uuid: "beta-business-proof"
+    set_config('app.tenant_id','omninode')            -> same error
+    an unmapped all-zero UUID                          -> 0 rows
+    no app.tenant_id set at all                        -> 0 rows
+  The slug keys that used to work are now rejected by the cast, which is the conversion being real
+  rather than a widened predicate.
+
+  Re-executable half: 0037 resolves identity on BOTH representations
+  (m.tenant_slug = d.tenant_id OR m.tenant_uuid::text = d.tenant_id), which is what lets a
+  mixed-representation column convert without stranding rows. Check 2 is the negative control at 0034's
+  own merge sha 53ff3bbb9, where that second predicate is absent entirely (count 0) -- so the 250/250
+  reachability could not have come from 0034.
+exit_code: 0
+pr_number: 3340
+branch: dev

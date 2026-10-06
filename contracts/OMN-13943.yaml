@@ -1,0 +1,139 @@
+---
+schema_version: "1.0.0"
+ticket_id: OMN-13943
+title: "fix(delegation): bus-less local dispatch treats retryable transport failures (429/timeout) as
+  terminal instead of escalating tier_order"
+summary: >
+  LocalDelegationDispatchPort.dispatch() (the bus-less `onex delegate` CLI path) treated every transport/timeout
+  failure as terminal, even a retryable one (429/timeout/model-unavailable), so a GLM RATE_LIMITED on
+  the cheap_cloud tier terminated the whole delegation instead of falling through to the next tier. Fixed
+  by classifying the effect result's failure_class and routing retryable failures through the same up-tier
+  escalation the quality-gate-FAIL branch already uses, bounded by max_escalations. Also fixes two independent
+  secret-name-drift bugs (Gemini/OpenRouter dotted secret_ref never matching the canonical ~/.omnibase/.env
+  vars) via a contract-declared env_var_fallback, and makes cheap_frontier (OpenRouter, free tier) reachable
+  in code_generation's escalation_policy.tier_order. Live-proven: Gemini completes a real gemini-2.5-flash-lite
+  call end-to-end; OpenRouter's secret resolves and the real HTTP call reaches openrouter.ai (genuine
+  external free-tier 429, orthogonal to this fix).
+is_seam_ticket: false
+interface_change: true
+interfaces_touched:
+  - "public_api"
+evidence_requirements:
+  - kind: "tests"
+    description: "Escalation-loop retryable/non-retryable/bounded-no-infinite-loop tests pass"
+    command: "grep -q '^status: PASS$' drift/dod_receipts/OMN-13943/dod-escalation-tests/command.yaml"
+  - kind: "tests"
+    description: "env_var_fallback secret-resolution tests pass"
+    command: "grep -q '^status: PASS$' drift/dod_receipts/OMN-13943/dod-secret-fallback-tests/command.yaml"
+  - kind: "tests"
+    description: "Full omnimarket suite passes (only pre-existing infra-dependent / contention-sensitive
+      tests fail, unrelated to this diff)"
+    command: "grep -q '^status: PASS$' drift/dod_receipts/OMN-13943/dod-full-suite/command.yaml"
+  - kind: "ci"
+    description: "Ruff + mypy --strict pass on touched omnimarket source files"
+    command: "grep -q '^status: PASS$' drift/dod_receipts/OMN-13943/dod-lint-typecheck/command.yaml"
+  - kind: "manual"
+    description: "Live cloud completion: Gemini completes a real end-to-end call via the canonical GEMINI_API_KEY"
+    command: "grep -q '^status: PASS$' drift/dod_receipts/OMN-13943/dod-live-cloud-completion/command.yaml"
+  - kind: "manual"
+    description: "omnimarket PR #1614 carries the OMN-13943 contract + handler + config + test changes"
+    command: "grep -q '^status: PASS$' drift/dod_receipts/OMN-13943/dod-omnimarket-pr/command.yaml"
+  - kind: "manual"
+    description: "onex_change_control PR #3606 carries this OMN-13943 contract and receipt set"
+    command: "grep -q '^status: PASS$' drift/dod_receipts/OMN-13943/dod-occ-pr-3606/command.yaml"
+  - kind: "manual"
+    description: "Deploy-gate scope: dev/stability-lane redeploy is pre-authorized, no out-of-band deploy
+      required"
+    command: "grep -q '^status: PASS$' drift/dod_receipts/OMN-13943/dod-deploy-scope/command.yaml"
+emergency_bypass:
+  enabled: false
+  justification: ""
+  follow_up_ticket_id: ""
+dod_evidence:
+  - id: "dod-escalation-tests"
+    description: >
+      test_local_dispatch_escalation_omn13849.py: a retryable transport failure (e.g. MODEL_UNAVAILABLE)
+      on tier N escalates to tier N+1 and completes; a non-retryable failure_class (PROVIDER_AUTH_FAILED)
+      stays terminal without escalating; a retryable failure on EVERY tier is bounded by ladder exhaustion
+      (max_escalations=5, 3-tier ladder) and never loops infinitely.
+    source: "manual"
+    checks:
+      - check_type: "command"
+        check_value: "grep -q '^status: PASS$' drift/dod_receipts/OMN-13943/dod-escalation-tests/command.yaml
+          && grep -q '^ticket_id: OMN-13943$' drift/dod_receipts/OMN-13943/dod-escalation-tests/command.yaml
+          && grep -q '^evidence_item_id: dod-escalation-tests$' drift/dod_receipts/OMN-13943/dod-escalation-tests/command.yaml"
+  - id: "dod-secret-fallback-tests"
+    description: >
+      test_secret_store_resolver.py: env_var_fallback resolves when the primary dotted secret_ref convention
+      misses, is never consulted when the primary ref already resolves, and a truly-absent fallback still
+      fails closed (no silent default). api_key_ref_available honors the same fallback for routing-tier
+      eligibility checks.
+    source: "manual"
+    checks:
+      - check_type: "command"
+        check_value: "grep -q '^status: PASS$' drift/dod_receipts/OMN-13943/dod-secret-fallback-tests/command.yaml
+          && grep -q '^ticket_id: OMN-13943$' drift/dod_receipts/OMN-13943/dod-secret-fallback-tests/command.yaml
+          && grep -q '^evidence_item_id: dod-secret-fallback-tests$' drift/dod_receipts/OMN-13943/dod-secret-fallback-tests/command.yaml"
+  - id: "dod-full-suite"
+    description: >
+      Full omnimarket pytest suite: 11951 passed, 54 skipped, 9 deselected. 8 failures are pre-existing
+      and unrelated: 4 are test_datasource_postgres.py live-DB integration tests requiring a running Postgres;
+      4 are real-subprocess/spawn timing tests (test_local_dispatch_cli_hang_omn13597, test_local_dispatch_fork_safety_omn13842,
+      test_codex_runtime_client, node_pr_lifecycle_orchestrator/test_main_cli) that time out under this
+      shared dev Mac's concurrent-agent CPU contention (load avg 20-26 observed from unrelated background
+      sessions during the run) and pass individually in isolation.
+    source: "manual"
+    checks:
+      - check_type: "command"
+        check_value: "grep -q '^status: PASS$' drift/dod_receipts/OMN-13943/dod-full-suite/command.yaml
+          && grep -q '^ticket_id: OMN-13943$' drift/dod_receipts/OMN-13943/dod-full-suite/command.yaml
+          && grep -q '^evidence_item_id: dod-full-suite$' drift/dod_receipts/OMN-13943/dod-full-suite/command.yaml"
+  - id: "dod-lint-typecheck"
+    description: "Ruff format + check clean; mypy --strict clean on all touched omnimarket source files"
+    source: "manual"
+    checks:
+      - check_type: "command"
+        check_value: "grep -q '^status: PASS$' drift/dod_receipts/OMN-13943/dod-lint-typecheck/command.yaml
+          && grep -q '^ticket_id: OMN-13943$' drift/dod_receipts/OMN-13943/dod-lint-typecheck/command.yaml
+          && grep -q '^evidence_item_id: dod-lint-typecheck$' drift/dod_receipts/OMN-13943/dod-lint-typecheck/command.yaml"
+  - id: "dod-live-cloud-completion"
+    description: >
+      test_live_cloud_completion_omn13943.py (opt-in, OMN_ALLOW_LIVE_CLOUD_DELEGATION=1): HandlerLlmDelegationCall
+      completes a real gemini-2.5-flash-lite summarization call end-to-end using only the canonical GEMINI_API_KEY
+      env var (no code-level alias).
+    source: "manual"
+    checks:
+      - check_type: "command"
+        check_value: "grep -q '^status: PASS$' drift/dod_receipts/OMN-13943/dod-live-cloud-completion/command.yaml
+          && grep -q '^ticket_id: OMN-13943$' drift/dod_receipts/OMN-13943/dod-live-cloud-completion/command.yaml
+          && grep -q '^evidence_item_id: dod-live-cloud-completion$' drift/dod_receipts/OMN-13943/dod-live-cloud-completion/command.yaml"
+  - id: "dod-omnimarket-pr"
+    description: "omnimarket PR #1614 carries the OMN-13943 contract + handler + config + test changes"
+    source: "manual"
+    checks:
+      - check_type: "command"
+        check_value: "grep -q '^status: PASS$' drift/dod_receipts/OMN-13943/dod-omnimarket-pr/command.yaml
+          && grep -q '^ticket_id: OMN-13943$' drift/dod_receipts/OMN-13943/dod-omnimarket-pr/command.yaml
+          && grep -q '^pr_number: 1614$' drift/dod_receipts/OMN-13943/dod-omnimarket-pr/command.yaml"
+  - id: "dod-occ-pr-3606"
+    description: "onex_change_control PR #3606 carries this OMN-13943 contract and receipt set"
+    source: "manual"
+    checks:
+      - check_type: "command"
+        check_value: "grep -q '^status: PASS$' drift/dod_receipts/OMN-13943/dod-occ-pr-3606/command.yaml
+          && grep -q '^ticket_id: OMN-13943$' drift/dod_receipts/OMN-13943/dod-occ-pr-3606/command.yaml
+          && grep -q '^pr_number: 3606$' drift/dod_receipts/OMN-13943/dod-occ-pr-3606/command.yaml"
+  - id: "dod-deploy-scope"
+    description: >
+      This ticket changes omnimarket runtime-path handlers (node_llm_delegation_call_effect, node_delegation_routing_reducer)
+      that are shared by both the bus orchestrator and the bus-less local CLI path. Per CLAUDE.md, dev
+      + stability lanes are pre-authorized for redeploy with no approval gate; the normal post-merge redeploy
+      cadence on those lanes picks up this change. No out-of-band prod deploy is required or in scope
+      for OMN-13943 — prod promotion always requires a fresh, CODEOWNERS-approved grant (OMN-13418) that
+      is explicitly NOT being requested here.
+    source: "manual"
+    checks:
+      - check_type: "command"
+        check_value: "grep -q '^status: PASS$' drift/dod_receipts/OMN-13943/dod-deploy-scope/command.yaml
+          && grep -q '^ticket_id: OMN-13943$' drift/dod_receipts/OMN-13943/dod-deploy-scope/command.yaml
+          && grep -qi 'deploy' drift/dod_receipts/OMN-13943/dod-deploy-scope/command.yaml"

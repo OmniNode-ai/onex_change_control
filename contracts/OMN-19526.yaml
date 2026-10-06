@@ -1,0 +1,209 @@
+---
+schema_version: 1.0.0
+ticket_id: OMN-19526
+title: 'Delegation capability matrix of 2026-09-25: a report whose every figure recounts from its own
+  trial table'
+summary: Hand-authored OCC evidence (OMN-15247) for OmniNode-ai/knowledge-base-internal#769, a document-only
+  PR in a repository with no receipt gate. AC1 to AC3 are bound to one recount-and-grounding script run
+  over the report read at PR head eb8203fd3879; AC4 is bound to the shared-document scrub fetched from
+  omni_home main 8358fcdc76f0. At the base of the PR the report does not exist, so every probe exits non-zero
+  there. Four of the report paragraphs were drafted by onex delegate; these receipts are what count those
+  trials as passes.
+is_seam_ticket: false
+interface_change: false
+interfaces_touched: []
+requirements:
+  - id: req-transcribed-acceptance-criteria
+    statement: |-
+      The acceptance criteria declared on OMN-19526, transcribed verbatim from the ticket body. The ticket body is the source and this block is the copy.
+    acceptance:
+      - id: AC1
+        statement: |-
+          AC1: every per-class count in the matrix table equals a recount of the appendix trial table -- falsifier: the recount script in the change-control receipt, run with python3 against the report read by gh api at the PR head
+      - id: AC2
+        statement: |-
+          AC2: every recurring failure class in the failure-class table names at least one OMN ticket -- falsifier: the same script, row check
+      - id: AC3
+        statement: |-
+          AC3: every delegated paragraph carries its run id, its prompt is in the appendix, and every number, OMN id and code token in it occurs in that prompt, within the word range the prompt set -- falsifier: the same script, grounding check
+      - id: AC4
+        statement: |-
+          AC4: the report passes the shared-document scrub -- falsifier: python3 docs/workflows/\_shared/scrub_shared_doc.py over the report exits 0
+evidence_requirements:
+  - kind: docs
+    description: The report at the PR head recounts to its own matrix and failure tables, and every delegated
+      paragraph is grounded in its prompt (AC1-AC3).
+    command: |-
+      t=$(mktemp -d) && gh api "repos/OmniNode-ai/knowledge-base-internal/contents/reports/2026-09-25-delegation-capability-matrix.md?ref=eb8203fd387923410c2c7b49e86c36650a67025d" --jq .content | base64 -d > "$t/r.md" && [ -s "$t/r.md" ] && python3 - "$t/r.md" <<'PY'
+      """OMN-19526 AC1-AC3 checker. usage: verify_report.py <report.md>; exit 0 only if every AC passes."""
+      import re, sys, collections
+      T=open(sys.argv[1]).read(); fails=[]
+      def section(title):
+          m=re.search(r'^## '+re.escape(title)+r'.*?$(.*?)(?=^## |\Z)',T,re.M|re.S); return m.group(1) if m else ''
+      def table(sec):
+          out=[]
+          for l in sec.splitlines():
+              if l.startswith('| ') and not l.startswith('|---'):
+                  out.append([c.strip() for c in l.strip().strip('|').split('|')])
+          return out
+      app=[r for r in table(section('Appendix A')) if r[0].startswith('dm-')]
+      key=lambda c: c.strip('`')
+      cnt=collections.defaultdict(collections.Counter)
+      for r in app: cnt[key(r[2])][r[9]]+=1; cnt['*'][r[9]]+=1
+      mat=table(section('Capability matrix'))
+      mrows=[r for r in mat if len(r)>=7 and (r[1].startswith('`') or r[0]=='**all**')]
+      if len(mrows)<3: fails.append('AC1: matrix table not found')
+      for r in mrows:
+          k='*' if r[0]=='**all**' else key(r[1]); c=cnt[k]
+          want=(int(r[3]),int(r[4]),int(r[5]),int(r[6]))
+          got=(sum(c.values()),c['PASS'],c['RIGHT_NO_RECEIPT'],c['FAIL'])
+          if want!=got: fails.append(f'AC1: {k} matrix {want} != recount {got}')
+      print('AC1 matrix rows checked:',len(mrows),'appendix trials:',len(app))
+      lanes4={'dm-docs','dm-fixes','dm-nodes','dm-tests'}
+      ftab=[r for r in table(section('Recurring failure classes')) if r[0].startswith('`')]
+      if not ftab: fails.append('AC2: failure table not found')
+      for r in ftab:
+          ks=set(key(r[0]).split('+')); n=sum(1 for a in app if a[0] in lanes4 and ks & set(re.findall(r'`([^`]+)`',a[10])))
+          if n!=int(r[2]): fails.append(f'AC2: {key(r[0])} table {r[2]} != recount {n}')
+          if not re.search(r'OMN-\d+',r[4]): fails.append(f'AC2: {key(r[0])} names no ticket')
+      print('AC2 failure rows checked:',len(ftab))
+      W={'zero':0,'one':1,'two':2,'three':3,'four':4,'five':5,'six':6,'seven':7,'eight':8,'nine':9,'ten':10,'eleven':11,'twelve':12,'thirteen':13,'fourteen':14,'fifteen':15,'sixteen':16,'seventeen':17,'eighteen':18,'nineteen':19,'twenty':20,'thirty':30,'forty':40,'fifty':50,'sixty':60,'seventy':70}
+      TENS=r'\b(twenty|thirty|forty|fifty|sixty|seventy)[- ](one|two|three|four|five|six|seven|eight|nine)\b'
+      def nums(t):
+          s=set(int(x) for x in re.findall(r'(?<![\w.-])\d+(?![\w])',t.replace(',','')))
+          for m in re.finditer(TENS,t.lower()): s.add(W[m.group(1)]+W[m.group(2)])
+          for w in re.findall(r'\b[a-z]+\b',re.sub(TENS,'',t.lower())):
+              if w in W: s.add(W[w])
+          return s
+      prompts=dict(re.findall(r'^### (P\d+)\n\n```text\n(.*?)\n```',section('Appendix B'),re.M|re.S))
+      marks=re.findall(r'<!-- delegated run=([0-9a-f]{8}) prompt=(P\d+) words=(\d+)-(\d+) -->\n(.+)',T)
+      if not marks: fails.append('AC3: no delegated paragraphs found')
+      for run,p,lo,hi,para in marks:
+          P=prompts.get(p)
+          if P is None: fails.append(f'AC3: {run} prompt {p} missing'); continue
+          n=len(para.split())
+          if not int(lo)<=n<=int(hi): fails.append(f'AC3: {run} {n} words not in {lo}-{hi}')
+          extra=nums(para)-(nums(P)|{int(x) for x in re.findall(r'\d+',P)}|{1})
+          if extra: fails.append(f'AC3: {run} ungrounded numbers {sorted(extra)}')
+          ids=set(re.findall(r'OMN-\d+',para))-set(re.findall(r'OMN-\d+',P))
+          if ids: fails.append(f'AC3: {run} ungrounded ids {sorted(ids)}')
+          bt={b for b in re.findall(r'`([^`]+)`',para) if b not in P}
+          if bt: fails.append(f'AC3: {run} ungrounded code {sorted(bt)}')
+          if not any(a[4]==run and a[9]=='PASS' for a in app): fails.append(f'AC3: {run} not a PASS row in Appendix A')
+      print('AC3 delegated paragraphs checked:',len(marks))
+      print('\n'.join(fails) if fails else 'ALL PASS'); sys.exit(1 if fails else 0)
+      PY
+  - kind: docs
+    description: The report at the PR head passes the shared-document scrub (AC4).
+    command: |-
+      t=$(mktemp -d) && mkdir -p "$t/s" "$t/reports" && gh api "repos/OmniNode-ai/omni_home/contents/docs/workflows/_shared/scrub_shared_doc.py?ref=8358fcdc76f07882d0dd3ae1cae98a27dbba74d3" --jq .content | base64 -d > "$t/s/scrub_shared_doc.py" && gh api "repos/OmniNode-ai/omni_home/contents/docs/workflows/_shared/person_names.txt?ref=8358fcdc76f07882d0dd3ae1cae98a27dbba74d3" --jq .content | base64 -d > "$t/s/person_names.txt" && gh api "repos/OmniNode-ai/knowledge-base-internal/contents/reports/2026-09-25-delegation-capability-matrix.md?ref=eb8203fd387923410c2c7b49e86c36650a67025d" --jq .content | base64 -d > "$t/reports/2026-09-25-delegation-capability-matrix.md" && [ -s "$t/reports/2026-09-25-delegation-capability-matrix.md" ] && cd "$t" && python3 s/scrub_shared_doc.py reports/2026-09-25-delegation-capability-matrix.md
+  - kind: ci
+    description: OmniNode-ai/knowledge-base-internal#769 product diff scope present
+    command: gh pr view 769 --repo OmniNode-ai/knowledge-base-internal --json files
+emergency_bypass:
+  enabled: false
+  justification: ''
+  follow_up_ticket_id: ''
+dod_evidence:
+  - id: dod-kbi-pr-769-ac1-ac3
+    description: 'PR #769 on OmniNode-ai/knowledge-base-internal: hand-authored evidence (OMN-15247) for
+      AC1, AC2 and AC3. The script recounts the 15 matrix rows and 11 failure-class rows from the 76-row
+      appendix and checks the 4 delegated paragraphs against their prompts; it exits 0 at the head and
+      non-zero when any count, ticket or grounding check fails.'
+    source: manual
+    checks:
+      - check_type: command
+        check_value: |-
+          t=$(mktemp -d) && gh api "repos/OmniNode-ai/knowledge-base-internal/contents/reports/2026-09-25-delegation-capability-matrix.md?ref=eb8203fd387923410c2c7b49e86c36650a67025d" --jq .content | base64 -d > "$t/r.md" && [ -s "$t/r.md" ] && python3 - "$t/r.md" <<'PY'
+          """OMN-19526 AC1-AC3 checker. usage: verify_report.py <report.md>; exit 0 only if every AC passes."""
+          import re, sys, collections
+          T=open(sys.argv[1]).read(); fails=[]
+          def section(title):
+              m=re.search(r'^## '+re.escape(title)+r'.*?$(.*?)(?=^## |\Z)',T,re.M|re.S); return m.group(1) if m else ''
+          def table(sec):
+              out=[]
+              for l in sec.splitlines():
+                  if l.startswith('| ') and not l.startswith('|---'):
+                      out.append([c.strip() for c in l.strip().strip('|').split('|')])
+              return out
+          app=[r for r in table(section('Appendix A')) if r[0].startswith('dm-')]
+          key=lambda c: c.strip('`')
+          cnt=collections.defaultdict(collections.Counter)
+          for r in app: cnt[key(r[2])][r[9]]+=1; cnt['*'][r[9]]+=1
+          mat=table(section('Capability matrix'))
+          mrows=[r for r in mat if len(r)>=7 and (r[1].startswith('`') or r[0]=='**all**')]
+          if len(mrows)<3: fails.append('AC1: matrix table not found')
+          for r in mrows:
+              k='*' if r[0]=='**all**' else key(r[1]); c=cnt[k]
+              want=(int(r[3]),int(r[4]),int(r[5]),int(r[6]))
+              got=(sum(c.values()),c['PASS'],c['RIGHT_NO_RECEIPT'],c['FAIL'])
+              if want!=got: fails.append(f'AC1: {k} matrix {want} != recount {got}')
+          print('AC1 matrix rows checked:',len(mrows),'appendix trials:',len(app))
+          lanes4={'dm-docs','dm-fixes','dm-nodes','dm-tests'}
+          ftab=[r for r in table(section('Recurring failure classes')) if r[0].startswith('`')]
+          if not ftab: fails.append('AC2: failure table not found')
+          for r in ftab:
+              ks=set(key(r[0]).split('+')); n=sum(1 for a in app if a[0] in lanes4 and ks & set(re.findall(r'`([^`]+)`',a[10])))
+              if n!=int(r[2]): fails.append(f'AC2: {key(r[0])} table {r[2]} != recount {n}')
+              if not re.search(r'OMN-\d+',r[4]): fails.append(f'AC2: {key(r[0])} names no ticket')
+          print('AC2 failure rows checked:',len(ftab))
+          W={'zero':0,'one':1,'two':2,'three':3,'four':4,'five':5,'six':6,'seven':7,'eight':8,'nine':9,'ten':10,'eleven':11,'twelve':12,'thirteen':13,'fourteen':14,'fifteen':15,'sixteen':16,'seventeen':17,'eighteen':18,'nineteen':19,'twenty':20,'thirty':30,'forty':40,'fifty':50,'sixty':60,'seventy':70}
+          TENS=r'\b(twenty|thirty|forty|fifty|sixty|seventy)[- ](one|two|three|four|five|six|seven|eight|nine)\b'
+          def nums(t):
+              s=set(int(x) for x in re.findall(r'(?<![\w.-])\d+(?![\w])',t.replace(',','')))
+              for m in re.finditer(TENS,t.lower()): s.add(W[m.group(1)]+W[m.group(2)])
+              for w in re.findall(r'\b[a-z]+\b',re.sub(TENS,'',t.lower())):
+                  if w in W: s.add(W[w])
+              return s
+          prompts=dict(re.findall(r'^### (P\d+)\n\n```text\n(.*?)\n```',section('Appendix B'),re.M|re.S))
+          marks=re.findall(r'<!-- delegated run=([0-9a-f]{8}) prompt=(P\d+) words=(\d+)-(\d+) -->\n(.+)',T)
+          if not marks: fails.append('AC3: no delegated paragraphs found')
+          for run,p,lo,hi,para in marks:
+              P=prompts.get(p)
+              if P is None: fails.append(f'AC3: {run} prompt {p} missing'); continue
+              n=len(para.split())
+              if not int(lo)<=n<=int(hi): fails.append(f'AC3: {run} {n} words not in {lo}-{hi}')
+              extra=nums(para)-(nums(P)|{int(x) for x in re.findall(r'\d+',P)}|{1})
+              if extra: fails.append(f'AC3: {run} ungrounded numbers {sorted(extra)}')
+              ids=set(re.findall(r'OMN-\d+',para))-set(re.findall(r'OMN-\d+',P))
+              if ids: fails.append(f'AC3: {run} ungrounded ids {sorted(ids)}')
+              bt={b for b in re.findall(r'`([^`]+)`',para) if b not in P}
+              if bt: fails.append(f'AC3: {run} ungrounded code {sorted(bt)}')
+              if not any(a[4]==run and a[9]=='PASS' for a in app): fails.append(f'AC3: {run} not a PASS row in Appendix A')
+          print('AC3 delegated paragraphs checked:',len(marks))
+          print('\n'.join(fails) if fails else 'ALL PASS'); sys.exit(1 if fails else 0)
+          PY
+    binds_ac:
+      - AC1
+      - AC2
+      - AC3
+    ac_bindings:
+      - label: AC1
+        criterion_hash: 8060ae9eddf0c1f2d76fec44db6808603c507a35e8dcb6d4824143e23ff881ce
+        proposed_by: dm-report
+      - label: AC2
+        criterion_hash: 418f2facb795d9272bbe2ff92f4b1d662ae87cb2886a4ac5658b3d3f07d5b205
+        proposed_by: dm-report
+      - label: AC3
+        criterion_hash: a33b70c9e930cd2276ff8b197acdb47cb152b726df4b2c9a1410b6e2aeb5a3b2
+        proposed_by: dm-report
+  - id: dod-kbi-pr-769-ac4
+    description: 'PR #769 on OmniNode-ai/knowledge-base-internal: hand-authored evidence (OMN-15247) for
+      AC4. The shared-document scrub from omni_home main exits 0 over the report at the PR head.'
+    source: manual
+    checks:
+      - check_type: command
+        check_value: |-
+          t=$(mktemp -d) && mkdir -p "$t/s" "$t/reports" && gh api "repos/OmniNode-ai/omni_home/contents/docs/workflows/_shared/scrub_shared_doc.py?ref=8358fcdc76f07882d0dd3ae1cae98a27dbba74d3" --jq .content | base64 -d > "$t/s/scrub_shared_doc.py" && gh api "repos/OmniNode-ai/omni_home/contents/docs/workflows/_shared/person_names.txt?ref=8358fcdc76f07882d0dd3ae1cae98a27dbba74d3" --jq .content | base64 -d > "$t/s/person_names.txt" && gh api "repos/OmniNode-ai/knowledge-base-internal/contents/reports/2026-09-25-delegation-capability-matrix.md?ref=eb8203fd387923410c2c7b49e86c36650a67025d" --jq .content | base64 -d > "$t/reports/2026-09-25-delegation-capability-matrix.md" && [ -s "$t/reports/2026-09-25-delegation-capability-matrix.md" ] && cd "$t" && python3 s/scrub_shared_doc.py reports/2026-09-25-delegation-capability-matrix.md
+    binds_ac:
+      - AC4
+    ac_bindings:
+      - label: AC4
+        criterion_hash: c042f5a5d722ef91593ac6c4e3e752d6fcad06650e3b2b095dc5e7bd9c988259
+        proposed_by: dm-report
+  - id: dod-kbi-pr-769-ci
+    description: 'PR #769 on OmniNode-ai/knowledge-base-internal: product diff scope check (OMN-14425).'
+    source: manual
+    checks:
+      - check_type: command
+        check_value: gh pr view 769 --repo OmniNode-ai/knowledge-base-internal --json files

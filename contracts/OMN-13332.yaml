@@ -1,0 +1,114 @@
+---
+schema_version: "1.0.0"
+ticket_id: "OMN-13332"
+title: "Make occ-preflight a REQUIRED status check before auto-merge across all auto-merging repos"
+summary: >-
+  Wires the reusable OCC preflight eligibility gate (omnibase_core .github/workflows/occ-preflight.yml,
+  job "eligibility") as a fired check in every auto-merging OmniNode repo and makes the resulting "occ-preflight
+  / eligibility" context a REQUIRED status check on dev. Before this change the gate existed only as a
+  workflow_call-only reusable in omnibase_core (never fired on core's own PRs) plus a caller in onex_change_control,
+  and was required on zero auto-merging product repos — so auto-merge could arm in omnibase_infra / omniclaude
+  / omnimarket / omnidash / omnibase_core without any OCC preflight gate (directly weakening the OCC-autobind
+  chain OMN-13317). This contract adds a per-repo call-occ-preflight.yml (delegating to the omnibase_core
+  reusable via uses:) to omnibase_core, omnibase_infra, omniclaude, omnimarket, and omnidash, and the
+  "occ-preflight / eligibility" context is added to required_status_checks on dev for each via gh api
+  (one repo at a time, each verified by reading the live branch protection back). This is a CI-config-only
+  change: it ships no runtime contract, node, topic, or migration, and performs no live deploy or runtime
+  restart. Follow-up hotfix scope also pins the reusable occ-preflight workflow's OCC evidence checkout
+  to the PR body's Evidence-Source SHA and installs the locally built omnibase_core wheel by exact file
+  path, preventing stale OCC main evidence and no-index package-name resolution from blocking the required
+  status rollout.
+is_seam_ticket: false
+interface_change: false
+interfaces_touched: []
+evidence_requirements:
+  - kind: "ci"
+    description: >-
+      Each of the five auto-merging repos gains .github/workflows/call-occ-preflight.yml delegating to
+      the omnibase_core reusable occ-preflight.yml@main, producing the "occ-preflight / eligibility" status
+      context on PRs to dev.
+    command: "test -f .github/workflows/call-occ-preflight.yml"
+  - kind: "ci"
+    description: >-
+      The "occ-preflight / eligibility" context is present in required_status_checks on the dev branch
+      of every auto-merging repo, proven by reading live branch protection back via gh api.
+    command: >-
+      gh api repos/OmniNode-ai/omniclaude/branches/dev/protection/required_status_checks --jq '.contexts'
+  - kind: "ci"
+    description: >-
+      The reusable omnibase_core occ-preflight workflow resolves Evidence-Source to an exact OCC SHA before
+      checking out contracts/receipts and installs the locally built omnibase_core wheel by exact wheel
+      path.
+    command: "actionlint .github/workflows/occ-preflight.yml"
+emergency_bypass:
+  enabled: false
+  justification: ""
+  follow_up_ticket_id: ""
+dod_evidence:
+  - id: "dod-omnibase-core-workflow"
+    description: >-
+      omnibase_core gains .github/workflows/call-occ-preflight.yml (the reusable occ-preflight.yml was
+      workflow_call-only and never fired on core's own PRs). Receipt records the omnibase_core feature-PR
+      head SHA.
+    source: "manual"
+    checks:
+      - check_type: "command"
+        check_value: "grep -q '^status: PASS$' drift/dod_receipts/OMN-13332/dod-omnibase-core-workflow/command.yaml"
+  - id: "dod-omnibase-infra-workflow"
+    description: >-
+      omnibase_infra gains .github/workflows/call-occ-preflight.yml. Receipt records the omnibase_infra
+      feature-PR head SHA.
+    source: "manual"
+    checks:
+      - check_type: "command"
+        check_value: "grep -q '^status: PASS$' drift/dod_receipts/OMN-13332/dod-omnibase-infra-workflow/command.yaml"
+  - id: "dod-omniclaude-workflow"
+    description: >-
+      omniclaude gains .github/workflows/call-occ-preflight.yml. Receipt records the omniclaude feature-PR
+      head SHA.
+    source: "manual"
+    checks:
+      - check_type: "command"
+        check_value: "grep -q '^status: PASS$' drift/dod_receipts/OMN-13332/dod-omniclaude-workflow/command.yaml"
+  - id: "dod-omnimarket-workflow"
+    description: >-
+      omnimarket gains .github/workflows/call-occ-preflight.yml. Receipt records the omnimarket feature-PR
+      head SHA.
+    source: "manual"
+    checks:
+      - check_type: "command"
+        check_value: "grep -q '^status: PASS$' drift/dod_receipts/OMN-13332/dod-omnimarket-workflow/command.yaml"
+  - id: "dod-omnidash-workflow"
+    description: >-
+      omnidash gains .github/workflows/call-occ-preflight.yml. Receipt records the omnidash feature-PR
+      head SHA.
+    source: "manual"
+    checks:
+      - check_type: "command"
+        check_value: "grep -q '^status: PASS$' drift/dod_receipts/OMN-13332/dod-omnidash-workflow/command.yaml"
+  - id: "dod-required-context-proof"
+    description: >-
+      The "occ-preflight / eligibility" context is added to required_status_checks on dev for all five
+      auto-merging repos and proven by reading the live branch protection back via gh api. Receipt records
+      the per-repo gh api contexts readback.
+    source: "manual"
+    checks:
+      - check_type: "command"
+        check_value: "grep -q '^status: PASS$' drift/dod_receipts/OMN-13332/dod-required-context-proof/command.yaml"
+  - id: "dod-reusable-preflight-pinned-evidence"
+    description: >-
+      omnibase_core reusable occ-preflight.yml resolves the caller PR's Evidence-Source to an exact OCC
+      SHA before checkout and installs the locally built validator wheel by exact file path. Receipt records
+      the omnibase_core hotfix PR head SHA and local workflow validation.
+    source: "manual"
+    checks:
+      - check_type: "command"
+        check_value: "grep -q '^status: PASS$' drift/dod_receipts/OMN-13332/dod-reusable-preflight-pinned-evidence/command.yaml"
+  - id: "dod-occ-preflight-hotfix-receipt"
+    description: >-
+      onex_change_control PR #3141 carries the updated OMN-13332 contract and receipts for the reusable
+      occ-preflight hotfix, with local contract compliance, pre-commit, and OCC eligibility validation.
+    source: "manual"
+    checks:
+      - check_type: "command"
+        check_value: "grep -q '^status: PASS$' drift/dod_receipts/OMN-13332/dod-occ-preflight-hotfix-receipt/command.yaml"

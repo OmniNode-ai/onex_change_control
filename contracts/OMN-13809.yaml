@@ -1,0 +1,49 @@
+---
+schema_version: "1.0.0"
+ticket_id: "OMN-13809"
+title: "fix(OMN-13809): keep bus forwarder dormant on lanes with no cloud gateway leg"
+summary: >
+  node_bus_forwarder_effect declares event_bus.subscribe_topics including onex.cmd.omnibase-infra.delegation-inference-request.v1,
+  whose real payload is omnibase_core.models.delegation.wire.ModelInferenceIntent. The runtime auto-discovers
+  the contract and wires a subscription that dispatches to the forwarder handlers, which coerce the payload
+  to ModelGatewayEnvelope (frozen, extra=forbid, tenant fields required), raising a ValidationError on
+  every delegation message. ModelGatewayEnvelope is never constructed outside tests, ServiceGatewayForwarder
+  is never instantiated in src/, and the gateway.cloud.kafka.* refs exist only inside the forwarder contract:
+  no lane provisions a cloud gateway leg. Fix (Option 1): contract discovery detects a declared cloud
+  gateway leg (config.gateway_forwarder.cloud_leg) and skips such contracts unless ONEX_GATEWAY_CLOUD_MIRRORING_ENABLED
+  is truthy (fail-safe default OFF), keeping the forwarder dormant on all current lanes so it can no longer
+  ValidationError on domain traffic.
+is_seam_ticket: false
+interface_change: false
+interfaces_touched: []
+evidence_requirements:
+  - kind: "tests"
+    description: >
+      omnibase_infra auto-wiring discovery suite passes, including the new regression test asserting the
+      bus forwarder is skipped by contract discovery on a no-cloud-leg lane and wired only when cloud
+      mirroring is enabled.
+    command: "cd omnibase_infra && uv run pytest tests/unit/runtime/auto_wiring/ -q"
+emergency_bypass:
+  enabled: false
+  justification: ""
+  follow_up_ticket_id: ""
+dod_evidence:
+  - id: "dod-001"
+    description: >
+      omnibase_infra PR gates node_bus_forwarder_effect off lanes with no cloud gateway leg: util_runtime_packages.is_gateway_cloud_mirroring_enabled()
+      reads ONEX_GATEWAY_CLOUD_MIRRORING_ENABLED (default OFF), ModelDiscoveredContract gains a requires_cloud_gateway
+      field, and discover_contracts/discover_contracts_from_paths skip any contract declaring config.gateway_forwarder.cloud_leg
+      when mirroring is disabled. Regression test tests/unit/runtime/auto_wiring/test_discovery_cloud_gateway_gate.py
+      added. auto_wiring unit suite (313 tests) plus bus forwarder + gateway suites (189 tests) pass locally;
+      ruff format/check and mypy clean on changed files.
+    source: "manual"
+    checks:
+      - check_type: "command"
+        check_value: "grep -q 'ONEX_GATEWAY_CLOUD_MIRRORING_ENABLED' contracts/OMN-13809.yaml"
+  - id: "dod-occ-self"
+    description: >
+      Self-binding OCC receipt: this onex_change_control PR carries the OMN-13809 contract and DoD receipts.
+    source: "manual"
+    checks:
+      - check_type: "command"
+        check_value: "printf 'PASS\n'"

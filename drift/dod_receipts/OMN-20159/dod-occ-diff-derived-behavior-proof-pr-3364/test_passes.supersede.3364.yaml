@@ -1,0 +1,91 @@
+---
+check_type: test_passes
+created_at: '2026-10-04T08:29:54Z'
+evidence_item_id: dod-occ-diff-derived-behavior-proof-pr-3364
+reason: 'The base receipt records status PENDING: the check was declared but not executed, because the
+  minting producer runs in the effects runtime with no product-repo checkout (OMN-16859). This record
+  rebinds the key to a receipt produced by executing the declared check for real in the product checkout
+  at PR #3364 head.'
+replacement:
+  actual_output: 'FAIL: declared check executed in the OmniNode-ai/omnimarket checkout at PR #3364 head;
+    exit status 1. Run: https://github.com/OmniNode-ai/omnimarket/actions/runs/37189043654'
+  branch: lakshman/OMN-20159-read-binding-overlay
+  check_type: test_passes
+  check_value: |-
+    repos/OmniNode-ai/omnimarket/commits/1b92bb879d1aab72a5dd7fd248b26e645c762876
+    uv run pytest tests/integration/nodes/node_projection_read_effect/test_read_binding_reader_role_real_postgres_omn20159.py tests/projection/test_api_server_local_mode.py tests/unit/nodes/node_projection_read_effect/test_read_binding_apart_from_claim_store_omn20159.py tests/unit/projection/test_projection_binding_env_discipline_omn20159.py -q
+  commit_sha: 1b92bb879d1aab72a5dd7fd248b26e645c762876
+  contract_entry_sha256: sha256:342d36848ead7d83880319ff754ec2a701299bfbe1af20ef2310ef9f27117057
+  duration_ms: 16863
+  evidence_item_id: dod-occ-diff-derived-behavior-proof-pr-3364
+  exit_code: 1
+  pr_number: 3364
+  probe_command: |-
+    repos/OmniNode-ai/omnimarket/commits/1b92bb879d1aab72a5dd7fd248b26e645c762876
+    uv run pytest tests/integration/nodes/node_projection_read_effect/test_read_binding_reader_role_real_postgres_omn20159.py tests/projection/test_api_server_local_mode.py tests/unit/nodes/node_projection_read_effect/test_read_binding_apart_from_claim_store_omn20159.py tests/unit/projection/test_projection_binding_env_discipline_omn20159.py -q
+  probe_stdout: "F.................................................................       [100%]\n===================================
+    FAILURES ===================================\n______________ test_f1_read_binding_reads_and_never_holds_a_claim
+    ______________\n\nreader_world = {'superuser_dsn': 'postgresql://postgres:test_password@127.0.0.1:32768/omnibase_infra',
+    'reader_dsn': 'postgresql://om...fb5872@127.0.0.1:32768/omnibase_infra', 'read_schema': 'omn20159r_5111fb8640',
+    'claims_schema': 'omn20159c_5111fb8640'}\ntmp_path = PosixPath('/tmp/pytest-of-runner/pytest-0/test_f1_read_binding_reads_and0')\nmonkeypatch
+    = <_pytest.monkeypatch.MonkeyPatch object at 0x7f3145abc980>\n\n    @pytest.mark.integration\n    async
+    def test_f1_read_binding_reads_and_never_holds_a_claim(\n        reader_world: dict[str, str],\n        tmp_path:
+    Path,\n        monkeypatch: pytest.MonkeyPatch,\n    ) -> None:\n        overlay = tmp_path / \"projection-read-binding.yaml\"\n
+    \       overlay.write_text(\n            yaml.safe_dump(\n                {\n                    \"kafka_bootstrap_servers\":
+    \"127.0.0.1:1\",\n                    \"kafka_consumer_group\": \"local.omnimarket-projections.runtime-read\",\n
+    \                   \"database_url\": reader_world[\"reader_dsn\"],\n                }\n            ),\n
+    \           encoding=\"utf-8\",\n        )\n        monkeypatch.setenv(_READ_ENV, str(overlay))\n
+    \       monkeypatch.delenv(_RUNTIME_ENV, raising=False)\n        monkeypatch.delenv(\"OMNIDASH_ANALYTICS_DB_URL\",
+    raising=False)\n        monkeypatch.delenv(\"OMNINODE_INTERNAL_DB_URL\", raising=False)\n        #
+    tests/integration is exempt from the conftest fixture that moves the\n        # state root, so the
+    local claim file is put under this test's tmp_path\n        # here rather than in whatever state root
+    the host declares.\n        state_root = tmp_path / \"onex_state\"\n        monkeypatch.setenv(\"ONEX_STATE_DIR\",
+    str(state_root))\n        monkeypatch.delenv(\"ONEX_STATE_ROOT\", raising=False)\n        # The fleet
+    default; a host that enforces would refuse the control's\n        # tenant-less claim row before any
+    SQL ran.\n        monkeypatch.setattr(\n            tenant_isolation_module,\n            \"get_settings\",\n
+    \           lambda: Settings(enforce_tenant_isolation=False, onex_tenant_id=\"\"),\n        )\n        _pin_claims_schema(monkeypatch,
+    tmp_path, reader_world[\"claims_schema\"])\n        assert claim_module.claims_schema() == reader_world[\"claims_schema\"]\n
+    \   \n        # Positive control: the store a claim store following the read binding\n        # would
+    build lands its claim in the counted table, and the count sees it.\n        following = claim_module.DelegationClaimPort(\n
+    \           _adapter_for_dsn(\n                reader_world[\"reader_dsn\"], postgres_schema=claim_module.claims_schema()\n
+    \           )\n        )\n        assert following.claim(delivery_id=uuid4(), correlation_id=uuid4()).won
+    is True\n        rows_before = _claim_rows(\n            reader_world[\"superuser_dsn\"], reader_world[\"claims_schema\"]\n
+    \       )\n        assert rows_before == 1\n    \n        # The read node reads through the read binding's
+    role.\n        handler = HandlerProjectionRead(\n            topic_map={_DECISIONS: _cfg(reader_world[\"read_schema\"])}\n
+    \       )\n        try:\n            result = await handler.handle(\n                ModelProjectionReadRequest(topic=_DECISIONS,
+    tenant_id=_TENANT)\n            )\n        finally:\n            await handler.close()\n        assert
+    result.ok is True, result\n        assert result.row_count == 3\n    \n        # The claim store does
+    not follow it. Claims first, then the count, so a\n        # store that did follow it is caught by
+    the count, not by a type check.\n        delivery = uuid4()\n        first = claim_module.resolve_delegation_claim_store()\n
+    \       assert first.claim(delivery_id=delivery, correlation_id=uuid4()).won is True\n        second
+    = claim_module.resolve_delegation_claim_store()\n        assert second.claim(delivery_id=delivery,
+    correlation_id=uuid4()).won is False\n    \n        assert (\n            _claim_rows(reader_world[\"superuser_dsn\"],
+    reader_world[\"claims_schema\"])\n            == rows_before\n        )\n        local = first._database()\n
+    \       assert isinstance(local, SqliteDatabaseAdapter)\n>       assert local.db_path == state_root
+    / \"delegation\" / \"delegation_claims.sqlite\"\nE       AssertionError: assert PosixPath('/tmp/pytest-of-runner/pytest-0/delegation-claims0/claims.sqlite')
+    == ((PosixPath('/tmp/pytest-of-runner/pytest-0/test_f1_read_binding_reads_and0/onex_state') / 'delegation')
+    / 'delegation_claims.sqlite')\nE        +  where PosixPath('/tmp/pytest-of-runner/pytest-0/delegation-claims0/claims.sqlite')
+    = <omnimarket.projection.sqlite_database.SqliteDatabaseAdapter object at 0x7f3145919ac0>.db_path\n\ntests/integration/nodes/node_projection_read_effect/test_read_binding_reader_role_real_postgres_omn20159.py:305:
+    AssertionError\n=============================== warnings summary ===============================\n.venv/lib/python3.12/site-packages/starlette/testclient.py:53\n
+    \ /home/runner/work/omnimarket/omnimarket/.venv/lib/python3.12/site-packages/starlette/testclient.py:53:
+    DeprecationWarning: The anyio.abc.BlockingPortal alias is deprecated, use anyio.from_thread.BlockingPortal
+    instead.\n    _PortalFactoryType = Callable[[], AbstractContextManager[anyio.abc.BlockingPortal]]\n\n--
+    Docs: https://docs.pytest.org/en/stable/how-to/capture-warnings.html\n===========================
+    short test summary info ============================\nFAILED tests/integration/nodes/node_projection_read_effect/test_read_binding_reader_role_real_postgres_omn20159.py::test_f1_read_binding_reads_and_never_holds_a_claim
+    - AssertionError: assert PosixPath('/tmp/pytest-of-runner/pytest-0/delegation-claims0/claims.sqlite')
+    == ((PosixPath('/tmp/pytest-of-runner/pytest-0/test_f1_read_binding_reads_and0/onex_state') / 'delegation')
+    / 'delegation_claims.sqlite')\n +  where PosixPath('/tmp/pytest-of-runner/pytest-0/delegation-claims0/claims.sqlite')
+    = <omnimarket.projection.sqlite_database.SqliteDatabaseAdapter object at 0x7f3145919ac0>.db_path\n1
+    failed, 65 passed, 1 warning in 10.51s"
+  run_timestamp: '2026-10-04T08:29:54Z'
+  runner: omnimarket-ci occ-receipt-runner
+  schema_version: 1.0.0
+  status: FAIL
+  ticket_id: OMN-20159
+  verifier: github-actions product-repo test execution
+  working_dir: null
+schema_version: 1.0.0
+superseder: omnimarket-ci occ-receipt-runner
+supersedes: drift/dod_receipts/OMN-20159/dod-occ-diff-derived-behavior-proof-pr-3364/test_passes.yaml
+ticket_id: OMN-20159
+tombstone: false

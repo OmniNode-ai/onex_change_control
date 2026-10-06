@@ -1,0 +1,139 @@
+---
+schema_version: "1.0.0"
+ticket_id: "OMN-15490"
+title: "Fail-fast canonical-state admission — receipt contract for the already-merged steel fix (false-Backlog
+  reconciliation)"
+summary: >-
+  OMN-15490 is a false-Backlog ticket, not unbuilt work. Two independent defects were filed together:
+  (half A) frozen canonical-state models declared `model_validator(mode="after")` invariants but every
+  reducer applied transitions via `model_copy(update=...)`, which skips ALL validators — silent admission
+  of invariant-violating state into canonical state, propagating to scoring, with replay NON-divergent
+  because both paths skip identically (false-clean, not nondeterminism); and (half B) the ledger subscribed
+  BEFORE fold admission on an in-process bus that runs subscribers in registration order, and SQLiteLedger.append
+  autocommits, so a ReducerError during fold admission happened AFTER the event was durably committed
+  — permanent append-only contamination with no retraction path. Both halves were fixed on jonahgabriel/steel_onslaught
+  `main` in PR #237, merge commit e3dbd0171709d9cdd9fb80c4df6b85688a398803, merged 2026-07-31T02:59:18Z,
+  while the Linear ticket held a single Backlog stateHistory entry throughout. This contract is the receipt
+  surface for the dod_verify path; it makes no status change. Every check is pinned to the immutable merge
+  SHA, is hosted-runnable, and was executed GREEN at authoring time, then RED-proven by repointing the
+  pinned ref at the merge commit's first parent. Known in-scope residual, disclosed here rather than implied
+  away: `armor_value` still has no `<= armor_max` invariant declared, and the AC1 regression ratchet gap
+  is tracked separately in OMN-15557 — neither is claimed by this contract.
+is_seam_ticket: false
+interface_change: false
+interfaces_touched: []
+contract_completeness: "ENRICHED"
+evidence_requirements:
+  - kind: "ci"
+    description: >-
+      steel PR #237 is merged on jonahgabriel/steel_onslaught main at commit e3dbd017, and the post-merge
+      main CI on that lineage is green.
+    command: "gh pr view 237 --repo jonahgabriel/steel_onslaught --json state,mergeCommit"
+  - kind: "manual"
+    description: >-
+      Immutable GitHub content probes bind each acceptance criterion to steel merge SHA e3dbd0171709d9cdd9fb80c4df6b85688a398803.
+    command: "See drift/dod_receipts/OMN-15490/dod-omn15490-*/command.yaml"
+emergency_bypass:
+  enabled: false
+  justification: ""
+  follow_up_ticket_id: ""
+dod_evidence:
+  - id: "dod-omn15490-pr-237-merged-at-e3dbd017"
+    description: >-
+      Binding item. steel PR #237 is MERGED with merge commit exactly e3dbd0171709d9cdd9fb80c4df6b85688a398803.
+      State and SHA are asserted together in a single equality so closed-unmerged, still-open, and re-landed-elsewhere
+      each yield a mismatch. Establishes binding, not correctness — the substantive proof is the three
+      AC items below.
+    source: "manual"
+    status: "verified"
+    checks:
+      - check_type: "command"
+        check_value: |-
+          state="$(gh pr view 237 --repo jonahgabriel/steel_onslaught --json state,mergeCommit --jq '.state + " " + (.mergeCommit.oid // "none")')" && test "$state" = "MERGED e3dbd0171709d9cdd9fb80c4df6b85688a398803"
+  - id: "dod-omn15490-admission-scoped-durability"
+    description: >-
+      AC1 — a fold-admission failure prevents DURABLE admission of the failing event (half B). Four structural
+      legs at the merge SHA, chosen so that removing any one of them re-opens the defect: the bus protocol
+      declares a distinct admission phase (`def subscribe_admission(` in `src/steel_onslaught/bus/protocol.py`);
+      the runner registers fold on it (`bus.subscribe_admission(self.fold.handle)` in `src/steel_onslaught/match/runner.py`);
+      a staging ledger wrapper exists (`class AdmissionScopedLedger:` in `src/steel_onslaught/ledger/admission_scoped.py`);
+      and composition actually WIRES it around the real ledger (`admission_ledger = AdmissionScopedLedger(dependencies.ledger)`
+      in `src/steel_onslaught/match/composition.py`) — the wiring leg is what distinguishes a shipped
+      fix from a defined-but-unreferenced class. Behaviourally anchored by two tests asserted by full
+      signature: `test_fold_rejected_event_is_not_durably_admitted` and `test_durable_contamination_would_be_irreversible`.
+    source: "manual"
+    status: "verified"
+    checks:
+      - check_type: "command"
+        check_value: |-
+          p="$(mktemp)" && r="$(mktemp)" && a="$(mktemp)" && c="$(mktemp)" && t="$(mktemp)" && gh api 'repos/jonahgabriel/steel_onslaught/contents/src/steel_onslaught/bus/protocol.py?ref=e3dbd0171709d9cdd9fb80c4df6b85688a398803' --jq .content | base64 -d > "$p" && gh api 'repos/jonahgabriel/steel_onslaught/contents/src/steel_onslaught/match/runner.py?ref=e3dbd0171709d9cdd9fb80c4df6b85688a398803' --jq .content | base64 -d > "$r" && gh api 'repos/jonahgabriel/steel_onslaught/contents/src/steel_onslaught/ledger/admission_scoped.py?ref=e3dbd0171709d9cdd9fb80c4df6b85688a398803' --jq .content | base64 -d > "$a" && gh api 'repos/jonahgabriel/steel_onslaught/contents/src/steel_onslaught/match/composition.py?ref=e3dbd0171709d9cdd9fb80c4df6b85688a398803' --jq .content | base64 -d > "$c" && gh api 'repos/jonahgabriel/steel_onslaught/contents/tests/match/test_canonical_state_admission_omn15490.py?ref=e3dbd0171709d9cdd9fb80c4df6b85688a398803' --jq .content | base64 -d > "$t" && grep -qF 'def subscribe_admission(' "$p" && grep -qF 'bus.subscribe_admission(self.fold.handle)' "$r" && grep -qF 'class AdmissionScopedLedger:' "$a" && grep -qF 'admission_ledger = AdmissionScopedLedger(dependencies.ledger)' "$c" && grep -qF 'def test_fold_rejected_event_is_not_durably_admitted(tmp_path: Path) -> None:' "$t" && grep -qF 'def test_durable_contamination_would_be_irreversible(tmp_path: Path) -> None:' "$t" && rm -f "$p" "$r" "$a" "$c" "$t"
+  - id: "dod-omn15490-evolve-revalidates-canonical-state"
+    description: >-
+      AC2 — canonical-state transitions re-run model validators on every fold update (half A), with a
+      RED test demonstrating the previously-silent admission. The discriminating leg is a NEGATIVE assertion:
+      at the merge SHA there is ZERO `.model_copy(` anywhere in the five reducer modules plus `match/fold.py`
+      and `match/state.py` — a positive grep for `evolve` alone would pass on a codebase that added `evolve`
+      while leaving the bypass in place, which is precisely the exists-but-wrong shape this ticket filed.
+      Paired with the validating primitive itself (`class ModelFrozenValidated(BaseModel):` and its `def
+      evolve(self, *, update: Mapping[str, Any]) -> Self:` in `src/steel_onslaught/immutable.py`) and
+      two tests: the ratchet `test_canonical_state_models_use_evolve_not_model_copy` and the exists-but-wrong
+      control `test_hp_above_hp_max_is_rejected_by_full_construction_but_not_by_model_copy`, which is
+      the RED demonstration — it proves the OLD path silently admits `hp=999`, not merely that an import
+      fails.
+    source: "manual"
+    status: "verified"
+    checks:
+      - check_type: "command"
+        check_value: |-
+          d="$(mktemp -d)" && for p in reducers/movement.py reducers/mode.py reducers/boiler.py reducers/failure.py reducers/lifecycle.py match/fold.py match/state.py immutable.py; do o="$d/$(echo "$p" | tr / _)" && gh api "repos/jonahgabriel/steel_onslaught/contents/src/steel_onslaught/$p?ref=e3dbd0171709d9cdd9fb80c4df6b85688a398803" --jq .content | base64 -d > "$o" || exit 1; done && ! grep -rqF '.model_copy(' "$d/reducers_movement.py" "$d/reducers_mode.py" "$d/reducers_boiler.py" "$d/reducers_failure.py" "$d/reducers_lifecycle.py" "$d/match_fold.py" "$d/match_state.py" && grep -qF 'class ModelFrozenValidated(BaseModel):' "$d/immutable.py" && grep -qF 'def evolve(self, *, update: Mapping[str, Any]) -> Self:' "$d/immutable.py" && t="$(mktemp)" && gh api 'repos/jonahgabriel/steel_onslaught/contents/tests/match/test_canonical_state_admission_omn15490.py?ref=e3dbd0171709d9cdd9fb80c4df6b85688a398803' --jq .content | base64 -d > "$t" && grep -qF 'def test_canonical_state_models_use_evolve_not_model_copy() -> None:' "$t" && grep -qF 'def test_hp_above_hp_max_is_rejected_by_full_construction_but_not_by_model_copy() -> None:' "$t" && rm -rf "$d" "$t"
+  - id: "dod-omn15490-movement-resolved-prepublish-parity"
+    description: >-
+      AC3 — MOVEMENT_RESOLVED gains pre-publish validation parity with the weapon-fire path. Asserted
+      as ONE validator reached from BOTH call paths at the merge SHA: `def validate_movement_resolved(`
+      is defined in `src/steel_onslaught/reducers/movement.py` and that same symbol is imported and invoked
+      in `src/steel_onslaught/match/runner.py` (the pre-publish site). A definition without the runner-side
+      call site would leave the publish path unguarded — exactly the asymmetry the ticket filed — so the
+      call-site leg is required, not decorative. Behaviourally anchored by `test_movement_resolved_is_validated_before_publish`
+      and the parity assertion `test_movement_and_weapon_fire_both_validate_before_publish`.
+    source: "manual"
+    status: "verified"
+    checks:
+      - check_type: "command"
+        check_value: |-
+          m="$(mktemp)" && r="$(mktemp)" && t="$(mktemp)" && gh api 'repos/jonahgabriel/steel_onslaught/contents/src/steel_onslaught/reducers/movement.py?ref=e3dbd0171709d9cdd9fb80c4df6b85688a398803' --jq .content | base64 -d > "$m" && gh api 'repos/jonahgabriel/steel_onslaught/contents/src/steel_onslaught/match/runner.py?ref=e3dbd0171709d9cdd9fb80c4df6b85688a398803' --jq .content | base64 -d > "$r" && gh api 'repos/jonahgabriel/steel_onslaught/contents/tests/match/test_canonical_state_admission_omn15490.py?ref=e3dbd0171709d9cdd9fb80c4df6b85688a398803' --jq .content | base64 -d > "$t" && grep -qF 'def validate_movement_resolved(' "$m" && grep -qF 'validate_movement_resolved(' "$r" && grep -qF 'def test_movement_resolved_is_validated_before_publish(' "$t" && grep -qF 'def test_movement_and_weapon_fire_both_validate_before_publish() -> None:' "$t" && rm -f "$m" "$r" "$t"
+  - id: "occ-self-bind-pr-5756"
+    description: >-
+      Binding stamp, not substantive proof: binds OMN-15490 to its OCC evidence PR #5756 so occ-preflight
+      eligibility can resolve a PASS receipt for this ticket against this PR. It adjudicates nothing about
+      the work and flips no Linear status; the falsifiable evidence is the merge-SHA-pinned items above.
+      Mirrors the occ-self-bind-pr-5544 / occ-self-bind-pr-5752 precedent.
+    source: "manual"
+    status: "verified"
+    checks:
+      - check_type: "command"
+        check_value: "gh pr view 5756 --repo OmniNode-ai/onex_change_control --json number,state,headRefName"
+  - id: "dod-omn15490-pr-237-merged-at-e3dbd017-guardcompat"
+    description: >-
+      Executor-compatibility correction of the binding item above, APPENDED under OCC append-only doctrine
+      rather than edited in place: a merged dod_evidence entry is immutable and its receipt pins the entry
+      hash, so an in-place rewrite is rejected by validator_occ_append_only and invalidates the receipt
+      binding. Same assertion, same merge SHA, tokenizer-safe shape. The superseded original embedded
+      the jq program .state + " " + (.mergeCommit.oid // "none") inside a double-quoted command substitution;
+      node_dod_verify shape-guards a check_value BEFORE executing it by tokenizing with shlex.split, which
+      is not $()-aware, so the jq program's inner double quotes closed the outer one and the guard landed
+      on the fragment " + (.mergeCommit.oid // none)')" — that fragment contains a slash, so the guard
+      took its relative-script-path branch, found no executable, and returned INVALID_CHECK_VALUE_NOT_A_COMMAND
+      without ever running the command. That was a FALSE RED against a command that exits 0 in a real
+      shell, not a failed proof; the underlying binding fact never changed. This replacement splits the
+      single two-field query into two single-field queries so each --jq filter is a bare path expression
+      carrying no quote characters, leaving test as the first shlex token. Semantics are preserved exactly:
+      BOTH the state MERGED AND the exact merge SHA e3dbd0171709d9cdd9fb80c4df6b85688a398803 are asserted,
+      so closed-unmerged, still-open, and re-landed-elsewhere each still yield a mismatch. Authorized
+      as a correction (not a peer-evidence edit) by operator ruling 2, ROLLING_WORK_LEDGER 2026-07-31T20:12:22Z.
+    source: "manual"
+    status: "verified"
+    evidence_artifact: "supersedes_dod_evidence:dod-omn15490-pr-237-merged-at-e3dbd017"
+    checks:
+      - check_type: "command"
+        check_value: |-
+          test "$(gh pr view 237 --repo jonahgabriel/steel_onslaught --json mergeCommit --jq .mergeCommit.oid)" = "e3dbd0171709d9cdd9fb80c4df6b85688a398803" && test "$(gh pr view 237 --repo jonahgabriel/steel_onslaught --json state --jq .state)" = "MERGED"

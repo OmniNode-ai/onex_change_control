@@ -1,0 +1,75 @@
+---
+schema_version: "1.0.0"
+ticket_id: "OMN-16030"
+title: "Stop failing the runner-fleet canary on reconnect-gap status flap"
+summary: >-
+  OCC companion for OmniNode-ai/omnibase_infra#2749. The runner-fleet canary treated the org REST status
+  field as authoritative liveness and failed whenever offline+missing exceeded 5; on a 72-runner fleet
+  that is a persistent false red. Measured over 7136 jobs, runners labelled offline were completing jobs
+  at the moment of the label, the persistently-offline cohort served ~80% of nominal throughput, missing
+  was 0 in every sample, RestartCount was 0 on all containers, and the offline count correlates positively
+  with concurrent job load -- the opposite of a liveness signal. The mechanism is the listener's broker
+  long-poll reconnect gap after each job completion. The gate now fails only on signals a reconnect gap
+  cannot manufacture: a lost registration (missing > 0) or mass listener death (offline-and-not-busy at
+  or above 50% of fleet); an offline-but-busy runner counts alive because it is provably executing a job.
+  Replaying the 2026-07-03 incident the canary was built for (77% offline-idle) still FAILs, so detection
+  power is preserved.
+is_seam_ticket: false
+interface_change: false
+interfaces_touched: []
+evidence_requirements:
+  - kind: "ci"
+    description: "PR #2749 CI checks green"
+    command: "gh pr checks ${PR_NUMBER} --repo ${REPO}"
+emergency_bypass:
+  enabled: false
+  justification: ""
+  follow_up_ticket_id: ""
+dod_evidence:
+  - id: "dod-OmniNode-ai-omnibase_infra-pr-2749"
+    description: >-
+      PR #2749 on OmniNode-ai/omnibase_infra carries the canary gate fix.
+    source: "generated"
+    checks:
+      - check_type: "command"
+        check_value: "gh pr view 2749 --repo OmniNode-ai/omnibase_infra --json number,state"
+  - id: "dod-offline-but-busy-counts-alive"
+    description: >-
+      The canary separates offline-and-idle from offline-but-busy: a runner reporting offline while executing
+      a job is provably alive and no longer counts toward failure. This is the core of the fix -- the
+      false red came from counting provably-working runners as dead. Content-bound readback at the pinned
+      product head; RED at the pre-fix dev base where the busy split does not exist.
+    source: "generated"
+    checks:
+      - check_type: "command"
+        check_value: |-
+          gh api repos/OmniNode-ai/omnibase_infra/contents/scripts/ci/runner_fleet_canary.sh?ref=175c3809cc2e0a2f8729b7748f22fb685c2c06bc --jq '.content' | base64 -d | grep -c 'select(.busy != true)'
+  - id: "dod-mass-outage-threshold-preserves-detection"
+    description: >-
+      The FAIL condition is a mass-outage fraction (offline-and-not-busy plus lost registrations at or
+      above a configurable percent of fleet, default 50), sized so the 2026-07-03 incident mode (77% offline-idle)
+      still FAILs while the measured reconnect-gap flap ceiling (~22%) cannot reach it. RED at the pre-fix
+      dev base where the threshold variable does not exist.
+    source: "generated"
+    checks:
+      - check_type: "command"
+        check_value: |-
+          gh api repos/OmniNode-ai/omnibase_infra/contents/scripts/ci/runner_fleet_canary.sh?ref=175c3809cc2e0a2f8729b7748f22fb685c2c06bc --jq '.content' | base64 -d | grep -c 'RUNNER_CANARY_MASS_OFFLINE_PCT'
+  - id: "dod-runbook-documents-the-mechanism"
+    description: >-
+      The listener-liveness runbook gains an additive reconnect-gap churn section covering the measurement,
+      a throughput-based triage recipe, and a step-0 operator instruction to check throughput before bouncing
+      anything -- the operational half of the fix, since the expensive failure mode was force-recreating
+      runners that were actively serving jobs. RED at the pre-fix dev base where the section does not
+      exist.
+    source: "generated"
+    checks:
+      - check_type: "command"
+        check_value: |-
+          gh api repos/OmniNode-ai/omnibase_infra/contents/docs/runbooks/runner-fleet-listener-liveness.md?ref=175c3809cc2e0a2f8729b7748f22fb685c2c06bc --jq '.content' | base64 -d | grep -c 'Reconnect-gap churn'
+  - id: "occ-self-bind-pr-6514"
+    description: "OCC companion PR #6514 — self-bind for OMN-16030 (OMN-14650)."
+    source: "generated"
+    checks:
+      - check_type: "command"
+        check_value: "gh pr view 6514 --repo OmniNode-ai/onex_change_control --json number,state"

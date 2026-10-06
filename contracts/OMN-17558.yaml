@@ -1,0 +1,75 @@
+---
+schema_version: "1.0.0"
+ticket_id: "OMN-17558"
+title: "Receipt-hardening repository authority is resolved per citation"
+summary: >-
+  A ticket must be able to carry more than one product PR. The receipt-hardening gate unioned every trusted-repo
+  reference across a receipt's check_value and probe_command and refused any union larger than one, which
+  made every second-consumer supersede record permanently ambiguous: the OMN-15459 S2 family binding requires
+  the replacement's check_value to keep naming the superseded item's repository while the replacement's
+  commit_sha is the new consumer PR's head, named only in probe_command. This contract covers resolving
+  that authority per citation — commit_sha binding first, then the receipt's own pr_number — while keeping
+  the ambiguity refusal, the trusted-repo allowlist, the product-ref binding check and the live commits-API
+  confirmation exactly as they were. It makes no deployment, runtime, or .201 claim.
+is_seam_ticket: false
+interface_change: false
+interfaces_touched: []
+evidence_requirements:
+  - kind: "tests"
+    description: >-
+      Regression controls reproduce both live shapes that were frozen — the cross-repo second consumer
+      (OCC#8099, omnimarket#2274 then omnibase_infra#3148) and the same-repo second consumer (OCC#8105,
+      omnibase_infra#3148 then omnibase_infra#3151) — using the byte-exact field triples from those two
+      closed companions, and assert the gate now resolves the consumer repository.
+    command: >-
+      uv run pytest tests/test_check_receipt_hardening.py -q -k "second_consumer_supersede or commit_sha_bound_citation"
+  - kind: "tests"
+    description: >-
+      Adversarial controls prove the refusal this change relaxes is still load-bearing: two repositories
+      bound at the same tier still fail closed, a stronger tier never falls through to a weaker one, an
+      untrusted repository is still not an authority even with a matching pr_number, and actual_output
+      still cannot select a repository.
+    command: >-
+      uv run pytest tests/test_check_receipt_hardening.py -q -k "fails_closed or does_not_widen_the_trusted_repository_set
+      or actual_output_narrative_cannot"
+emergency_bypass:
+  enabled: false
+  justification: ""
+  follow_up_ticket_id: ""
+dod_evidence:
+  - id: "dod-omn17558-second-consumer-regression"
+    description: >-
+      Second-consumer supersede records resolve against the consumer PR's repository. Fixtures are the
+      byte-exact check_value/probe_command/commit_sha/pr_number triples taken from the two companions
+      this defect closed unmerged (OCC#8099 and OCC#8105), covering the cross-repo and the same-repo shape,
+      plus the tier ordering that puts a commit_sha-bound citation above a pr_number-bound one.
+    source: "manual"
+    execution_scope: "hosted_and_local"
+    checks:
+      - check_type: "test_passes"
+        check_value: >-
+          uv run pytest tests/test_check_receipt_hardening.py -q -k "second_consumer_supersede or commit_sha_bound_citation"
+  - id: "dod-omn17558-ambiguity-refusal-preserved"
+    description: >-
+      The [COMMIT_SHA_REPOSITORY] refusal added by OCC#8075 still fires wherever the evidence does not
+      single out one repository, and disambiguation never widens the trusted set. Covers both-tier collisions,
+      no-fallthrough from the commit_sha tier to the pr_number tier, an untrusted repository with a matching
+      pr_number, and a pr_number cited only in free-form actual_output.
+    source: "manual"
+    execution_scope: "hosted_and_local"
+    checks:
+      - check_type: "test_passes"
+        check_value: >-
+          uv run pytest tests/test_check_receipt_hardening.py -q -k "fails_closed or does_not_widen_the_trusted_repository_set
+          or actual_output_narrative_cannot"
+  - id: "occ-self-bind-pr-8119"
+    description: >-
+      OCC self-binding receipt for PR #8119, the in-repo PR that carries this contract and the gate change
+      itself. Binds OMN-17558 to the OCC PR by pr_number so eligibility can resolve a PASS receipt for
+      the evidence PR itself. Pure binding/self-identity item, the one sanctioned non-falsifiable shape.
+    source: "manual"
+    status: "verified"
+    checks:
+      - check_type: "command"
+        check_value: >-
+          gh pr view 8119 --repo OmniNode-ai/onex_change_control --json number,state,headRefName

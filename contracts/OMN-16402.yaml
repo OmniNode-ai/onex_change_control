@@ -1,0 +1,48 @@
+---
+schema_version: "1.0.0"
+ticket_id: "OMN-16402"
+title: "CI native-build-toolchain/PostgreSQL-client fallback hard-fails when sudo exists but is not passwordless"
+summary: "Adds a non-interactive sudo probe (sudo -n true) to every occurrence of the 'command -v sudo'
+  privileged-install fallback in omniclaude's ci.yml (6 sites) and onex-schema-compat.yml (1 site), so
+  the step falls through to its own documented graceful-degrade warning instead of hard-failing under
+  bash -e when the self-hosted runner user lacks passwordless sudo. Landed as a blocking dependency of
+  the OMN-16373 dev->main promotion PR (omniclaude#2017), which the bug was hard-failing on multiple required
+  checks (Exports Validation, Database Schema Validation, ONEX Change Control Schema Compatibility)."
+is_seam_ticket: false
+interface_change: false
+interfaces_touched: []
+evidence_requirements:
+  - kind: "ci"
+    description: "omniclaude#2018 CI checks green"
+    command: "gh pr checks 2018 --repo OmniNode-ai/omniclaude"
+dod_evidence:
+  - id: "dod-sudo-fix-verified"
+    description: "Verifies PR #2018's diff actually adds the non-interactive 'sudo -n true' probe to all
+      7 previously-vulnerable sites (6 in ci.yml, 1 in onex-schema-compat.yml) — falsifiable: fails if
+      the fix commit doesn't contain exactly 7 added lines matching the pattern, e.g. if the fix were
+      reverted, partially applied, or never landed."
+    source: "manual"
+    status: "verified"
+    checks:
+      - check_type: "command"
+        check_value: >-
+          test "$(gh api repos/OmniNode-ai/omniclaude/pulls/2018/files --paginate --jq '.[] | select(.filename==".github/workflows/ci.yml"
+          or .filename==".github/workflows/onex-schema-compat.yml") | .patch' | grep -c '+.*sudo -n true')"
+          -eq 7
+  - id: "dod-OmniNode-ai-omniclaude-pr-2018"
+    description: "PR #2018 on OmniNode-ai/omniclaude — fix(OMN-16402): probe passwordless sudo before
+      privileged CI fallback. 7 sites fixed (ci.yml x6, onex-schema-compat.yml x1)."
+    source: "generated"
+    checks:
+      - check_type: "command"
+        check_value: "gh pr view 2018 --repo OmniNode-ai/omniclaude --json number,state,headRefName"
+  - id: "occ-self-bind-pr-6891"
+    description: "Binds OMN-16402 to OCC companion PR #6891 (self-bind)."
+    source: "generated"
+    checks:
+      - check_type: "command"
+        check_value: "gh pr view 6891 --repo OmniNode-ai/onex_change_control --json number,state"
+emergency_bypass:
+  enabled: false
+  justification: ""
+  follow_up_ticket_id: ""

@@ -1,0 +1,95 @@
+---
+schema_version: "1.0.0"
+ticket_id: "OMN-13601"
+title: "bus-less onex delegate --bus inmemory routes through LocalDelegationDispatchPort instead of timing
+  out on the orchestrator terminal-wait"
+summary: >-
+  The bus-less in-memory CLI delegation path (onex delegate --bus inmemory -> RuntimeLocal single-node
+  runtime -> HandlerDelegateSkill) never reached LocalDelegationDispatchPort.dispatch(). HandlerDelegateSkill
+  selected RuntimeDelegationDispatchPort whenever an event_bus was injected, publishing a delegation-request
+  command and waiting 300s on the delegation-completed/failed terminal events. In a single-node in-memory
+  runtime there is no co-deployed downstream consumer of onex.cmd.omnibase-infra.delegation-request.v1
+  (that is node_delegation_orchestrator, which receipt-mode does not boot), so the orchestrator terminal-wait
+  timed out at 300s with empty provider/model_name/response and no delegation_events sqlite evidence row.
+  This left the Mode-1 (local + in-memory bus = "shortest viable beta") path non-functional end-to-end
+  and blocked the OMN-13597 readback. The fix introduces transport-aware dispatch-port selection owned
+  by the ports package (port_selection.select_delegation_dispatch_port): a bus-less OR in-memory bus resolves
+  to the in-process LocalDelegationDispatchPort (routing authority + canonical LLM effect + canonical
+  quality gate + sqlite evidence row, with #1428's killable-timeout now actually applied to this path);
+  an external broker bus resolves to RuntimeDelegationDispatchPort (publish + await terminal over the
+  bus, where the full multi-node runtime is co-deployed). HandlerDelegateSkill stays transport-agnostic.
+  The legacy LocalRuntimeDispatch driver (runtime_selection="local", distinct from the RuntimeLocal CLI
+  path), which round-trips the command over its own bus with an installed downstream effect, now pins
+  RuntimeDelegationDispatchPort explicitly so its behavior is unchanged. This PR ships no runtime contract/topic/migration
+  change and performs no live deploy or runtime restart.
+is_seam_ticket: false
+interface_change: false
+interfaces_touched: []
+evidence_requirements:
+  - kind: "tests"
+    description: >-
+      Unit tests in tests/unit/nodes/node_delegate_skill_orchestrator/test_handler.py prove that HandlerDelegateSkill
+      constructed with an EventBusInmemory resolves the in-process LocalDelegationDispatchPort, and that
+      a non-in-memory (external broker) bus resolves RuntimeDelegationDispatchPort. The legacy LocalRuntimeDispatch
+      round-trip tests in tests/test_codex_runtime_client.py still pass unchanged.
+    command: "uv run pytest tests/unit/nodes/node_delegate_skill_orchestrator/test_handler.py tests/test_codex_runtime_client.py
+      -q"
+  - kind: "ci"
+    description: >-
+      ruff format + ruff check + mypy --strict clean on the changed source files; full pre-commit run
+      on the changed files passes; the full omnimarket pytest suite is green except 3 pre-existing @pytest.mark.kafka
+      integration tests that require a live broker on localhost:9092 (not running locally; unrelated to
+      this change).
+    command: "uv run mypy src/omnimarket/adapters/codex/local_runtime_dispatch.py src/omnimarket/nodes/node_delegate_skill_orchestrator/
+      --strict"
+emergency_bypass:
+  enabled: false
+  justification: ""
+  follow_up_ticket_id: ""
+dod_evidence:
+  - id: "dod-omnimarket-pr"
+    description: >-
+      The omnimarket product PR adds port_selection.select_delegation_dispatch_port (ports-layer, transport-aware)
+      and rewires HandlerDelegateSkill.__init__ to delegate port selection to it, so a bus-less or in-memory
+      bus resolves LocalDelegationDispatchPort (in-process effect + quality gate + sqlite evidence row)
+      and an external broker bus resolves RuntimeDelegationDispatchPort. LocalRuntimeDispatch pins the
+      runtime port explicitly to keep its bus round-trip unchanged. It cites Evidence-Source: OCC#<this-pr>.
+    source: "manual"
+    checks:
+      - check_type: "command"
+        check_value: "grep -q '^status: PASS$' drift/dod_receipts/OMN-13601/dod-omnimarket-pr/command.yaml
+          && grep -q 'e134c16b8416e9eccc9779e901b978f1bb69c58d' drift/dod_receipts/OMN-13601/dod-omnimarket-pr/command.yaml"
+  - id: "dod-occ-evidence-source"
+    description: >-
+      This OCC contract is the central Receipt-Gate Evidence-Source for OMN-13601; the omnimarket PR cites
+      Evidence-Source: OCC#<this-pr> so its verify Receipt Gate resolves against the OCC PR head.
+    source: "manual"
+    checks:
+      - check_type: "command"
+        check_value: "test -f contracts/OMN-13601.yaml"
+  - id: "dod-port-selection-tests"
+    description: >-
+      Test proof: HandlerDelegateSkill(EventBusInmemory(...)) resolves LocalDelegationDispatchPort and
+      a non-in-memory broker bus resolves RuntimeDelegationDispatchPort (two new tests in test_handler.py).
+      The previously-failing legacy LocalRuntimeDispatch round-trip tests (test_delegate_skill_explicit_local_runtime_dispatches_via_contract_bus,
+      test_delegate_skill_python_m_local_runtime_dispatch) pass after pinning the runtime port on that
+      driver.
+    source: "manual"
+    checks:
+      - check_type: "command"
+        check_value: "grep -q '^status: PASS$' drift/dod_receipts/OMN-13601/dod-port-selection-tests/command.yaml
+          && grep -q 'e134c16b8416e9eccc9779e901b978f1bb69c58d' drift/dod_receipts/OMN-13601/dod-port-selection-tests/command.yaml"
+  - id: "dod-deploy-assessment"
+    description: >-
+      Deploy assessment: this PR edits in-process node dispatch-port wiring (a new ports-layer selector,
+      the handler constructor, the legacy LocalRuntimeDispatch driver) plus unit tests. It ships no runtime
+      contract/topic/migration change and requires no image rebuild. No live deploy or runtime restart
+      is performed by merging this PR. The DoD's live readback (a local onex delegate --bus inmemory of
+      a refused prompt routing through LocalDelegationDispatchPort and writing a delegation_events sqlite
+      row with quality_gate_passed=false, verifier != runner) is deferred to the operator-gated dev-lane
+      redeploy/reprove run and is NOT claimed here.
+    source: "manual"
+    checks:
+      - check_type: "command"
+        check_value: "grep -q '^status: PASS$' drift/dod_receipts/OMN-13601/dod-deploy-assessment/command.yaml
+          && grep -q 'no live deploy' drift/dod_receipts/OMN-13601/dod-deploy-assessment/command.yaml"

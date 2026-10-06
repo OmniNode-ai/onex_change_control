@@ -1,0 +1,73 @@
+---
+schema_version: "1.0.0"
+ticket_id: "OMN-13152"
+title: "feat(omnibase_core): ArtifactStore Phase 1 hardening — retention/quota/redaction/restricted-tier
+  read"
+summary: >-
+  Wave I durable-capture work. Extends the durable-capture ArtifactStore (OMN-13093 minimal slice) in
+  place with Phase 1 hardening, all in omnibase_core (stdlib + Pydantic only, no infra deps). Adds: (1)
+  retention classes (EnumArtifactRetentionClass: ephemeral/session/ticket/permanent) with a configurable
+  per-class default TTL plus explicit per-write TTL override, recorded on the sidecar; (2) quota enforcement
+  — max per-write size (max_artifact_bytes) and max total per-scope size (max_scope_bytes, keyed on scope_ref)
+  — exceeding either raises ArtifactQuotaExceededError with no silent truncation and no partial write
+  (nothing is persisted on reject); (3) redaction state on the sidecar (EnumArtifactRedactionState: raw/redacted/
+  restricted/secret_detected) — on secret detection the store refuses the raw write and records an auditable
+  secret_detected sidecar with NO blob (ArtifactSecretDetectedError), and a supplied redaction transform
+  is applied and records its name with stored bytes content-addressed over the transformed output; (4)
+  restricted visibility tier — session_transcript and hook_trace are restricted by default and read()
+  gates restricted reads behind ModelArtifactAuthContext; (5) hardened read(artifact_ref, *, auth_context)
+  that hash-verifies on every read, enforces the restricted-tier auth gate, supports chunked streaming
+  (read_chunks), and raises explicitly on a missing artifact; (6) typed ModelArtifactMetadata sidecar
+  (frozen, extra=forbid) replacing the dict sidecar, with read_meta returning the typed model. 76 unit
+  tests green; dedicated failing-now-passing tests for hash-mismatch, missing-artifact, quota-exceeded
+  (per-write + per-scope), secret_detected (raw write refused, no blob), and restricted-without-auth.
+  mypy --strict clean; ruff clean; full-suite collection clean (42267 collected, 0 import errors — the
+  read_meta return-type change has no in-repo or cross-repo consumers).
+is_seam_ticket: false
+interface_change: false
+interfaces_touched: []
+emergency_bypass:
+  enabled: false
+  justification: ""
+  follow_up_ticket_id: ""
+dod_evidence:
+  - id: "dod-omnibase-core-pr-1301"
+    description: >-
+      Per-code-PR binding receipt for omnibase_core PR #1301 (jonahgabriel/omn-13152-phase-1-hardening-artifactstore-retention-quota-redaction,
+      base=dev). Implements ArtifactStore Phase 1 hardening: retention classes + TTL, per-write + per-scope
+      quota (no silent truncation), redaction state + secret-detection refusal, restricted visibility
+      tier, hardened read(auth_context) with hash-verify + chunked streaming + explicit missing-artifact
+      error, and a typed ModelArtifactMetadata sidecar. 76 unit tests green; dedicated tests for hash-mismatch,
+      missing-artifact, quota-exceeded, secret_detected, and restricted-without-auth. mypy --strict +
+      ruff clean; pre-commit on changed files green. Binds OMN-13152 to omnibase_core PR #1301 by pr_number
+      and commit_sha.
+    source: "manual"
+    status: "verified"
+    checks:
+      - check_type: "command"
+        check_value: >-
+          grep -q '^status: PASS$' drift/dod_receipts/OMN-13152/dod-omnibase-core-pr-1301/command.yaml
+  - id: "dod-deploy-no-runtime-impact"
+    description: >-
+      Deploy-path DoD evidence for OMN-13152. The change is a pure library extension inside omnibase_core
+      (new enums, new Pydantic models, in-place ArtifactStore methods + new unit tests). It adds no runtime
+      node, changes no contract topic, alters no image build input, and performs no .201 mutation. The
+      new ArtifactStore surface reaches consumers on the next normal omnibase_core release; no separate
+      redeploy is gated by this PR. deploy
+    source: "manual"
+    status: "verified"
+    checks:
+      - check_type: "command"
+        check_value: >-
+          grep -q '^status: PASS$' drift/dod_receipts/OMN-13152/dod-deploy-no-runtime-impact/command.yaml
+  - id: "dod-occ-pr-self"
+    description: >-
+      OCC self-binding receipt for the central evidence PR carrying the OMN-13152 contract and the omnibase_core
+      PR #1301 binding. Binds the OCC PR itself by pr_number so the OCC receipt-gate eligibility check
+      can resolve a PASS receipt for the evidence PR.
+    source: "manual"
+    status: "verified"
+    checks:
+      - check_type: "command"
+        check_value: >-
+          grep -q '^status: PASS$' drift/dod_receipts/OMN-13152/dod-occ-pr-self/command.yaml

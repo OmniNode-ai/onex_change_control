@@ -1,0 +1,54 @@
+---
+schema_version: "1.0.0"
+ticket_id: "OMN-18084"
+evidence_item_id: "ac1-handler-error-leg-is-guarded"
+check_type: "test_passes"
+check_value: |-
+  uv run pytest tests/unit/runtime/auto_wiring/test_omn18084_handler_error_leg_dlq_loop.py::TestHandlerErrorOnADeadLetterTopicIsNotRepublished -q
+contract_sha256: "sha256:d007aaee4c32683e9aebf051ab0e83bd497906837cb0f33740208ff3e2b37e41"
+contract_entry_sha256: "sha256:27a44fd5f3b7e80932fd3e1be9898a62cd2b8895d1d6a056530cd5ec8be17d99"
+status: PASS
+run_timestamp: "2026-09-09T17:53:09+00:00"
+commit_sha: "e13932a406b5bc5ef34fefc210896238ce9a1909"
+runner: "dlq-loop-fix"
+verifier: "occ-union-resolve-same-ticket-companion"
+probe_command: |-
+  gh api repos/OmniNode-ai/omnibase_infra/commits/e13932a406b5bc5ef34fefc210896238ce9a1909 --jq .sha \
+    && (cd "${OMNI_HOME}/omni_worktrees/OMN-18084/omnibase_infra" \
+        && uv run pytest tests/unit/runtime/auto_wiring/test_omn18084_handler_error_leg_dlq_loop.py::TestHandlerErrorOnADeadLetterTopicIsNotRepublished -q -p no:cacheprovider)
+probe_stdout: |
+  e13932a406b5bc5ef34fefc210896238ce9a1909
+  ....                                                                     [100%]
+  4 passed in 0.18s
+actual_output: |-
+  PASS: 4 tests green at e13932a406b5bc5ef34fefc210896238ce9a1909. AC1 is bound to the class whose own docstring states the
+  criterion, so the mapping is transcribed from the module rather than inferred from a name.
+
+  The RED half was taken in this lane, not asserted. At the parent commit a4393794 three of these
+  four fail, with these verbatim assertions:
+
+    test_events_dlq_handler_failure_writes_nothing_back_to_its_own_topic
+      AssertionError: a handler failure on a record consumed FROM
+      onex.dlq.omnibase-infra.events.v1 was re-dead-lettered; sinks written:
+      ['onex.dlq.omnibase-infra.events.v1']
+
+    test_the_republished_record_would_name_its_own_source_topic
+      AssertionError: the boundary wrote a record back onto the topic it read it from - a fixed
+      point that amplifies 1:1 with no bound
+
+    test_the_commands_dlq_leg_is_guarded_on_the_same_terms
+      AssertionError: a handler failure on a record consumed FROM
+      onex.dlq.omnibase-infra.commands.v1 was re-dead-lettered
+
+  The fourth, test_an_ordinary_topic_still_reaches_the_dlq, passes at BOTH commits by design. It
+  is the positive control: it asserts a non-DLQ handler failure still produces exactly one
+  dead-letter write, to a topic other than its source. Without it a guard that returned early for
+  every topic would satisfy the three assertions above while deleting the boundary's whole reason
+  to exist, and this receipt would read as a pass.
+
+  The test drives the real _make_event_bus_callback boundary with a real ModelDispatchResult in
+  the live HANDLER_ERROR shape, and names onex.dlq.omnibase-infra.events.v1 explicitly, because
+  the defect is a missing branch at that seam - an isolation test calling the handler directly
+  passes with the loop running.
+exit_code: 0
+pr_number: 3365

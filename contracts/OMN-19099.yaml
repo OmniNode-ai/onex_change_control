@@ -1,0 +1,112 @@
+---
+schema_version: 1.0.0
+ticket_id: OMN-19099
+title: Release Staleness Gate re-reads the same eight-repo roster on every PR with no batching
+summary: |-
+  The gate carries no paths filter and no if condition, by design, so it runs
+  on every pull request in this repo and then re-read identical roster data
+  every time: 50 REST requests per run against the eight-repo roster, about
+  12,000 on 2026-09-21 between 12:00Z and 21:00Z, roughly 2,300 in the 18:00Z
+  hour, against an installation ceiling of either 6,050 or 15,000 per hour.
+  That was 22% of every App-authenticated run in the window from one check.
+  The tag reads and the packaged-path history are now one GraphQL document
+  each, measured at 18 requests per sweep. compare deliberately stays on REST
+  so its truncation refusal is untouched, and per-commit path attribution is
+  preserved rather than taken from the range aggregate.
+is_seam_ticket: false
+interface_change: false
+interfaces_touched: []
+evidence_requirements:
+  - kind: tests
+    description: |-
+      A full roster sweep stays inside a pinned request budget, the saving is
+      structural rather than a smaller constant, and neither the verdict nor
+      the refusals change.
+    command: uv run pytest tests/test_check_release_staleness.py -q
+  - kind: ci
+    description: PR CI checks green
+    command: gh pr checks ${PR_NUMBER} --repo ${REPO}
+emergency_bypass:
+  enabled: false
+  justification: ''
+  follow_up_ticket_id: ''
+dod_evidence:
+  - id: the-request-budget-is-pinned-not-documented
+    description: |-
+      The saving itself, and the reason it cannot silently regress. The
+      budget lives in a test constant rather than in prose, so raising it is
+      the only way to make an over-budget implementation pass and that raise
+      is visible in a diff. Measured empirically rather than asserted: setting
+      the constant to 0 reports 18 gh invocations for an eight-repo roster,
+      against 50 before the change. The second test is the one that
+      distinguishes batching from a micro-optimisation -- going from two repos
+      to eight must add only the per-repo compare reads, never more tag or
+      history documents, so the saving holds as the roster grows instead of
+      drifting back toward 50.
+    source: manual
+    status: verified
+    checks:
+      - check_type: command
+        check_value: uv run pytest tests/test_check_release_staleness.py::test_a_full_roster_sweep_stays_inside_the_request_budget
+          tests/test_check_release_staleness.py::test_the_batch_does_not_scale_with_roster_size -q
+  - id: per-commit-attribution-survives-the-batching
+    description: |-
+      The control for the route that was considered and REFUSED during design.
+      The obvious cheaper step is to read the packaged set off the compare
+      payload already in hand, and the module docstring rejects it by name:
+      that files array is the AGGREGATE diff of the whole range, so it answers
+      whether anything packaged changed rather than which commit is the oldest
+      packaged one, which is the age this gate reports. An implementation
+      using it would report the range oldest commit. The fixture is built so
+      those two answers differ and only one is right -- the oldest commit in
+      range is docs-only at 96h and the newest is packaged at 2h, so the
+      aggregate route reads STALE and the correct one reads FRESH. The
+      packaged count is asserted as well as the verdict, because a verdict
+      alone could be right by accident.
+    source: manual
+    status: verified
+    checks:
+      - check_type: command
+        check_value: uv run pytest tests/test_check_release_staleness.py::test_the_oldest_packaged_commit_is_reported_not_the_oldest_commit
+          tests/test_check_release_staleness.py::test_docs_only_commits_are_not_release_debt -q
+  - id: one-dead-repo-in-a-batch-is-still-one-error-row
+    description: |-
+      The failure batching introduces if nobody guards it. GraphQL answers a
+      partial document with data for the aliases that resolved and an errors
+      array naming the ones that did not, so attributing an error to the whole
+      document would turn one unreadable repo into eight -- recreating at the
+      transport layer the exact one-event-reads-as-many-failures conflation
+      that made the 2026-09-21 quota exhaustion take an hour to diagnose. The
+      test drives one repo to a GraphQL alias error inside a document that
+      also carries a healthy repo, and asserts the healthy one is still
+      measured. An error with no usable path is attributed to every alias
+      rather than dropped, because an unattributable failure means we do not
+      know which repos were read.
+    source: manual
+    status: verified
+    checks:
+      - check_type: command
+        check_value: uv run pytest tests/test_check_release_staleness.py::test_one_unreadable_repo_in_a_batch_is_one_error_row
+          tests/test_check_release_staleness.py::test_unreadable_repo_is_an_error_row_not_a_silent_zero
+          -q
+  - id: the-verdict-and-the-refusals-are-unchanged
+    description: |-
+      This is a transport change and must decide nothing differently. Three
+      pre-existing behaviours are the ones a batching rewrite would most
+      plausibly break, and each is asserted against the batched path rather
+      than assumed: the truncation refusal, where a collected commit count
+      short of the API's own total_commits refuses rather than under-reporting
+      a capped range as a clean repo; semver ordering of tags, which is still
+      applied locally because GraphQL can order refs alphabetically or by tag
+      commit date and neither is semver -- alphabetically v0.4.99 sorts above
+      v0.4.183; and the never-skip contract, since CI Summary's L4 layer is
+      success-only and a skipped external context fails closed. The whole
+      suite is run as the fourth command so a regression anywhere else in the
+      file is caught too.
+    source: manual
+    status: verified
+    checks:
+      - check_type: command
+        check_value: uv run pytest tests/test_check_release_staleness.py::test_truncated_compare_refuses_rather_than_under_reporting
+          tests/test_check_release_staleness.py::test_latest_tag_is_chosen_by_semver_not_api_order tests/test_check_release_staleness.py::test_gate_workflow_runs_unconditionally_on_pull_request
+          tests/test_check_release_staleness.py -q

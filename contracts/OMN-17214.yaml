@@ -1,0 +1,233 @@
+---
+schema_version: "1.0.0"
+ticket_id: "OMN-17214"
+title: "Autobind OCC evidence for OMN-17214"
+summary: >
+  OCC contract authored by node_occ_companion_compute (OMN-14285) for OmniNode-ai/omnibase_infra PR #3491.
+is_seam_ticket: false
+interface_change: false
+interfaces_touched: []
+requirements:
+  - id: "req-transcribed-acceptance-criteria"
+    statement: |-
+      The acceptance criteria this ticket's author declared, transcribed from the ticket body. The ticket body is the source and this block is the copy; each criterion's id is the label the sibling binds_ac entry claims.
+    acceptance:
+      - id: "AC6"
+        statement: |-
+          AC6 — A gate (CI or contract-validation) fails when a new subscription path is added that does not register a flow counter. Per Operating Rule 5, detection that is not enforcement gets ignored; this defect is itself an instance of an un-gated seam drifting.
+      - id: "AC5"
+        statement: |-
+          AC5 — A hermetic test drives BOTH wiring branches (`_make_event_bus_callback` and `_make_raw_event_projection_callback`) and asserts a registered counter key exists for each. **Falsified by** a test that only covers the branch that already works — the defect is precisely that one branch was never exercised.
+      - id: "AC1"
+        statement: |-
+          AC1 — `node_gateway_link_health_projection_compute` has rows in `consumer_flow_windows`, and its verdict is `STALLED` (in > 0, out == 0), on the live dev lane. **Falsified by** zero rows, or by any state other than `STALLED` while `gateway-link-health-upsert.v1` HWM stays 0 and `gateway-heartbeat.v1` advances. This is plan §4.2 item 3, still open.
+      - id: "AC2"
+        statement: |-
+          AC2 — The count of live `Stable` (group, topic) subscriptions with zero flow rows over a 10-minute window drops from 57 to the set that is genuinely off the auto-wiring path, and that residual set is **enumerated in the ticket by name with the reason each is off-path** — not left as a number. **Falsified by** reporting a smaller number without the residual enumeration.
+      - id: "AC3"
+        statement: |-
+          AC3 — A reducer that publishes to its declared `publish_topics` reports `messages_out > 0`. Concretely: `local.omnimarket.projection_consumer_flow` reads `FLOWING`, not `STALLED`, in a window in which `projection-consumer-flow-applied.v1` advances. **Falsified by** the Phase 1 writer continuing to report itself stalled.
+      - id: "AC4"
+        statement: |-
+          AC4 — After AC3, the STALLED population over a 10-minute window contains no pair whose declared output topic advanced during that window. **Falsified by** any surviving producing-but-STALLED pair.
+evidence_requirements:
+  - kind: "ci"
+    description: "PR #3491 CI checks green"
+    command: "gh pr checks ${PR_NUMBER} --repo ${REPO}"
+  - kind: "tests"
+    description: |-
+      Behavior proof for PR #3491 on OmniNode-ai/omnibase_infra, derived from the PR's own diff: the test target(s) it adds or changes. Bound as dod_evidence item `dod-occ-diff-derived-behavior-proof`, executed at cwd `${OMNI_HOME}/omnibase_infra`.
+    command: |-
+      uv run pytest tests/ci/test_omn17214_subscription_flow_counter_gate.py tests/unit/runtime/auto_wiring/test_omn17214_raw_projection_flow_seam.py -q
+emergency_bypass:
+  enabled: false
+  justification: ""
+  follow_up_ticket_id: ""
+dod_evidence:
+  - id: "dod-OmniNode-ai-omnibase_infra-pr-3491"
+    description: >-
+      PR #3491 on OmniNode-ai/omnibase_infra — Evidence-Source autobind. Its two checks read the landed
+      content: the raw-projection branch now routes dispatch-and-apply through the counted seam, and `.pre-commit-config.yaml`
+      is in the diff, which is the half of AC6 that makes the gate an enforcement surface locally rather
+      than a test that exists.
+    source: "generated"
+    binds_ac:
+      - "AC6"
+    checks:
+      - check_type: "command"
+        check_value: |-
+          gh api repos/OmniNode-ai/omnibase_infra/contents/src/omnibase_infra/runtime/auto_wiring/handler_wiring.py?ref=94332109e32c739b3d6fe042d5930f3fe24bd474 --jq '.content' | base64 -d | grep -c 'def _dispatch_and_apply_raw_projection'
+      - check_type: "command"
+        check_value: |-
+          gh api repos/OmniNode-ai/omnibase_infra/pulls/3491/files --paginate --jq '.[].filename' | grep -cFx '.pre-commit-config.yaml'
+  - id: "dod-deploy-assessment"
+    description: "Deploy-scope DoD so PR #3491 clears the deploy-gate (F-05)."
+    source: "generated"
+    checks:
+      - check_type: "command"
+        check_value: |-
+          gh api repos/OmniNode-ai/omnibase_infra/pulls/3491/files --paginate --jq '.[].filename' | grep -ciE 'nodes/|handlers/|runtime/|services/|docker|monitor_logs|deploy'
+  - id: "dod-occ-diff-derived-behavior-proof"
+    description: >-
+      PR #3491 on OmniNode-ai/omnibase_infra — diff-derived behavior proof (OMN-16434). Runs both modules
+      this PR adds: the AC5 behavioural module, which drives BOTH wiring branches from one parametrized
+      list and asserts a registered counter key, a zero row and a FLOWING/STALLED separation for each;
+      and the AC6 gate module, which reads the selectable branches out of the wiring function itself so
+      a third branch added later is covered without editing the test.
+    source: "generated"
+    binds_ac:
+      - "AC5"
+      - "AC6"
+    checks:
+      - check_type: "test_passes"
+        check_value: |-
+          uv run pytest tests/ci/test_omn17214_subscription_flow_counter_gate.py tests/unit/runtime/auto_wiring/test_omn17214_raw_projection_flow_seam.py -q
+        cwd: "${OMNI_HOME}/omnibase_infra"
+  - id: "occ-self-bind-pr-9380"
+    description: "Binds OMN-17214 to OCC companion PR #9380 (self-bind)."
+    source: "generated"
+    checks:
+      - check_type: "command"
+        check_value: "gh pr view 9380 --repo OmniNode-ai/onex_change_control --json number,state"
+  - id: "dod-OmniNode-ai-omnibase_infra-pr-3678"
+    description: "PR #3678 on OmniNode-ai/omnibase_infra — Evidence-Source autobind."
+    source: "generated"
+    checks:
+      - check_type: "command"
+        check_value: |-
+          gh api repos/OmniNode-ai/omnibase_infra/contents/src/omnibase_infra/runtime/observability/consumer_flow_counters.py?ref=4b110fe5fcbad2d393a279ebc3cabeec5644e72e --jq '.content' | base64 -d | grep -c 'def record_flow_output'
+    binds_ac:
+      - "AC1"
+      - "AC2"
+      - "AC3"
+      - "AC4"
+      - "AC5"
+    ac_bindings:
+      - label: "AC1"
+        criterion_hash: "3f62121ef1468e298d416e2cfab68d802671925cd1427beaa67432182d645874"
+        proposed_by: "occ-autobind"
+        accepted_by: "7a850ce1-f95e-431f-b4e3-62f7449f04c0"
+        accepted_at: "2026-08-30T15:27:16Z"
+      - label: "AC2"
+        criterion_hash: "cd944456d6e5bce3dc978bbc66234caccacd3c017fbd4ef51e73a5302402e8b9"
+        proposed_by: "occ-autobind"
+        accepted_by: "7a850ce1-f95e-431f-b4e3-62f7449f04c0"
+        accepted_at: "2026-08-30T15:27:16Z"
+      - label: "AC3"
+        criterion_hash: "446e680e87e2652c362dc82e93ce1be0cc050b3c746a275f62f99b2b771a9924"
+        proposed_by: "occ-autobind"
+        accepted_by: "7a850ce1-f95e-431f-b4e3-62f7449f04c0"
+        accepted_at: "2026-08-30T15:27:16Z"
+      - label: "AC4"
+        criterion_hash: "f7bf4840e4f9efefb4ba8d3b1c53646f111439c3411532f7911e906eb7875aff"
+        proposed_by: "occ-autobind"
+        accepted_by: "7a850ce1-f95e-431f-b4e3-62f7449f04c0"
+        accepted_at: "2026-08-30T15:27:16Z"
+      - label: "AC5"
+        criterion_hash: "5ebe86524d9073d09c8e592661a95814732cc74c27fb5a0177739e4a965b60d5"
+        proposed_by: "occ-autobind"
+  - id: "dod-OmniNode-ai-omnibase_infra-pr-3678-ci"
+    description: "PR #3678 on OmniNode-ai/omnibase_infra — product diff scope check (OMN-14425)."
+    source: "generated"
+    checks:
+      - check_type: "command"
+        check_value: "gh pr view 3678 --repo OmniNode-ai/omnibase_infra --json files"
+  - id: "occ-self-bind-pr-9966"
+    description: "OCC companion PR #9966 — self-bind for OMN-17214 (OMN-14650)."
+    source: "generated"
+    checks:
+      - check_type: "command"
+        check_value: "gh pr view 9966 --repo OmniNode-ai/onex_change_control --json number,state"
+  - id: "dod-omn17214-retire-nonprobative-bindings"
+    description: >-
+      OMN-18577 — retires the five bindings `dod-OmniNode-ai-omnibase_infra-pr-3678` carries. That item's
+      only check greps merged source for one function definition, which proves the code was written and
+      nothing about what the system did. AC1 through AC4 are live-lane measurements, and AC3 was live-FALSE
+      at the moment the binding existed: the consumer read `in=76 out=0 STALLED` across 19 windows at
+      2026-09-17T09:20Z on lane revision `abca7fb2`, while the binding recorded it as proven. AC5 is settled
+      by a hermetic test that this item does not run; it is bound correctly by `dod-occ-diff-derived-behavior-proof`,
+      which does. Nothing is deleted — the original item and its acceptance records stay for audit, and
+      the append-only rule is untouched. All seven criteria are met on live evidence recorded on the ticket;
+      this retirement corrects the evidence record so the close rests on that evidence rather than on
+      a grep.
+    source: "manual"
+    checks:
+      - check_type: "test_passes"
+        check_value: >-
+          uv run pytest tests/test_omn_18577_static_evidence_on_live_criterion.py -k "retire or retirement
+          or partial_coverage" -q
+    supersedes_ac_binding:
+      - item: "dod-OmniNode-ai-omnibase_infra-pr-3678"
+        label: "AC1"
+        reason: >-
+          AC1 is settled by reading `consumer_flow_windows` rows and a STALLED verdict on the live dev
+          lane while a topic high-watermark stays flat. A source grep cannot observe either fact.
+      - item: "dod-OmniNode-ai-omnibase_infra-pr-3678"
+        label: "AC2"
+        reason: >-
+          AC2 counts live Stable subscriptions with zero flow rows over a ten-minute window and requires
+          the residual set enumerated by name. A source grep counts neither subscriptions nor rows.
+      - item: "dod-OmniNode-ai-omnibase_infra-pr-3678"
+        label: "AC3"
+        reason: >-
+          AC3 requires a named consumer to read FLOWING in a window in which its declared output topic
+          advances. It was live-FALSE when this binding was recorded, which is the proof that the grep
+          and the criterion are not the same question.
+      - item: "dod-OmniNode-ai-omnibase_infra-pr-3678"
+        label: "AC4"
+        reason: >-
+          AC4 requires that no pair in the STALLED population had its declared output topic advance during
+          the window. That is a two-sample live measurement, not a property of the merged tree.
+      - item: "dod-OmniNode-ai-omnibase_infra-pr-3678"
+        label: "AC5"
+        reason: >-
+          AC5 requires a hermetic test to drive both wiring branches and assert a registered counter key
+          for each. This item runs no test; it greps for one function definition. AC5 stays bound by `dod-occ-diff-derived-behavior-proof`,
+          whose check executes those tests.
+  - id: "dod-OmniNode-ai-omninode_infra-pr-1576"
+    description: "PR #1576 on OmniNode-ai/omninode_infra — Evidence-Source autobind."
+    source: "generated"
+    checks:
+      - check_type: "command"
+        check_value: "gh pr view 1576 --repo OmniNode-ai/omninode_infra --json number,state"
+      - check_type: "command"
+        check_value: |-
+          gh api repos/OmniNode-ai/omninode_infra/pulls/1576/files --paginate --jq '.[].filename' | grep -cFx 'tools/beta_board/beta_board_data.py'
+    binds_ac:
+      - "AC1"
+      - "AC2"
+      - "AC3"
+      - "AC4"
+      - "AC5"
+    ac_bindings:
+      - label: "AC1"
+        criterion_hash: "3f62121ef1468e298d416e2cfab68d802671925cd1427beaa67432182d645874"
+        proposed_by: "occ-autobind"
+        accepted_by: "7a850ce1-f95e-431f-b4e3-62f7449f04c0"
+        accepted_at: "2026-08-30T15:27:16Z"
+      - label: "AC2"
+        criterion_hash: "cd944456d6e5bce3dc978bbc66234caccacd3c017fbd4ef51e73a5302402e8b9"
+        proposed_by: "occ-autobind"
+        accepted_by: "7a850ce1-f95e-431f-b4e3-62f7449f04c0"
+        accepted_at: "2026-08-30T15:27:16Z"
+      - label: "AC3"
+        criterion_hash: "446e680e87e2652c362dc82e93ce1be0cc050b3c746a275f62f99b2b771a9924"
+        proposed_by: "occ-autobind"
+        accepted_by: "7a850ce1-f95e-431f-b4e3-62f7449f04c0"
+        accepted_at: "2026-08-30T15:27:16Z"
+      - label: "AC4"
+        criterion_hash: "f7bf4840e4f9efefb4ba8d3b1c53646f111439c3411532f7911e906eb7875aff"
+        proposed_by: "occ-autobind"
+        accepted_by: "7a850ce1-f95e-431f-b4e3-62f7449f04c0"
+        accepted_at: "2026-08-30T15:27:16Z"
+      - label: "AC5"
+        criterion_hash: "5ebe86524d9073d09c8e592661a95814732cc74c27fb5a0177739e4a965b60d5"
+        proposed_by: "occ-autobind"
+        accepted_by: "7a850ce1-f95e-431f-b4e3-62f7449f04c0"
+        accepted_at: "2026-08-30T15:27:16Z"
+  - id: "occ-self-bind-pr-10398"
+    description: "Binds OMN-17214 to OCC companion PR #10398 (self-bind)."
+    source: "generated"
+    checks:
+      - check_type: "command"
+        check_value: "gh pr view 10398 --repo OmniNode-ai/onex_change_control --json number,state"

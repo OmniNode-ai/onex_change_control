@@ -1,0 +1,48 @@
+---
+schema_version: "1.0.0"
+ticket_id: "OMN-13361"
+title: "e2e probe: fix _wait_for_terminal_event hang (add real timeout)"
+summary: >
+  The omnimarket e2e-probe helper _wait_for_terminal_event relied on aiokafka's consumer_timeout_ms to
+  break 'async for msg in consumer', but that parameter does not stop __anext__ on an idle topic, so the
+  TimeoutError was unreachable and a never-arriving terminal hung the test indefinitely — TestE2E4BTerminalEvent
+  was skipped (Gate-Zero GZ-2 / defect G-5). Fix wraps the consume loop in asyncio.timeout so the wait
+  bounds at the configured timeout and raises TimeoutError on miss. Test-only change; no source, topic,
+  envelope, or contract API change; no live-lane mutation.
+is_seam_ticket: false
+interface_change: false
+interfaces_touched: []
+evidence_requirements:
+  - kind: "tests"
+    description: >
+      New CI-runnable proof (fake consumer, no live bus) asserts the wait raises TimeoutError within the
+      bound when idle (was: hang) and returns a matching event otherwise.
+    command: "uv run pytest tests/integration/e2e_probe/test_terminal_wait_timeout.py -q"
+emergency_bypass:
+  enabled: false
+  justification: ""
+  follow_up_ticket_id: ""
+dod_evidence:
+  - id: "dod-omnimarket-pr-1303"
+    description: >
+      omnimarket PR #1303 wraps _wait_for_terminal_event in asyncio.timeout in tests/integration/e2e_probe/test_delegation_e2e_probe.py
+      and adds tests/integration/e2e_probe/test_terminal_wait_timeout.py. Evidence anchor: omnimarket
+      head commit 52b66f6b18575c913e9a712f06a643b8456a00ff.
+    source: "manual"
+    checks:
+      - check_type: "command"
+        check_value: "grep -q '^status: PASS$' drift/dod_receipts/OMN-13361/dod-omnimarket-pr-1303/command.yaml
+          && grep -q '^pr_number: 1303$' drift/dod_receipts/OMN-13361/dod-omnimarket-pr-1303/command.yaml
+          && grep -q 'passed' drift/dod_receipts/OMN-13361/dod-omnimarket-pr-1303/command.yaml"
+  - id: "dod-deploy-assessment"
+    description: >
+      Deploy assessment: test-only change in omnimarket with no source, topic schema, envelope, or contract
+      API change and no live-lane mutation. No live deploy is performed by this PR. The re-enabled TestE2E4BTerminalEvent
+      runs against a live bus only under the OMN_ALLOW_LIVE_E2E_PROBE opt-in. The receipt check_value
+      carries the deploy keyword for the deploy-gate.
+    source: "manual"
+    checks:
+      - check_type: "command"
+        check_value: "grep -q '^status: PASS$' drift/dod_receipts/OMN-13361/dod-deploy-assessment/command.yaml
+          && grep -q '^pr_number: 1303$' drift/dod_receipts/OMN-13361/dod-deploy-assessment/command.yaml
+          && grep -q 'No live deploy' drift/dod_receipts/OMN-13361/dod-deploy-assessment/command.yaml"

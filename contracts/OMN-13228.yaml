@@ -1,0 +1,90 @@
+---
+schema_version: "1.0.0"
+ticket_id: "OMN-13228"
+title: "per-machine event-sourced reap-on-merge worktree reaper (T4)"
+summary: >-
+  OMN-13228 ships the per-machine reaper consumer for the merge-triggered worktree GC epic (OMN-13008,
+  T4) — the actual "reap on merge". On each machine a small reaper reads the onex.evt.github.pr-merged.v1
+  projection (materialized by the T3 node, OMN-13227) over plain HTTP (GET {ONEX_PROJECTION_URL}/projection/onex.evt.github.pr-merged.v1?since=<cursor>;
+  no Kafka client, no LAN-grant issue) and, for each newly-merged PR since a disk-persisted cursor, drives
+  the canonical omniclaude/scripts/prune-worktrees.sh against the matched worktree across all roots. Safety
+  is NOT re-implemented: prune-worktrees.sh removes a worktree only when its PR is MERGED (or the remote
+  branch is gone) AND clean AND fully pushed; dirty / no-upstream / detached are SKIPPED. The cursor is
+  persisted on disk under .onex_state and advanced only after a fully-successful execute pass; default-SKIP
+  on any ambiguity (fetch error, prune non-zero, malformed row); dry-run never deletes and never advances.
+  Two feature PRs: omnibase_infra ships the .201 systemd USER unit (onex-worktree-reaper.{service,timer}
+  + install script, sibling to onex-disk-gc, running against /data/omninode/omni_worktrees); omniclaude
+  ships the Mac launchd KeepAlive DAEMON (ai.omninode.worktree-reaper.plist KeepAlive=true + daemon launcher
+  + install script) — a resident --loop process polling every <=60s that sidesteps the documented non-firing
+  periodic-launchd failure mode. Stdlib + pydantic only; URL/topic from env (fail-fast, no default host,
+  no hardcoded topic literal or LAN IP); ruff + mypy --strict clean. Unit tests use a mocked projection
+  HTTP response (clean->prune, dirty->skip, cursor-advances-only-on-success, dry-run-never-deletes). Scope
+  is code only; the live cross-machine verification (install the unit/daemon, merge a throwaway PR, observe
+  the worktree removed) is the orchestrator's deploy step. This contract does NOT deploy, install or enable
+  any systemd/launchd unit, restart runtime, mutate prod/judge/.201, or publish live traffic.
+is_seam_ticket: false
+interface_change: false
+interfaces_touched: []
+emergency_bypass:
+  enabled: false
+  justification: ""
+  follow_up_ticket_id: ""
+dod_evidence:
+  - id: "dod-001-infra-201-unit"
+    description: >-
+      omnibase_infra feature PR — the .201 event-sourced reaper: scripts/worktree_reaper.py reads the
+      pr-merged projection over HTTP and drives prune-worktrees.sh; deploy/disk-gc/onex-worktree-reaper.{service,timer}
+      systemd USER units + install-worktree-reaper.sh package it against /data/omninode/omni_worktrees.
+      13 unit tests with a mocked projection HTTP response prove clean->prune, dirty/unpushed->SKIP+no-advance,
+      cursor-advances-only-on-full-success, and dry-run-never-deletes; ruff + mypy --strict clean; the
+      unit files ship but are NOT installed/enabled live (orchestrator deploy step). Self-binding PASS
+      receipt bound to this OCC PR; commit_sha is the feature PR head.
+    source: "manual"
+    checks:
+      - check_type: "command"
+        check_value: >-
+          grep -q '^status: PASS$' drift/dod_receipts/OMN-13228/dod-001-infra-201-unit/command.yaml &&
+          grep -q '^pr_number: 2754$' drift/dod_receipts/OMN-13228/dod-001-infra-201-unit/command.yaml
+  - id: "dod-002-mac-daemon"
+    description: >-
+      omniclaude feature PR — the Mac launchd KeepAlive DAEMON: scripts/worktree_reaper.py (Mac variant)
+      reads the pr-merged projection over HTTP and drives this repo's prune-worktrees.sh across all Mac
+      worktree roots; scripts/launchd/ai.omninode.worktree-reaper.plist (KeepAlive=true) + worktree-reaper-daemon.sh
+      + install-worktree-reaper-daemon.sh package it as a resident --loop daemon (sidesteps the non-firing
+      periodic-launchd failure mode). 14 unit tests with a mocked projection HTTP response prove the same
+      four DoD cases plus default-roots-cover-legacy+onex_state; ruff + mypy --strict clean; plist plutil-lint
+      + shell shellcheck clean; NOT loaded live (orchestrator deploy step). Self-binding PASS receipt
+      bound to this OCC PR; commit_sha is the feature PR head.
+    source: "manual"
+    checks:
+      - check_type: "command"
+        check_value: >-
+          grep -q '^status: PASS$' drift/dod_receipts/OMN-13228/dod-002-mac-daemon/command.yaml && grep
+          -q '^pr_number: 2754$' drift/dod_receipts/OMN-13228/dod-002-mac-daemon/command.yaml
+  - id: "dod-003-deploy-readiness"
+    description: >-
+      Deploy-readiness note. The reaper touches runtime/.201 paths: the .201 systemd unit runs the reaper
+      against /data/omninode/omni_worktrees and the Mac daemon reads the local :3002 projection API; the
+      live chain is exercised by the deploy agent (e.g. 'bash deploy/disk-gc/install-worktree-reaper.sh'
+      on .201, 'rpk topic produce onex.evt.github.pr-merged.v1' a synthetic merge, then 'docker exec'
+      the projection-api container's psql to confirm the row, then observe the worktree reaped). These
+      PRs do NOT themselves deploy, install/enable any unit, restart runtime, mutate prod/judge/.201,
+      or publish live traffic. This receipt records that the change is deploy-safe and the live deploy
+      belongs to the orchestrator.
+    source: "manual"
+    checks:
+      - check_type: "command"
+        check_value: >-
+          grep -q '^status: PASS$' drift/dod_receipts/OMN-13228/dod-003-deploy-readiness/command.yaml
+          && grep -q 'deploy' drift/dod_receipts/OMN-13228/dod-003-deploy-readiness/command.yaml
+  - id: "pr-occ-binding"
+    description: >-
+      OCC self-binding receipt for this central evidence PR. Binds a PASS receipt directly to the onex_change_control
+      evidence PR so the OCC receipt-gate eligibility check (pr_ticket_mismatch) finds a receipt bound
+      to the OCC PR.
+    source: "manual"
+    checks:
+      - check_type: "command"
+        check_value: >-
+          grep -q '^status: PASS$' drift/dod_receipts/OMN-13228/pr-occ-binding/command.yaml && grep -q
+          '^pr_number: 2754$' drift/dod_receipts/OMN-13228/pr-occ-binding/command.yaml

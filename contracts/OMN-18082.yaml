@@ -1,0 +1,67 @@
+---
+schema_version: "1.0.0"
+ticket_id: "OMN-18082"
+title: "Evidence companion for the missing_occ_self_bind remediation fix"
+summary: >-
+  Executable evidence for the merged omnibase_core fix: the remediation no longer tells operators to rewrite
+  merged receipts, the structural self-bind path is covered by focused tests, and the append-only receipt
+  gate passes when a new entry is appended without rewriting prior receipts.
+is_seam_ticket: false
+interface_change: false
+interfaces_touched: []
+contract_completeness: ENRICHED
+evidence_requirements:
+  - kind: "ci"
+    description: "The evidence companion PR's required checks are green."
+    command: "gh pr checks ${PR_NUMBER} --repo ${REPO}"
+  - kind: "tests"
+    description: "Focused omnibase_core validation tests for OMN-18082."
+    command: >-
+      uv run pytest tests/unit/validation/test_occ_merge_eligibility.py tests/unit/validation/test_occ_per_entry_hashing.py
+      -q
+emergency_bypass:
+  enabled: false
+  justification: ""
+  follow_up_ticket_id: ""
+dod_evidence:
+  - id: "ac1-remediation-does-not-rewrite-merged-receipts"
+    description: >-
+      AC1: the live validator source no longer contains the unconditional instruction to recompute contract_sha256
+      on existing receipts, and it retains the per-entry binding vocabulary used by the safe remediation.
+    source: "manual"
+    binds_ac:
+      - "AC1"
+    checks:
+      - check_type: "command"
+        check_value: >-
+          uv run python -c 'from pathlib import Path; p = Path("src/omnibase_core/validation/validator_occ_merge_eligibility.py");
+          t = p.read_text(); assert "Recompute contract_sha256 on the EXISTING receipts" not in t; assert
+          "contract_entry_sha256" in t'
+        cwd: "${OMNI_HOME}/omnibase_core"
+  - id: "ac2-structural-self-bind-remediation-tests"
+    description: >-
+      AC2: focused tests pin the structural self-bind remediation and its append-only safety properties,
+      including eligible structural receipts, stale/per-entry hash rejection, and the product-repository
+      boundary.
+    source: "manual"
+    binds_ac:
+      - "AC2"
+    checks:
+      - check_type: "test_passes"
+        check_value: >-
+          uv run pytest tests/unit/validation/test_occ_merge_eligibility.py -k 'missing_self_bind or structural_self_bind'
+          -q
+        cwd: "${OMNI_HOME}/omnibase_core"
+  - id: "ac3-append-only-receipt-gate"
+    description: >-
+      AC3: the real receipt gate remains green when a new entry is appended and existing entry-bound receipts
+      are left byte-for-byte untouched.
+    source: "manual"
+    binds_ac:
+      - "AC3"
+    checks:
+      - check_type: "test_passes"
+        check_value: >-
+          uv run pytest tests/unit/validation/test_occ_per_entry_hashing.py::test_append_entry_receipt_gate_passes_without_rewrite
+          -q
+        cwd: "${OMNI_HOME}/omnibase_core"

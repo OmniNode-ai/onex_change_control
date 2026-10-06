@@ -1,0 +1,83 @@
+---
+schema_version: "1.0.0"
+ticket_id: "OMN-12528"
+title: "Reduce stability runtime Kafka partition pressure"
+summary: >-
+  Bind central OCC evidence for capping stability-test runtime topic provisioning at one partition through
+  the contract-owned omnibase_infra runtime policy, so stability/runtime dispatch can provision missing
+  contract topics without exceeding the constrained Redpanda partition budget.
+is_seam_ticket: true
+interface_change: true
+interfaces_touched:
+  - "topics"
+evidence_requirements:
+  - kind: "tests"
+    description: >-
+      Runtime policy contract tests, topic provisioner cap tests, stability compose render tests, and
+      runtime policy integration tests pass.
+    command: >-
+      env -u PYTHONPATH uv run pytest tests/ci/test_runtime_policy_contract.py tests/unit/event_bus/test_service_topic_manager.py
+      tests/integration/infra/test_stability_test_runtime_compose_render.py -q && env -u PYTHONPATH uv
+      run pytest tests/integration/runtime/test_runtime_policy_contract.py -q
+  - kind: "manual"
+    description: >-
+      Runtime policy env is rendered from the contract, Python files pass Ruff, and the stability-test
+      Docker Compose profile resolves non-mutating config with the contract-owned topic provisioner cap.
+    command: >-
+      env -u PYTHONPATH uv run python scripts/render_runtime_policy_env.py --check-env-file docker/runtime-policy.env
+      && env -u PYTHONPATH uv run ruff check src/omnibase_infra/runtime/models/model_runtime_profile_policy.py
+      scripts/render_runtime_policy_env.py tests/ci/test_runtime_policy_contract.py tests/integration/infra/test_stability_test_runtime_compose_render.py
+      && env -u PYTHONPATH uv run ruff format --check src/omnibase_infra/runtime/models/model_runtime_profile_policy.py
+      scripts/render_runtime_policy_env.py tests/ci/test_runtime_policy_contract.py tests/integration/infra/test_stability_test_runtime_compose_render.py
+      && docker compose --env-file docker/runtime-policy.env -f docker/docker-compose.infra.yml -f docker/docker-compose.stability-test.yml
+      --profile runtime config --quiet
+  - kind: "manual"
+    description: >-
+      No live stability runtime mutation was performed pre-merge; post-merge validation must confirm STABILITY_TEST_TOPIC_PROVISIONER_MAX_PARTITIONS=1
+      renders into the stability runtime containers before re-running topic provisioning or runtime dispatch.
+    command: "Post-merge stability runtime rebuild/restart validation required; no pre-merge live mutation."
+dod_evidence:
+  - id: "dod-infra-pr-1808"
+    description: "Bind omnibase_infra PR #1808 head and touched contract/runtime-policy files."
+    source: "manual"
+    status: "verified"
+    checks:
+      - check_type: "command"
+        check_value: >-
+          grep -q '^status: PASS$' "$CONTRACT_REPO_DIR/drift/dod_receipts/OMN-12528/dod-infra-pr-1808/command.yaml"
+          && grep -q '^pr_number: 1808$' "$CONTRACT_REPO_DIR/drift/dod_receipts/OMN-12528/dod-infra-pr-1808/command.yaml"
+          && grep -q '^commit_sha: "fce246286f72d071b3bf0c75437e9b4cfee83a82"$' "$CONTRACT_REPO_DIR/drift/dod_receipts/OMN-12528/dod-infra-pr-1808/command.yaml"
+          && grep -q 'runtime_policy.contract.yaml' "$CONTRACT_REPO_DIR/drift/dod_receipts/OMN-12528/dod-infra-pr-1808/command.yaml"
+          && grep -q 'ONEX_TOPIC_PROVISIONER_MAX_PARTITIONS' "$CONTRACT_REPO_DIR/drift/dod_receipts/OMN-12528/dod-infra-pr-1808/command.yaml"
+  - id: "dod-local-validation"
+    description: "Focused local validation for the runtime policy cap change passed."
+    source: "manual"
+    status: "verified"
+    checks:
+      - check_type: "command"
+        check_value: >-
+          grep -q '^status: PASS$' "$CONTRACT_REPO_DIR/drift/dod_receipts/OMN-12528/dod-local-validation/command.yaml"
+          && grep -q '25 passed' "$CONTRACT_REPO_DIR/drift/dod_receipts/OMN-12528/dod-local-validation/command.yaml"
+          && grep -q 'docker compose --env-file docker/runtime-policy.env' "$CONTRACT_REPO_DIR/drift/dod_receipts/OMN-12528/dod-local-validation/command.yaml"
+  - id: "dod-deploy-plan"
+    description: "Pre-merge deploy stance and post-merge stability runtime validation plan are explicit."
+    source: "manual"
+    status: "verified"
+    checks:
+      - check_type: "command"
+        check_value: >-
+          grep -q '^status: PASS$' "$CONTRACT_REPO_DIR/drift/dod_receipts/OMN-12528/dod-deploy-plan/command.yaml"
+          && grep -q 'No live stability runtime mutation was performed pre-merge' "$CONTRACT_REPO_DIR/drift/dod_receipts/OMN-12528/dod-deploy-plan/command.yaml"
+          && grep -q 'STABILITY_TEST_TOPIC_PROVISIONER_MAX_PARTITIONS=1' "$CONTRACT_REPO_DIR/drift/dod_receipts/OMN-12528/dod-deploy-plan/command.yaml"
+  - id: "dod-occ-pr-self"
+    description: "Self-binding receipt for the OCC PR carrying OMN-12528 central evidence."
+    source: "manual"
+    status: "verified"
+    checks:
+      - check_type: "command"
+        check_value: >-
+          grep -q '^status: PASS$' "$CONTRACT_REPO_DIR/drift/dod_receipts/OMN-12528/dod-occ-pr-self/command.yaml"
+emergency_bypass:
+  enabled: false
+  justification: ""
+  follow_up_ticket_id: ""

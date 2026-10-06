@@ -1,0 +1,52 @@
+---
+schema_version: "1.0.0"
+ticket_id: "OMN-12559"
+evidence_item_id: "dod-infra-discovery"
+check_type: "command"
+check_value: "gh pr view 1820 --repo OmniNode-ai/omnibase_infra --json number,headRefOid,headRefName,title,state,baseRefName"
+contract_sha256: "sha256:6ae24f7423e18a23c2930af3370c95e91e0c039434c6b8ba38415db66a143d4a"
+status: PASS
+run_timestamp: "2026-06-02T09:48:25Z"
+commit_sha: "0c682ff8165457f26f6a6a2e658b8b5c7747ec32"
+runner: "codex-merge-sweep"
+verifier: "foreground-orchestrator"
+probe_command: "RUN_NODE_MIGRATION_DISCOVERY_TEST=1 OMNIBASE_INFRA_DB_URL=postgresql://postgres:x@127.0.0.1:55432/omnibase_infra
+  uv run pytest tests/integration/migrations/test_node_migration_discovery_applies.py -v && uv run pytest
+  tests/unit/migrations/ tests/ci/test_validate_migration_sequence.py -q"
+probe_stdout: |
+  $ run-forward-migrations.sh against throwaway local Postgres (temp MIGRATIONS_DIR = savings 074 + nodes/ subtree)
+  [forward-migration]   apply node:node_projection_delegation:0007_delegation_events.sql... done
+  [forward-migration]   apply node:node_projection_delegation:0008_generation_events.sql... done
+  [forward-migration]   apply node:node_projection_delegation:0009_delegate_skill_projection_metrics.sql... done
+  [forward-migration]   apply node:node_projection_delegation:0010_create_delegation_dashboard_projection_views.sql... done
+  [forward-migration]   apply node:node_projection_savings:076_create_delegation_savings_projection_view.sql... done
+  [forward-migration] Complete: 1 infra applied, 0 infra skipped; 5 node applied, 0 node skipped.
+  $ psql -tAc "SELECT viewname FROM pg_views WHERE viewname LIKE 'projection_delegation%' ORDER BY 1"
+  projection_delegation_model_routing
+  projection_delegation_quality_gate
+  projection_delegation_savings
+  projection_delegation_summary
+  projection_delegation_token_usage
+  $ psql -tAc "SELECT migration_id FROM public.schema_migrations WHERE migration_id LIKE 'node:%' ORDER BY 1"
+  node:node_projection_delegation:0007_delegation_events.sql
+  node:node_projection_delegation:0008_generation_events.sql
+  node:node_projection_delegation:0009_delegate_skill_projection_metrics.sql
+  node:node_projection_delegation:0010_create_delegation_dashboard_projection_views.sql
+  node:node_projection_savings:076_create_delegation_savings_projection_view.sql
+  $ # re-run = idempotent: 0 node applied, 5 node skipped
+  $ uv run pytest tests/unit/migrations/ tests/integration/migrations/ tests/ci/test_validate_migration_sequence.py -q
+  37 passed, 2 skipped
+  $ uv run pytest tests/unit/ -q   # full unit suite
+  19981 passed, 15 skipped in 60.62s
+  $ pre-commit run --all-files
+  ... all hooks Passed (incl. ONEX Node Migration Vendor Sync Check, ONEX Migration Sequence Duplicate Check)
+actual_output: "PASS: run-forward-migrations.sh auto-discovers node migrations under namespaced node:<node>:<file>
+  ids and creates the OMN-12489 delegation + savings projection views on a clean DB with NO manual copy;
+  node 076 coexists with infra flat 076 (no collision, no renumber). PR #1820 was rebased onto dev at
+  omnibase_infra#1835 merge commit ae6c8b5d044d44ad94bb83d06b35f499fd8231c2, refreshed the runner image
+  identity lock for the rebased shared CI env digest, and revalidated with focused migration tests, runner
+  image identity tests, and pre-commit."
+exit_code: 0
+pr_number: 1820
+branch: "jonahgabriel/omn-12559-auto-discover-node-migrations"
+working_dir: "/Users/jonah/Code/omni_home/omni_worktrees/OMN-12559/omnibase_infra"

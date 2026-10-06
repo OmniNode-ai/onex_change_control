@@ -1,0 +1,75 @@
+---
+schema_version: "1.0.0"
+ticket_id: "OMN-13322"
+title: "auto-merge arm trigger + unarmed-CLEAN alert"
+summary: >-
+  node_merge_sweep_auto_merge_arm_effect previously emitted only a completion event (ModelAutoMergeArmedEvent)
+  whether or not the arm succeeded, so a CLEAN PR that could not be armed (omnibase_core#1280) was indistinguishable
+  from "controller never ran." The fix emits a dedicated unarmed-CLEAN alert event (ModelAutoMergeUnarmedCleanAlertEvent)
+  on a new topic onex.evt.omnimarket.pr-auto-merge-unarmed-clean-alert.v1 whenever the arm fails (armed=False)
+  — which, because triage Rule 2 only publishes the arm command for CLEAN PRs, is exactly the "CLEAN but
+  auto-merge not armed" case. The completion event proves the effect ran; the alert names the failure,
+  closing the never-ran vs failed-to-arm ambiguity. A missing OCC preflight (OMN-10485) surfaces here
+  as the arm error string. A published_events block routes each event class to its own topic via the runtime
+  topic router. This PR edits a runtime contract.yaml (one new publish topic + published_events) and the
+  effect handler; it ships no migration and performs no live deploy or runtime restart.
+is_seam_ticket: false
+interface_change: false
+interfaces_touched: []
+evidence_requirements:
+  - kind: "tests"
+    description: >-
+      Unit tests in tests/test_auto_merge_arm_effect.py prove the arm-trigger path emits only the completion
+      event (no alert) and the failed-arm path emits the completion plus a distinct unarmed-CLEAN alert
+      carrying the failure reason.
+    command: "uv run pytest tests/test_auto_merge_arm_effect.py -q"
+  - kind: "ci"
+    description: >-
+      ruff format + ruff check + mypy --strict clean on the changed source files; full pre-commit run
+      on the changed files passes.
+    command: "uv run mypy src/omnimarket/nodes/node_merge_sweep_auto_merge_arm_effect --strict"
+emergency_bypass:
+  enabled: false
+  justification: ""
+  follow_up_ticket_id: ""
+dod_evidence:
+  - id: "dod-omnimarket-pr"
+    description: >-
+      The omnimarket product PR #1424 extends node_merge_sweep_auto_merge_arm_effect to emit ModelAutoMergeUnarmedCleanAlertEvent
+      on onex.evt.omnimarket.pr-auto-merge-unarmed-clean-alert.v1 when a CLEAN PR fails to arm, alongside
+      the completion event. It cites Evidence-Source: OCC#<this-pr>.
+    source: "manual"
+    checks:
+      - check_type: "command"
+        check_value: "grep -q '^status: PASS$' drift/dod_receipts/OMN-13322/dod-omnimarket-pr/command.yaml
+          && grep -q '5bacf932e347ae43a02e04022d9f9b3597afa4d0' drift/dod_receipts/OMN-13322/dod-omnimarket-pr/command.yaml"
+  - id: "dod-occ-evidence-source"
+    description: >-
+      This OCC contract is the central Receipt-Gate Evidence-Source for OMN-13322; the omnimarket PR cites
+      Evidence-Source: OCC#<this-pr> so its verify Receipt Gate resolves against the OCC PR head.
+    source: "manual"
+    checks:
+      - check_type: "command"
+        check_value: "test -f contracts/OMN-13322.yaml"
+  - id: "dod-alert-tests"
+    description: >-
+      Test proof: the arm-trigger path emits only the completion (no alert); a failed arm emits the completion
+      plus the unarmed-CLEAN alert with its reason; the alert always carries a non-empty reason. uv run
+      pytest tests/test_auto_merge_arm_effect.py -q => 7 passed.
+    source: "manual"
+    checks:
+      - check_type: "command"
+        check_value: "grep -q '^status: PASS$' drift/dod_receipts/OMN-13322/dod-alert-tests/command.yaml
+          && grep -q '5bacf932e347ae43a02e04022d9f9b3597afa4d0' drift/dod_receipts/OMN-13322/dod-alert-tests/command.yaml"
+  - id: "dod-deploy-assessment"
+    description: >-
+      Deploy assessment: this PR edits a runtime contract.yaml (one new publish topic + published_events)
+      and the effect handler plus unit tests. It ships no migration; picking up the new topic/handler
+      behavior requires the standard runtime image rebuild. No live deploy or runtime restart is performed
+      by merging this PR; the live readback (rpk topic consume of the alert topic) is deferred to the
+      operator-gated dev-lane redeploy/reprove run and is NOT claimed here.
+    source: "manual"
+    checks:
+      - check_type: "command"
+        check_value: "grep -q '^status: PASS$' drift/dod_receipts/OMN-13322/dod-deploy-assessment/command.yaml
+          && grep -q 'no live deploy' drift/dod_receipts/OMN-13322/dod-deploy-assessment/command.yaml"

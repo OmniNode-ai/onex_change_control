@@ -1,0 +1,40 @@
+---
+schema_version: "1.0.0"
+ticket_id: OMN-9551
+evidence_item_id: dod-001
+check_type: command
+check_value: "pr=\"$(gh pr view 1393 --repo OmniNode-ai/omnibase_infra --json title,body,baseRefName,headRefName
+  --jq 'select(.baseRefName==\"main\") | (.title + \"\\n\" + .headRefName + \"\\n\" + .body)')\" && printf
+  '%s' \"$pr\" | grep -q 'OMN-9551' && printf '%s' \"$pr\" | grep -q 'Root Cause' && printf '%s' \"$pr\"
+  | grep -q 'Test Plan'"
+status: PASS
+run_timestamp: "2026-04-29T19:27:39Z"
+commit_sha: 176e7363295713337ce5d3225490d17339bcd220
+runner: codex-omn-9551-occ-evidence
+verifier: jonahgabriel
+probe_command: "gh pr view 1393 --repo OmniNode-ai/omnibase_infra --json title,body,headRefName,baseRefName,commits
+  --jq '.title + \"\\n\" + .headRefName + \" -> \" + .baseRefName + \"\\nlatest=\" + .commits[-1].oid
+  + \"\\n\" + (.body | split(\"\\n\")[:15] | join(\"\\n\"))'"
+probe_stdout: |
+  fix: runtime crash loop — boot grace window + exclude UnknownTopicOrPartitionError from circuit breaker [OMN-9551]
+  harsh/omn-9551-runtime-crash-loop-fix -> main
+  latest=176e7363295713337ce5d3225490d17339bcd220
+  ## Summary
+
+  - **OMN-9552**: `ServiceRuntimeHealthMonitor` now waits a configurable boot grace period (default 120 s, `RUNTIME_HEALTH_BOOT_GRACE_SECONDS` env var) before emitting health check events. This prevents the monitor from publishing to `onex.evt.omnibase-infra.runtime-health-check.v1` before Kafka topic provisioning completes at startup.
+  - **OMN-9553**: `EventBusKafka._publish_with_retry()` now catches `UnknownTopicOrPartitionError` **before** `KafkaError` and skips the circuit breaker failure counter. A missing topic is a configuration error, not a broker connectivity failure — it must not open the circuit breaker and block subsequent publishes to healthy topics.
+  - **OMN-9554**: `ServiceKernel` reads `RUNTIME_HEALTH_BOOT_GRACE_SECONDS` from the environment and passes it to the health monitor constructor, making the grace window operator-configurable.
+
+  ## Root Cause
+
+  `ServiceRuntimeHealthMonitor.run_once()` was called before topic `onex.evt.omnibase-infra.runtime-health-check.v1` was provisioned by Redpanda → `UnknownTopicOrPartitionError` was raised → recorded as a circuit breaker failure → circuit opened after threshold → runtime rejected all subsequent Kafka publishes → `service_kernel` shut down → Docker restarted → repeat (282 restarts observed).
+
+  ## Test Plan
+
+  - [ ] `uv run pytest tests/unit/services/test_service_runtime_health_monitor.py -v` — 28 tests pass, including 5 new `TestBootGracePeriod` tests
+  - [ ] `uv run pytest tests/unit/event_bus/ -v` — 441 tests pass, including new `test_circuit_breaker_topic_error.py`
+actual_output: "PASS: PR #1393 is open against main, identifies OMN-9551, and documents the source-level
+  crash-loop fix and test plan. This receipt does not claim live RestartCount validation."
+exit_code: 0
+pr_number: 1393
+branch: harsh/omn-9551-runtime-crash-loop-fix

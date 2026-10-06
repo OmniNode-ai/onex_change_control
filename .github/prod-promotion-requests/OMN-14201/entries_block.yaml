@@ -1,0 +1,125 @@
+---
+# ---------------------------------------------------------------------------
+# GRANT REQUEST (OMN-14201) — PREP ONLY, to be staged onto `main` by the
+# onexbot-occ-writer GitHub App on behalf of the prod-scale-down-plan lane.
+#
+# THIS PR MUST NOT BE MERGED BY ANY AGENT. It becomes effective only when a
+# human CODEOWNERS operator lands it on `onex_change_control@main` — that merge
+# IS the approval act (OMN-13418), and it is the anti-self-issue anchor an agent
+# structurally cannot complete.
+#
+# WHAT THIS AUTHORIZES: exactly one gated `deploy-onex-prod.yml` dispatch, run
+# from `refs/heads/main` with `deploy_target=runtime-only`. That target applies
+# only the namespace bootstrap and `k8s/onex-prod/runtime`, so its entire blast
+# radius is the seven runtime Deployments and the two CronJobs in that tree.
+# `include_onex_public` stays FALSE and `reclaim_api_hostname` stays FALSE.
+#
+# WHAT IT CHANGES: replica counts, and nothing else. The digest below is the one
+# `k8s/onex-prod/runtime/kustomization.yaml` ALREADY pins on omninode_infra
+# `main` at bc451167 (re-read 2026-09-10) and the one the seven pods are already
+# running. This is a same-digest authorization: it changes no image, pulls no
+# new layer, and rolls no version. It exists because the OMN-14209 gate step
+# "Enforce prod-promotion grant — runtime image" carries no `if:` guard and
+# blocks every dispatch before anything else is evaluated.
+#
+# THE UNDERLYING CHANGE is omninode_infra#1310, which sets `replicas: 0` on the
+# seven runtime Deployments and `suspend: true` on cronjob-baselines-batch-compute
+# and cronjob-cross-repo-validation. Operator ruling, 2026-09-10, firm,
+# attributed paraphrase: production does not matter until staging works;
+# production is burning cloud cost; shut down everything in production except
+# what the website requires. The website (`onex-prod/omniweb`, serving
+# omninode.ai, www.omninode.ai and app.omninode.ai) is NOT in this tree and is
+# NOT touched by a runtime-only dispatch.
+#
+# ONE ENTRY, NOT THREE — AND WHY THE OTHER TWO ARE DELIBERATELY ABSENT.
+# The remaining six workloads of the scale-down (omnidash, umami, pgweb,
+# redpanda-console, memgraph-lab, omniintelligence) live outside
+# `k8s/onex-prod/runtime` and can only be reached by `deploy_target=all`. That
+# dispatch would additionally require grants on the onex-api digest and the
+# omniweb public-surface digest. Those are NOT requested here, because on
+# omninode_infra `main` at bc451167 both of those pins are AHEAD of what
+# production is running:
+#
+#   * onex-api: main pins sha256:bc95b9bc…, live runs sha256:b4c32554…
+#   * omniweb:  main pins sha256:a0c624d5…, live runs sha256:eef16942…
+#
+# So an `all` dispatch is NOT a scale-down. It is a scale-down plus two image
+# promotions that have been sitting staged on the release branch — including the
+# OMN-16753 api.omninode.ai cutover. Folding those into a cost-reduction
+# authorization would smuggle two version changes past an approver who was asked
+# about replica counts. They are a separate decision and belong in a separate
+# grant. This is stated here rather than left to be discovered at dispatch time.
+#
+# A GRANT IS NOT SUFFICIENT ON ITS OWN — READ THIS BEFORE APPROVING.
+# The OMN-17357 staging-green premise is evaluated BEFORE the grant by the same
+# consumer script, and it currently FAILS. The most recent staging report,
+# collected 2026-09-10T16:44:13Z at bar revision r10, carries verdict `BLOCKED`
+# with `subject_digests` of the all-zero unbound sentinel. Production health is
+# HEALTHY, so the confirmed-unhealthy waiver does not apply. Merging this PR
+# therefore authorizes a promotion that would still be refused today, for want of
+# a green staging bar. That is a fact about the current state of the lane, not a
+# defect in this grant, and it is exactly what the governing ruling predicts:
+# production does not move until staging works. Proven, not asserted — see the
+# receipt for dod-omn14201-consumer-gate-blocks-on-staging-green.
+#
+# THE SCHEMA CANNOT EXPRESS A SCALE-DOWN, AND THE APPROVER SHOULD KNOW IT.
+# The required fields are grant_id, runtime_lane, image_digest,
+# promotion_batch_id, approved_by, expires_at, created_at and reason. There is no
+# replica, scale, or desired-state field anywhere, and the consumer matches on
+# digest equality alone. So a replica change is authorized here as a same-digest
+# promotion whose actual intent lives only in free text. Approving this means
+# approving a digest in order to authorize a replica count. That gap is real and
+# is recorded as a residual rather than papered over.
+#
+# `approved_by` BELOW IS A PROPOSAL, NOT AN APPROVAL. The CODEOWNERS approver
+# confirms or replaces it at merge time. It is a real login and not a synthetic
+# placeholder for the reason OCC#7213 recorded: the consumer enforces
+# `approved_by != requested_by` against `github.actor`, so a placeholder would
+# compare unequal to EVERY dispatcher and would silently disable the only
+# mechanical anti-self-approval check on this path.
+#
+# ANTI-SELF-APPROVAL IS SATISFIED ON THE DISPATCHER SIDE, NOT HERE. With the
+# staged value `jonahgabriel`, the eventual `workflow_dispatch` actor MUST NOT be
+# `jonahgabriel` — it must be another admin on `OmniNode-ai/omninode_infra`. If
+# `approved_by` is changed at merge time, re-derive the permitted dispatcher from
+# the new value.
+#
+# `expires_at` IS A PROPOSAL (7 days from staging, chosen because the staging bar
+# it waits on is not expected to go green within 72 hours). The approver may
+# shorten it before merging; merging is approving. If it lapses unmerged, the
+# OMN-13424 at-rest invariant fails CI for every subsequent PR to `main` and this
+# block must be pruned and re-staged. `requested_by` is deliberately not a YAML
+# field: the schema rejects unknown keys, so the requester is recorded by the
+# PR's author identity and by this header, not by a field.
+#
+# ROLLBACK. Restoring the seven Deployments does not need this or any grant:
+# `kubectl -n onex-prod scale deploy/<name> --replicas=1` for each, and
+# `kubectl -n onex-prod patch cronjob/<name> -p '{"spec":{"suspend":false}}'` for
+# the two jobs. Note that eleven onex-prod workloads use pull policy `Always` and
+# therefore need a valid registry credential to restart; the onex-prod
+# ecr-token-refresh CronJob has failed its last three runs and is deliberately
+# left ENABLED by omninode_infra#1310 so that failure stays visible.
+#
+# NOTHING IS PRUNED BY THIS PR: `main` is already at rest (`entries: []`).
+# ---------------------------------------------------------------------------
+entries:
+  - grant_id: grant-5e1078c5-f906-4a6c-8825-ae500c9a1dfc
+    runtime_lane: prod
+    image_digest: sha256:13c96028566b7f429fd46298304fb61c03c325b3e45f60638cce61c28185fcf6
+    promotion_batch_id: batch-209965ad-bccc-4c41-b4b1-5a6db6935839
+    approved_by: __APPROVED_BY__
+    expires_at: "__EXPIRES_AT__"
+    created_at: "__CREATED_AT__"
+    reason: >-
+      OMN-14201 production scale-down. Same-digest authorization for the onex-prod runtime image
+      sha256:13c96028, which k8s/onex-prod/runtime/kustomization.yaml pins on omninode_infra main at
+      bc451167 (re-read 2026-09-10) and which the seven onex-prod runtime pods are already running.
+      Authorizes exactly one deploy_target=runtime-only dispatch of deploy-onex-prod.yml, whose apply is
+      scoped to the namespace bootstrap and k8s/onex-prod/runtime. The change it carries is replica counts
+      only: omninode_infra#1310 sets replicas 0 on omninode-runtime, -effects, -worker,
+      agent-actions-consumer, skill-lifecycle-consumer, contract-resolver and omnibase-intelligence-api,
+      and suspends the baselines-batch-compute and cross-repo-validation CronJobs. No image changes, no
+      version roll, no pull. Required because the OMN-14209 runtime grant step carries no if: guard and
+      blocks every dispatch before any other check runs. Operator ruling 2026-09-10, firm: production is
+      burning cloud cost, shut down everything in production except what the website requires. omniweb is
+      outside this tree and is untouched.

@@ -1,0 +1,69 @@
+---
+schema_version: "1.0.0"
+ticket_id: "OMN-13645"
+title: "Context-ROI terminal-topic flip — project failed roi-runs (un-wedge the experiment battery)"
+summary: >-
+  Track C Deliverable 1. node_context_roi_runner declared BOTH terminals in its contract publish_topics
+  (onex.evt.omnimarket.context-roi-run-completed.v1 AND onex.evt.omnimarket.context-roi-run-failed.v1)
+  but _emit_result only ever published to the completed topic, and node_projection_context_roi subscribed
+  ONLY to the completed terminal — so a fully-failed roi-run was never materialised into context_roi_scores
+  and the N-arm experiment battery wedged with zero usable rows for failed runs. This change makes the
+  declared failed terminal real and consumes it: (1) the runner routes a whole-run failure (failed_trials
+  == total_trials, or zero cells) to the FAILED terminal and an at-least-one-usable-row run to the COMPLETED
+  terminal — both carry the same ModelContextRoiRunResult payload; (2) node_projection_context_roi subscribes
+  to BOTH terminals so a failed run materialises rows (final_success=False / failure_stage) through the
+  same terminal-agnostic projection path (mirrors node_projection_delegation which already folds completed
+  + failed delegation/generation terminals through one operation_match handler). Topics stay contract-sourced;
+  no Plugin*, no new REST, event-bus is the transport. Dev lane only; redeploy is a separate serialized
+  step. Deliverable 2 (feedback publisher to context-roi-runtime-row-scored.v1) is split out as a documented,
+  blocked follow-up: the consumer needs a per-capsule ModelScoredRuntimeRow the arm-level ROI scores do
+  not carry and no materialised pack->capsule membership exists, so D2 is blocked on a materialisation
+  seam that overlaps OMN-13647. Product PR: omnimarket #1456.
+is_seam_ticket: false
+interface_change: false
+interfaces_touched: []
+emergency_bypass:
+  enabled: false
+  justification: ""
+  follow_up_ticket_id: ""
+dod_evidence:
+  - id: "dod-omnimarket-pr-1456"
+    description: >-
+      omnimarket PR #1456 routes a whole-run failure to the FAILED terminal in node_context_roi_runner
+      (_emit_result) and subscribes node_projection_context_roi to BOTH terminals so a failed roi-run
+      materialises rows (final_success=False, failure_stage) into context_roi_scores. New tests prove
+      the runner emits a fully-failed run on the failed terminal (and NOT completed), the projection materialises
+      a failed run's rows, handle() projects a failed-terminal envelope, and the contract subscribes to
+      both terminals; 55 passed in the two targeted suites. Full suite 9821 passed/48 skipped; mypy --strict
+      clean on both touched handlers; runtime-sweep import-check clean; ruff + pre-commit clean.
+    source: "manual"
+    status: "verified"
+    checks:
+      - check_type: "command"
+        check_value: >-
+          grep -q '^status: PASS$' drift/dod_receipts/OMN-13645/dod-omnimarket-pr-1456/command.yaml &&
+          grep -q '^pr_number: 1456$' drift/dod_receipts/OMN-13645/dod-omnimarket-pr-1456/command.yaml
+  - id: "dod-deploy-assessment"
+    description: >-
+      Deploy assessment for omnimarket PR #1456. Pure handler-logic + contract-topic change (runner emit
+      routing + projection subscribe_topics); no live deploy, runtime restart, topic mutation, or .201
+      mutation is performed (dev lane only; the serialized dev redeploy + live full-cycle proof is a separate
+      step, Redeploy #2).
+    source: "manual"
+    status: "verified"
+    checks:
+      - check_type: "command"
+        check_value: >-
+          grep -q '^status: PASS$' drift/dod_receipts/OMN-13645/dod-deploy-assessment/command.yaml &&
+          grep -q '^pr_number: 1456$' drift/dod_receipts/OMN-13645/dod-deploy-assessment/command.yaml
+          && grep -qi 'no live deploy' drift/dod_receipts/OMN-13645/dod-deploy-assessment/command.yaml
+  - id: "dod-occ-self"
+    description: >-
+      Self-binding OCC eligibility receipt for this onex_change_control PR. Carries the OMN-13645 contract
+      and DoD receipts onto dev and binds the OCC evidence PR itself with a PASS receipt.
+    source: "manual"
+    status: "verified"
+    checks:
+      - check_type: "command"
+        check_value: >-
+          grep -q '^status: PASS$' drift/dod_receipts/OMN-13645/dod-occ-self/command.yaml

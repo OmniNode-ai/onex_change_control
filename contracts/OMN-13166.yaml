@@ -1,0 +1,72 @@
+---
+schema_version: "1.0.0"
+ticket_id: "OMN-13166"
+title: "SEA semantic validation: behaviorally-wrong handler output cannot pass the contract gate"
+summary: >-
+  The 2026-06-16 night gate-zero stability SEA cell (correlation bda26f6a-5963-4d7d-87cd-5c81e98e5449)
+  generated a snake_case -> PascalCase handler that split on whitespace instead of underscores ("hello_world"
+  -> "Hello_world", not "HelloWorld") yet the run was projected as contract_passed=true. The verifier
+  (_validate_generation in node_generation_consumer) only proved shape validity: required YAML contract
+  fields, ast.parse of the handler, and no hardcoded paths/topics. It never proved the handler performed
+  the requested transformation. Fix: add a behavioral validation layer independent of schema validation.
+  semantic_validation.py derives input/expected fixtures from the task (snake->pascal/camel, reverse,
+  upper/lower), executes the generated handle() in a restricted I/O-free namespace, and compares output;
+  no derivable invariant => checked=False (inconclusive, never a silent pass). HandlerGenerationConsumer
+  runs the check after contract validation: a contract-valid but behaviorally-wrong attempt no longer
+  breaks the loop, feeds the failure back into the repair loop, triggers routing escalation, and is NOT
+  deployed/registered. ModelGenerationAttempt/Benchmark carry semantic_checked + semantic_passed distinct
+  from contract_passed; both projection write paths (sync live-runtime + async runner), migration 0014,
+  and the projection-API exposure persist/surface the two verdict columns so the dashboard shows shape-valid-but-behaviorally-wrong
+  as NOT a task-behavior pass. TDD reproduces the gate-zero impostor (fails) vs the dev control handler
+  (passes) at unit and end-to-end handler level plus projection round-trip.
+is_seam_ticket: false
+interface_change: false
+interfaces_touched: []
+emergency_bypass:
+  enabled: false
+  justification: ""
+  follow_up_ticket_id: ""
+dod_evidence:
+  - id: "dod-omnimarket-pr"
+    description: >-
+      omnimarket PR #1250 (branch jonah/omn-13166-sea-semantic-validation, base=dev, head 828bc592b0376dc1a413c546c4419a99d0f0df9f).
+      Adds semantic_validation.py and wires it into HandlerGenerationConsumer; adds semantic_checked/semantic_passed
+      to attempt + benchmark models, both projection write paths, migration 0014, and the projection-API
+      exposure. New tests reproduce the gate-zero false-green: the exact impostor handler fails semantic
+      validation and is not deployed, the dev control handler passes; projection field round-trip GREEN.
+      Full unit + nodes suite (3228 passed), top-level suite (4180 passed), mypy --strict clean, ruff
+      clean, pre-commit all green, runtime sweep 302/302 OK, metadata gate PASS.
+    source: "manual"
+    status: "verified"
+    checks:
+      - check_type: "command"
+        check_value: >-
+          grep -q '^status: PASS$' "$CONTRACT_REPO_DIR/drift/dod_receipts/OMN-13166/dod-omnimarket-pr/command.yaml"
+          && grep -q '^ticket_id: "OMN-13166"$' "$CONTRACT_REPO_DIR/drift/dod_receipts/OMN-13166/dod-omnimarket-pr/command.yaml"
+  - id: "dod-deploy-assessment"
+    description: >-
+      Deploy assessment: deploy_pending = true. The fix is NOT yet live on any runtime lane. No live deploy,
+      restart, topic mutation, or .201 mutation was performed by this work. The semantic layer becomes
+      observable in generation_events rows only after a coordinated dev-lane rebuild that applies migration
+      0014 and ships the updated generation/projection handlers. The acceptance item "re-run the original
+      stability cell and an adjacent generation cell" is a user-gated runtime step out of scope for this
+      dev-lane-only change. Do not claim deployed.
+    source: "manual"
+    status: "verified"
+    checks:
+      - check_type: "command"
+        check_value: >-
+          grep -q '^status: PASS$' "$CONTRACT_REPO_DIR/drift/dod_receipts/OMN-13166/dod-deploy-assessment/command.yaml"
+          && grep -q '^ticket_id: "OMN-13166"$' "$CONTRACT_REPO_DIR/drift/dod_receipts/OMN-13166/dod-deploy-assessment/command.yaml"
+          && grep -q 'No live deploy' "$CONTRACT_REPO_DIR/drift/dod_receipts/OMN-13166/dod-deploy-assessment/command.yaml"
+  - id: "dod-occ-pr"
+    description: >-
+      This OCC PR carries the central OMN-13166 contract and the dod-omnimarket-pr / dod-deploy-assessment
+      receipts that the omnimarket PR Receipt-Gate resolves via Evidence-Source: OCC#<pr>.
+    source: "manual"
+    status: "verified"
+    checks:
+      - check_type: "command"
+        check_value: >-
+          grep -q '^status: PASS$' "$CONTRACT_REPO_DIR/drift/dod_receipts/OMN-13166/dod-occ-pr/command.yaml"
+          && grep -q '^ticket_id: "OMN-13166"$' "$CONTRACT_REPO_DIR/drift/dod_receipts/OMN-13166/dod-occ-pr/command.yaml"

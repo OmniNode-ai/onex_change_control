@@ -1,0 +1,89 @@
+---
+schema_version: "1.0.0"
+ticket_id: "OMN-13414"
+title: "feat(OMN-13414): documented cold-lane full bring-up path in deploy-runtime.sh"
+summary: >-
+  The dev runtime lane is ephemeral (GC/idle-reclaimed; it can be torn down to zero containers between
+  sessions). Bringing a fully COLD lane back up is materially harder than the documented warm "recreate
+  the runtime services" path, and two undocumented gotchas cost real time on the 2026-06-21 runtime-e2e
+  run. This adds a --cold flag to scripts/deploy-runtime.sh that wires both gotchas into one documented
+  path. (1) Runtime services are gated behind compose profiles [runtime,full], so a bare `docker compose
+  up -d` starts NOTHING — bringup_full_stack() always passes --profile runtime and, unlike the warm --restart
+  path, does NOT pass --no-deps so the whole project fans out honoring depends_on. (2) deploy-runtime.sh
+  defaults BUILD_SOURCE=release, which cannot carry un-released merged-dev code; --cold forces BUILD_SOURCE=workspace
+  (OMNI_HOME + sibling REF build-args via stage_workspace.sh), rejects a contradictory BUILD_SOURCE=release,
+  and is incompatible with --prod (workspace images are non-main-lineage and the prod-promotion gate refuses
+  them). The cold path reuses the hardened cold-start preflight (ensure_core_infra_ready, warm_broker_topic_provisioning,
+  run_runtime_migration_preflight, raised KAFKA_TIMEOUT_SECONDS) then brings the full --profile runtime
+  project up. Docs: a new runbook docs/runbooks/cold-lane-full-bringup.md and prose around the omni_home/CLAUDE.md
+  .201 lane block document cold-vs-warm, the mandatory profile, and workspace BUILD_SOURCE. No live prod/judge/stability
+  deploy is performed. This is a tooling + docs change.
+is_seam_ticket: false
+interface_change: false
+interfaces_touched: []
+evidence_requirements:
+  - kind: "tests"
+    description: "New scripts test (11 cases) plus the existing cold-start regression suite pass against
+      the modified deploy-runtime.sh."
+    command: >-
+      grep -q '^status: PASS$' drift/dod_receipts/OMN-13414/dod-implementation/command.yaml
+  - kind: "ci"
+    description: "shellcheck + pre-commit (including the always-run node-migration-sync gate) clean."
+    command: >-
+      grep -q '^status: PASS$' drift/dod_receipts/OMN-13414/dod-implementation/command.yaml
+emergency_bypass:
+  enabled: false
+  justification: ""
+  follow_up_ticket_id: ""
+dod_evidence:
+  - id: "dod-implementation"
+    description: >-
+      omnibase_infra branch jonah/omn-13414-cold-lane-bringup-harden commit 35b8845029e8240ff2a92ebffaba55f861afc431
+      adds the --cold cold-lane full bring-up path to scripts/deploy-runtime.sh: a COLD_FULL_BRINGUP flag
+      (parse_args --cold), resolve_build_source forcing BUILD_SOURCE=workspace under --cold, parse_args
+      guards rejecting BUILD_SOURCE=release and --prod with --cold, a new bringup_full_stack() that runs
+      `docker compose --profile runtime up -d` (mandatory profile, no --no-deps so depends_on fans the
+      whole project out), and main() wiring that runs the shared cold-start preflight then bringup_full_stack
+      on --cold (restart_services on --restart). Probe: cd omni_worktrees/OMN-13414/omnibase_infra &&
+      bash -n scripts/deploy-runtime.sh && shellcheck scripts/deploy-runtime.sh && uv run pytest tests/scripts/test_deploy_runtime_cold_full_bringup.py
+      tests/scripts/test_deploy_runtime_coldstart.py -q. Result: bash -n OK, shellcheck exit 0, 21 passed.
+      Guard behavior verified live: `BUILD_SOURCE=release ... --cold` exits 64; `... --cold --prod` exits
+      1. Evidence-Source SHA: 35b8845029e8240ff2a92ebffaba55f861afc431
+    source: "manual"
+    checks:
+      - check_type: "command"
+        check_value: "grep -q '^status: PASS$' drift/dod_receipts/OMN-13414/dod-implementation/command.yaml"
+  - id: "dod-docs"
+    description: >-
+      Operator documentation. docs/runbooks/cold-lane-full-bringup.md documents cold-vs-warm bring-up,
+      both gotchas (mandatory runtime profile; workspace BUILD_SOURCE + build-args + stage_workspace.sh),
+      the full procedure, and the sibling-pin-guard caveat, citing the evidence baseline .onex_state/runtime-e2e-2026-06-21/02-dev-deploy/.
+      Prose around the omni_home/CLAUDE.md .201 lane block (NOT the generated lane table) documents the
+      same cold-vs-warm distinction and points to the runbook. usage() in deploy-runtime.sh documents
+      --cold and an EXAMPLES entry. Probe: cd omni_worktrees/OMN-13414/omnibase_infra && grep -c 'profile
+      runtime\|BUILD_SOURCE=workspace' docs/runbooks/cold-lane-full-bringup.md. Result: present.
+    source: "manual"
+    checks:
+      - check_type: "command"
+        check_value: "grep -q '^status: PASS$' drift/dod_receipts/OMN-13414/dod-docs/command.yaml"
+  - id: "dod-deploy-assessment"
+    description: >-
+      Deploy-readiness assessment. The change touches scripts/deploy-runtime.sh (operator tooling), docs/runbooks/,
+      a tests/ file, and a mechanical vendor-sync of 3 omnimarket node migration SQL files (1:1 mirror
+      from omnimarket dev tip, required by the always-run node-migration-sync gate). None of these paths
+      match the deploy-gate RUNTIME_PATH_PATTERNS (docker/Dockerfile*, docker/docker-compose*, src/omnibase_infra/runtime/**,
+      node handlers/contracts) — docker/migrations/ and scripts/*.sh are not runtime paths — so the PR
+      is NOT deploy-required. No Dockerfile, compose, node contract, topic, or runtime-kernel change.
+      No prod/judge/stability mutation is performed in this PR. The --cold path itself is an operator-invoked
+      bring-up executed out of band on a dev lane.
+    source: "manual"
+    checks:
+      - check_type: "command"
+        check_value: "grep -q '^status: PASS$' drift/dod_receipts/OMN-13414/dod-deploy-assessment/command.yaml"
+  - id: "dod-occ-self"
+    description: >-
+      Self-binding OCC receipt: this onex_change_control PR carries the OMN-13414 contract and DoD receipts.
+    source: "manual"
+    checks:
+      - check_type: "command"
+        check_value: "printf 'PASS\n'"

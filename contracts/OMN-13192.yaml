@@ -1,0 +1,40 @@
+---
+schema_version: "1.0.0"
+ticket_id: "OMN-13192"
+title: "B2: migrate the sole live ModelOnexEnvelope constructor (mixin_intent_publisher.py) to ModelEventEnvelope[ModelEventPublishIntent]
+  — leaves zero live ModelOnexEnvelope constructors for B4"
+summary: >-
+  Retargets the one production ModelOnexEnvelope(...) constructor at src/omnibase_core/mixins/mixin_intent_publisher.py
+  to ModelEventEnvelope[ModelEventPublishIntent](...), publishing the typed ModelEventPublishIntent as
+  the envelope payload (not a serialized dict). Field remap: source_node->source_tool, timestamp->envelope_timestamp,
+  drop operation, payload=intent (typed), add payload_type. This leaves zero live ModelOnexEnvelope constructor
+  calls in src/ so B4 (OMN-13194 follow-on) can delete the class; the class definition and its docstring
+  examples in model_onex_envelope.py are untouched (B4 scope). Verification REFUTED the original "IntentExecutor
+  consumers must be updated in the same PR" framing: there are NO Kafka consumers of onex.runtime.intents
+  — IntentExecutor is a synchronous runtime service (not a topic listener) called from ServiceDispatchResultApplier,
+  and MixinIntentPublisher has zero production call sites. This is a type-correctness + test change only
+  with no consumer-node diff. Tests updated to assert the new ModelEventEnvelope wire shape and a serialize->deserialize
+  round-trip on the generic envelope (the strict ModelEventEnvelope[ModelEventPublishIntent] cannot reconstruct
+  from JSON because ModelEventPublishIntent.target_event_payload is a ModelEventPayloadUnion whose before-validator
+  rejects the plain dict JSON decoding yields — a pre-existing property of the intent model). No Kafka
+  topic schema change, no DDL/migration, no runtime/deploy/.201 mutation.
+is_seam_ticket: false
+interface_change: false
+interfaces_touched: []
+emergency_bypass:
+  enabled: false
+  justification: ""
+  follow_up_ticket_id: ""
+dod_evidence:
+  - id: "pr-omnibase_core"
+    description: >-
+      omnibase_core implementation PR #1245 (branch jonah/omn-13192-migrate-intent-publisher) migrates
+      the sole live ModelOnexEnvelope constructor in mixin_intent_publisher.py to ModelEventEnvelope[ModelEventPublishIntent].
+      The paired OCC receipt drift/dod_receipts/OMN-13192/pr-omnibase_core/command.yaml binds the code
+      PR head sha (commit_sha) and OCC PR number (pr_number) with status PASS, and records the zero-live-constructor
+      grep proof plus the green gate results (ruff clean, CI-equivalent mypy src/omnibase_core Success
+      no issues in 3865 files, focused suites 44 passed, full pytest green).
+    source: "manual"
+    checks:
+      - check_type: "command"
+        check_value: "grep -q '^status: PASS$' drift/dod_receipts/OMN-13192/pr-omnibase_core/command.yaml"

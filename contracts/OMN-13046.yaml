@@ -1,0 +1,90 @@
+---
+schema_version: "1.0.0"
+ticket_id: "OMN-13046"
+title: "C-5: Docs-branch leg on dirty-canonical sweep — alert when untracked docs files exceed threshold
+  or age"
+summary: >
+  Implements the C-5 retro action item (PROCESS_FAILURE_RETRO.md §3.C): alert when untracked docs/{handoffs,evidence,plans,deep-dives}
+  files in omni_home exceed a count threshold (>=50) or any file is older than 4 hours. Before this change,
+  518 dirty-entry states in the omni_home docs branch went undetected for days. The fix adds a docs_dirty_alert
+  skill with a src/omniclaude/nodes/node_skill_docs_dirty_alert_orchestrator/check.py scan module that
+  uses git status --porcelain, an orchestrator node (node_skill_docs_dirty_alert_orchestrator) with event-bus
+  contract, 14 unit tests covering count threshold, age threshold, clean state, and friction YAML schema,
+  and a CronCreate entry (every 30 min) in scripts/setup-session-crons.sh. Friction YAML is written to
+  $ONEX_STATE_DIR/friction/ on alert; exit 0=clean, 1=alert. DoD: 518-dirty-entry states surface within
+  hours, not days.
+is_seam_ticket: false
+interface_change: false
+interfaces_touched: []
+evidence_requirements:
+  - kind: "tests"
+    description: >
+      omniclaude: tests/skills/test_docs_dirty_alert.py — 14 unit tests covering _run_git_status (untracked
+      filter, empty output, subprocess error, timeout), _collect_untracked_files (single file, directory
+      expansion, missing file, age computed), run_docs_dirty_check count threshold (no alert below threshold,
+      alert fires at threshold), age threshold (no alert for young files, alert fires for old file), clean
+      state, and friction YAML schema.
+    command: "uv run pytest tests/skills/test_docs_dirty_alert.py -v"
+  - kind: "manual"
+    description: "Skill check module exists at src/omniclaude/nodes/node_skill_docs_dirty_alert_orchestrator/check.py"
+    command: "test -f src/omniclaude/nodes/node_skill_docs_dirty_alert_orchestrator/check.py"
+  - kind: "manual"
+    description: "Orchestrator node contract exists."
+    command: "test -f src/omniclaude/nodes/node_skill_docs_dirty_alert_orchestrator/contract.yaml"
+  - kind: "manual"
+    description: "docs-dirty-alert cron defined in setup-session-crons.sh"
+    command: "grep -q 'docs-dirty-alert' scripts/setup-session-crons.sh"
+emergency_bypass:
+  enabled: false
+  justification: ""
+  follow_up_ticket_id: ""
+dod_evidence:
+  - id: "dod-tests-pass"
+    description: >
+      omniclaude PR #1814 — 14 unit tests pass in tests/skills/test_docs_dirty_alert.py covering all alert
+      conditions (count threshold, age threshold, clean state, friction YAML schema).
+    source: "manual"
+    checks:
+      - check_type: "command"
+        check_value: "grep -q '^status: PASS$' drift/dod_receipts/OMN-13046/dod-tests-pass/command.yaml"
+  - id: "dod-skill-and-node-exist"
+    description: >
+      Skill check module (src/omniclaude/nodes/node_skill_docs_dirty_alert_orchestrator/check.py), SKILL.md,
+      and orchestrator node (src/omniclaude/nodes/node_skill_docs_dirty_alert_orchestrator/contract.yaml)
+      all present in omniclaude PR #1814.
+    source: "manual"
+    checks:
+      - check_type: "command"
+        check_value: "grep -q '^status: PASS$' drift/dod_receipts/OMN-13046/dod-skill-and-node-exist/command.yaml"
+  - id: "dod-cron-wired"
+    description: >
+      docs-dirty-alert CronCreate entry added to scripts/setup-session-crons.sh at 30-minute interval
+      (*/30 * * * *) in omniclaude PR #1814. Closes C-5 gap: dirty docs state now surfaces within 30 min,
+      not days.
+    source: "manual"
+    checks:
+      - check_type: "command"
+        check_value: "grep -q '^status: PASS$' drift/dod_receipts/OMN-13046/dod-cron-wired/command.yaml"
+  - id: "dod-quality-gate"
+    description: >
+      ruff format + ruff check + mypy --strict all pass on new files in omniclaude PR #1814.
+    source: "manual"
+    checks:
+      - check_type: "command"
+        check_value: "grep -q '^status: PASS$' drift/dod_receipts/OMN-13046/dod-quality-gate/command.yaml"
+  - id: "dod-deploy-gate"
+    description: >
+      Deploy-gate policy evidence for omniclaude PR #1814: runtime-path node changes are bound to OCC
+      evidence and validated at the product PR head; no live deploy or restart was performed by this receipt.
+    source: "manual"
+    checks:
+      - check_type: "command"
+        check_value: "grep -q '^status: PASS$' drift/dod_receipts/OMN-13046/dod-deploy-gate/command.yaml"
+  - id: "dod-occ-self"
+    description: >
+      onex_change_control PR #3248 carries the OMN-13046 contract and PASS receipts consumed by omniclaude
+      PR #1814 through the Evidence-Source reference.
+    source: "manual"
+    checks:
+      - check_type: "command"
+        check_value: "test -f contracts/OMN-13046.yaml && grep -q 'ticket_id: \"OMN-13046\"' contracts/OMN-13046.yaml"

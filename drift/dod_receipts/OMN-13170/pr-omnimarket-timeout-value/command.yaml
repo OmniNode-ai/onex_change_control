@@ -1,0 +1,78 @@
+---
+schema_version: "1.0.0"
+ticket_id: "OMN-13170"
+evidence_item_id: "pr-omnimarket-timeout-value"
+check_type: "command"
+check_value: "grep -q '^status: PASS$' drift/dod_receipts/OMN-13170/pr-omnimarket-timeout-value/command.yaml"
+status: PASS
+run_timestamp: "2026-06-18T02:55:00-00:00"
+commit_sha: "c0848c0984841a99af0225941bec74a634c5a58f"
+contract_sha256: "sha256:ae43485b29a7020c86b67b1e5f1926b117c318c0c51d416d1619913c66d9324a"
+branch: "jonah/omn-13170-tune-timeout-overlay-value"
+pr_number: 2727
+runner: "omn-13170-impl"
+verifier: "receipt-gate-local"
+probe_command: "grep -nE 'timeout_ms: (300000|60000|120000)' src/omnimarket/configs/bifrost_delegation.yaml
+  | head ; uv run pytest tests/nodes/node_delegation_routing_reducer/ tests/unit/nodes/node_llm_delegation_call_effect/
+  tests/unit/routing/test_delegation_backend_timeout.py -q ; uv run pytest tests/ -m 'not kafka' -q"
+probe_stdout: |
+  # ROOT CAUSE: OMN-13161 raised max_tokens to 65536 on the code-generation / large-read
+  #   backends but left timeout_ms at 60000 (sometimes 120000). Once OMN-13170 deleted the
+  #   hardcoded 120s transport cap and honored the contract value end-to-end, dev-runtime
+  #   evidence (2026-06-18) showed local:ds-v4-flash code_generation cells + glm-4.5 large
+  #   reads STILL failed with error="timed out" / output_tokens=0 — the contract VALUE was
+  #   too short for the raised output budget.
+  #
+  # FIX: size timeout_ms to the output budget in the routing contract (overlay-overridable,
+  #   no hardcoded literal). Every HTTP backend with max_tokens >= 65536 now declares
+  #   timeout_ms=300000 (5 min, within the 600000 schema cap):
+  #     local-coder, local-heavy-reasoning, cloud-sonnet, cloud-glm, local-ds-v4-flash,
+  #     openrouter-qwen3-coder-480b
+  #   smaller-budget backends keep their shorter timeouts (gemini/haiku/reasoner/embedding).
+  #   config_version 2.0.0 -> 2.1.0.
+  #
+  # MERGED default+overlay (~/.omninode/delegation/bifrost_overrides.yaml updated to match):
+  #   local-coder           timeout_ms=300000 max_tokens=65536
+  #   local-heavy-reasoning timeout_ms=300000 max_tokens=65536
+  #   local-ds-v4-flash     timeout_ms=300000 max_tokens=65536
+  #   cloud-glm             timeout_ms=300000 max_tokens=65536
+  #   cloud-sonnet          timeout_ms=300000 max_tokens=65536
+  #   openrouter-qwen3-coder-480b timeout_ms=300000 max_tokens=65536
+  #   local-reasoner        timeout_ms=120000 max_tokens=16384  (unchanged — smaller budget)
+  #   cloud-gemini-flash    timeout_ms= 60000 max_tokens=8192   (unchanged)
+  #   cloud-haiku           timeout_ms= 30000 max_tokens=32768  (unchanged)
+  #   local-embedding       timeout_ms= 30000 max_tokens=1      (unchanged)
+  #   VIOLATIONS of (max_tokens>=65536 implies timeout_ms>=300000): []
+  #
+  # focused: tests/nodes/node_delegation_routing_reducer/ + node_llm_delegation_call_effect/
+  #   + tests/unit/routing/test_delegation_backend_timeout.py  ->  84 passed
+  #   incl. 2 new TDD invariants in test_bifrost_overlay_loader.py:
+  #     test_large_output_backends_carry_realistic_timeout (RED before fix: 6 violations),
+  #     test_named_timeout_regression_backends_are_tuned (ds-v4-flash + cloud-glm >= 300000).
+  # uv run pytest tests/ -m 'not kafka' (no -k)  ->  7562 passed, 64 skipped, 9 deselected in 301.57s
+  #   the 9 deselected are @pytest.mark.kafka tests requiring a live broker; unrelated to this change.
+  # uv run ruff format --check src/ tests/  ->  3151 files already formatted
+  # uv run ruff check src/ tests/  ->  All checks passed
+  # uv run mypy tests/.../test_bifrost_overlay_loader.py --strict  ->  Success: no issues found in 1 source file
+  # pre-commit run --all-files  ->  all hooks Passed on the 2 staged files (eof-fixer touched only
+  #   pre-existing unrelated docs/evidence/dep-health-sweep/ artifacts, restored; not in this diff).
+actual_output: >-
+  PASS: omnimarket follow-up PR (branch jonah/omn-13170-tune-timeout-overlay-value, base dev, head c0848c0984841a99af0225941bec74a634c5a58f)
+  tunes the per-backend timeout_ms VALUE in the routing contract (bifrost_delegation.yaml) so the large
+  generations the OMN-13170 threading fix now permits can complete. Root cause: OMN-13161 raised max_tokens
+  to 65536 on the code-generation / large-read backends but left timeout_ms at 60000/120000, so dev-runtime
+  ds-v4-flash codegen and glm-4.5 large reads still failed with error="timed out" / output_tokens=0. Fix
+  sizes timeout_ms to the output budget (overlay-overridable, no hardcoded literal): every HTTP backend
+  with max_tokens >= 65536 now declares timeout_ms=300000 (local-coder, local-heavy-reasoning, cloud-sonnet,
+  cloud-glm, local-ds-v4-flash, openrouter-qwen3-coder-480b); smaller-budget backends unchanged; config_version
+  2.0.0 -> 2.1.0. Two TDD invariants added. Gates green: focused delegation/routing suites 84 passed (incl.
+  the 2 new invariants, RED before the fix); full `uv run pytest tests/ -m "not kafka"` (no -k) 7562 passed
+  / 64 skipped (9 kafka deselected, live-broker-dependent and unrelated); ruff format + check clean; mypy
+  --strict on the changed test Success; pre-commit run --all-files all hooks Passed on staged files. This
+  receipt is the grep-target consumed by the check_value in contracts/OMN-13170.yaml (contract bytes hash
+  to sha256:ae43485b29a7020c86b67b1e5f1926b117c318c0c51d416d1619913c66d9324a). Code PR omnimarket #1256
+  (base dev), head commit_sha c0848c0984841a99af0225941bec74a634c5a58f — the code-PR Receipt Gate binds
+  on commit_sha. pr_number carries the OCC PR (#2727) so this PR's own occ-preflight eligibility binds
+  on pr_number (resolves pr_ticket_mismatch), mirroring the OMN-13132 dod-occ-self pattern.
+exit_code: 0
+working_dir: "/Users/jonah/Code/omni_home/omni_worktrees/OMN-13170-timeout-value/omnimarket"

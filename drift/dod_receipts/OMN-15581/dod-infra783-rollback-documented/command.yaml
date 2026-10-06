@@ -1,0 +1,60 @@
+---
+schema_version: "1.0.0"
+ticket_id: "OMN-15581"
+evidence_item_id: "dod-infra783-rollback-documented"
+check_type: "command"
+check_value: >-
+  body="$(gh api repos/OmniNode-ai/omninode_infra/pulls/783 --jq .body)" && printf '%s' "$body" | grep
+  -q 'ROLLBACK (documented, not executed)' && printf '%s' "$body" | grep -q 'node:node_projection_registration:0000_create_node_service_registry.sql'
+  && printf '%s' "$body" | grep -q 'node:node_projection_registration:0001_add_heartbeat_columns.sql'
+  && printf '%s' "$body" | grep -q 'node:node_projection_registration:0002_node_service_registry_tenant_rls.sql'
+  && printf '%s' "$body" | grep -q 'ALTER TABLE node_service_registry NO FORCE ROW LEVEL SECURITY;' &&
+  printf '%s' "$body" | grep -q 'DROP POLICY IF EXISTS tenant_isolation ON node_service_registry;' &&
+  printf '%s' "$body" | grep -q 'DELETE FROM node_schema_migrations WHERE version IN (' && printf '%s'
+  "$body" | grep -q 'Neither leg has been executed' && printf 'infra783 rollback-documented-not-executed
+  binding PASS\n'
+contract_entry_sha256: "sha256:83021d7584545073fc24780cea2d9779a2118d202ad27c14991a906deaed7ecd"
+status: PASS
+run_timestamp: "2026-07-31T14:53:00Z"
+commit_sha: "5f0e9e570f9b59fff00590f74c30131d4c56e719"
+runner: "claude-code-local"
+verifier: "claude-agent:omn-15581-landing-lane"
+probe_command: >-
+  gh api repos/OmniNode-ai/omninode_infra/pulls/783 --jq .body | grep -A 24 'ROLLBACK (documented, not
+  executed)'
+probe_stdout: |
+  ## ROLLBACK (documented, not executed)
+
+  A PR revert is **not** a rollback of the DB effect. Once `0000`/`0001`/`0002` are recorded in
+  `node_schema_migrations`, re-fencing changes nothing on disk — FORCE, the `tenant_id` column, the
+  `tenant_isolation` policy and the `app_dashboard` grant all persist.
+
+  **Leg 1 — re-fence (stops future re-application, reverts this PR's diff).** Restore verbatim into
+  `FENCED_NODE_MIGRATION_IDS` in `k8s/migrations/omnibase-infra-migrate.yaml`, after the four
+  delegation ids:
+
+                    "node:node_projection_registration:0000_create_node_service_registry.sql"
+                    "node:node_projection_registration:0001_add_heartbeat_columns.sql"
+                    "node:node_projection_registration:0002_node_service_registry_tenant_rls.sql"
+
+  **Leg 2 — undo the applied posture (requires an owner/admin DB credential the Job deliberately
+  does not hold).** Against `omnidash_analytics`:
+
+  ALTER TABLE node_service_registry NO FORCE ROW LEVEL SECURITY;
+  -- optionally, to return fully to the pre-0002 posture:
+  -- DROP POLICY IF EXISTS tenant_isolation ON node_service_registry;
+  -- ALTER TABLE node_service_registry DISABLE ROW LEVEL SECURITY;
+
+  -- only if a later re-apply is wanted:
+  DELETE FROM node_schema_migrations WHERE version IN (
+    'node:node_projection_registration:0000_create_node_service_registry.sql',
+    'node:node_projection_registration:0001_add_heartbeat_columns.sql',
+    'node:node_projection_registration:0002_node_service_registry_tenant_rls.sql'
+  );
+
+  Neither leg has been executed.
+actual_output: |
+  infra783 rollback-documented-not-executed binding PASS
+exit_code: 0
+pr_number: 783
+branch: "jonah/omn-15581-staging-force-unfence-registration"

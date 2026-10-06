@@ -1,0 +1,2298 @@
+# SPDX-FileCopyrightText: 2025 OmniNode.ai Inc.
+# SPDX-License-Identifier: MIT
+
+"""Tests for scripts/ci/ci_summary_gate.py (OMN-15768 enforce-everything wave).
+
+Behavioral core (ported from the omnibase_infra reference implementation,
+tests/ci/test_ci_summary_gate.py) plus OCC-specific pins:
+
+* completeness: every job reachable from a `pull_request` trigger against
+  `dev`, across every workflow file, is classified into exactly one of
+  STRICT / SKIPPABLE / SOFT_ALLOWLIST(self) / EXPECTED_EXTERNAL_CONTEXTS /
+  EXEMPT_CONTEXTS -- a newly added, unclassified job fails this test.
+* red-replay: a fixture shaped like the real OCC#6346 payload (Contract
+  Compliance Check = failure, everything else success) must evaluate FAILURE
+  under the new gate -- it evaluated SUCCESS under the old needs-based
+  aggregator because `contract-compliance` was absent from its `needs:`.
+* falsification control: deleting any one EXPECTED_EXTERNAL_CONTEXTS entry
+  must flip a fixture from FAILURE to SUCCESS, proving each entry is
+  load-bearing (not decorative).
+* anti-regression pin for the whole OMN-15768 bug class: no workflow file
+  under `.github/workflows/` may carry a `github.base_ref != 'dev'` clause
+  outside the one reviewed, still-intentional exception (`pre-commit`'s
+  ci:ready label gate).
+"""
+
+from __future__ import annotations
+
+import json
+import re
+import shutil
+import subprocess
+import textwrap
+from datetime import UTC, datetime, timedelta
+from pathlib import Path
+from typing import Any
+
+import pytest
+import yaml
+
+from scripts.ci import ci_summary_gate
+from scripts.ci.ci_summary_gate import (
+    ADVISORY_DECLARATION_MARKER,
+    CLASSIFICATION_ONLY,
+    EXEMPT_CONTEXTS,
+    EXIT_FAILURE,
+    EXIT_PENDING,
+    EXIT_SUCCESS,
+    EXPECTED_EXTERNAL_CONTEXTS,
+    EXTERNAL_GOOD_CONCLUSIONS,
+    EXTERNAL_SWEEP_EXCLUSIONS,
+    GOOD_CONCLUSIONS,
+    SELF_JOB_NAME,
+    SKIPPABLE_GATE_JOBS,
+    SOFT_ALLOWLIST,
+    STRICT_GATE_JOBS,
+    SWEEP_EXCLUSION_MAX_DAYS,
+    SWEEP_GOOD_CONCLUSIONS,
+    SweepExclusion,
+    _load_check_runs,
+    active_sweep_exclusions,
+    check_run_event_index,
+    dedup_latest,
+    drop_superseded_skips,
+    evaluate,
+    evaluate_external_contexts,
+    evaluate_external_sweep,
+    latest_check_run_by_name,
+    resolve_check_run_event,
+    validate_declared_producers,
+    validate_sweep_exclusions,
+)
+
+REPO_ROOT = Path(__file__).resolve().parents[2]
+WORKFLOWS_DIR = REPO_ROOT / ".github" / "workflows"
+
+# ``uses:``-based reusable-workflow caller jobs in this repo carry no local
+# `name:` field (the composed GitHub check-run name is `<caller job id> /
+# <inner job/context name>`, resolved either by the reusable's own `name:`
+# echoing that literal string, or -- for merge-hold-gate -- by the `with:
+# context_name:` input the reusable is documented to consume). Mirrors
+# required-checks.yaml's `job_path` Shape B/C documentation for the same jobs.
+COMPOSED_NAME_OVERRIDES: dict[tuple[str, str], str] = {
+    ("ci.yml", "merge-hold-gate"): "merge-hold-gate / evaluate",
+    # OMN-18031: the route job calls omniclaude's cross-repo
+    # route-runner-reusable.yml, whose inner job is named `route`, so GitHub
+    # surfaces the check-run as "<caller job name> / route". The caller job
+    # DOES carry its own `name:`, so without this entry the default
+    # `job.get("name", job_id)` resolution would look for the uncomposed
+    # "Runner Route (OMN-18031)" and report the registered composed name as an
+    # unclassified job.
+    ("ci.yml", "route"): "Runner Route (OMN-18031) / route",
+    (
+        "ci.yml",
+        "supersession-baseline-oneway",
+    ): "Supersession Baseline One-way (OMN-19677) / anti-growth-baseline",
+    (
+        "ci.yml",
+        "yamlfmt-sentinel-baseline-oneway",
+    ): "yamlfmt Sentinel Baseline One-way (OMN-19677) / anti-growth-baseline",
+    (
+        "ci.yml",
+        "yamlfmt-folded-baseline-oneway",
+    ): "yamlfmt Folded Scalar Baseline One-way (OMN-19677) / anti-growth-baseline",
+    (
+        "ci.yml",
+        "orphan-baseline-oneway",
+    ): "Orphan Corpus Baseline One-way (OMN-19677) / anti-growth-baseline",
+    # OMN-16260: these four jobs' original standalone files (call-occ-
+    # autobind.yml, call-occ-companion-effect.yml, pr-title-check.yml,
+    # required-check-skip-guard-caller.yml) were consolidated into
+    # guards.yml -- same job ids, same `uses:` targets, same composed
+    # check-run names, only the file moved.
+    (
+        "guards.yml",
+        "occ-autobind",
+    ): "occ-autobind / Publish occ-autobind command",
+    (
+        "guards.yml",
+        "occ-companion-effect",
+    ): "occ-companion-effect / Publish occ-companion-effect command",
+    ("guards.yml", "pr-title"): "pr-title / check-title",
+    ("docs-validate.yml", "call"): "call / validate-docs",
+    ("kb-doc-gate.yml", "kb-doc-gate"): "kb-doc-gate / kb-doc-gate",
+    # OMN-18796: the advisory-job gate's caller job carries no local `name:`,
+    # so the default resolution would look for the bare job id and report the
+    # registered composed check-run name as an unclassified job.
+    (
+        "advisory-job-gate.yml",
+        "advisory-job-gate",
+    ): "advisory-job-gate / advisory-job-gate",
+    (
+        "guards.yml",
+        "required-check-skip-guard",
+    ): "required-check-skip-guard / check-skip-vectors",
+}
+
+
+def _iter_pr_triggered_jobs() -> list[tuple[str, str, str]]:
+    """Yield ``(workflow_file, job_id, context_name)`` for every job reachable
+    from a `pull_request` event targeting `dev`.
+
+    A workflow file is in scope iff its `on:` block carries a `pull_request`
+    key AND (it has no `branches:` filter, OR `dev` is a member of that
+    filter). Every job dict in such a file is in scope -- there is no
+    per-job `paths:`/`if:`-based exclusion at this layer; that is exactly
+    what STRICT vs SKIPPABLE vs SOFT_ALLOWLIST vs EXEMPT_CONTEXTS classifies.
+    """
+
+    out: list[tuple[str, str, str]] = []
+    for path in sorted(WORKFLOWS_DIR.glob("*.yml")):
+        with path.open(encoding="utf-8") as fh:
+            doc = yaml.safe_load(fh)
+        # YAML 1.1 parses the bare `on:` key as the boolean True.
+        on = doc.get("on", doc.get(True))
+        if not isinstance(on, dict) or "pull_request" not in on:
+            continue
+        pr_trigger = on["pull_request"]
+        branches = pr_trigger.get("branches") if isinstance(pr_trigger, dict) else None
+        if branches is not None and "dev" not in branches:
+            continue
+        for job_id, job in (doc.get("jobs") or {}).items():
+            override = COMPOSED_NAME_OVERRIDES.get((path.name, job_id))
+            context = override if override is not None else job.get("name", job_id)
+            out.append((path.name, job_id, context))
+    return out
+
+
+def _classified_names() -> frozenset[str]:
+    return (
+        frozenset(STRICT_GATE_JOBS)
+        | frozenset(SKIPPABLE_GATE_JOBS)
+        | frozenset(SOFT_ALLOWLIST)
+        | frozenset(CLASSIFICATION_ONLY)
+        | frozenset(EXPECTED_EXTERNAL_CONTEXTS)
+        | frozenset(EXEMPT_CONTEXTS)
+        | {SELF_JOB_NAME}
+    )
+
+
+# ---------------------------------------------------------------------------
+# Completeness
+# ---------------------------------------------------------------------------
+
+
+def test_every_pr_triggered_job_is_classified() -> None:
+    classified = _classified_names()
+    unclassified = [
+        (wf, job_id, ctx)
+        for wf, job_id, ctx in _iter_pr_triggered_jobs()
+        if ctx not in classified
+    ]
+    assert not unclassified, (
+        "Job(s) reachable from a pull_request-to-dev trigger are not "
+        "classified into STRICT_GATE_JOBS / SKIPPABLE_GATE_JOBS / "
+        "SOFT_ALLOWLIST / EXPECTED_EXTERNAL_CONTEXTS / EXEMPT_CONTEXTS: "
+        f"{unclassified}"
+    )
+
+
+def test_every_strict_and_skippable_name_resolves_to_a_live_ci_yml_job() -> None:
+    """STRICT/SKIPPABLE names must match a real `name:` (or fallback id) in
+    ci.yml -- catches a renamed job silently orphaning its gate entry."""
+
+    live_names = {
+        job.get("name", job_id): job_id
+        for job_id, job in (
+            yaml.safe_load((WORKFLOWS_DIR / "ci.yml").read_text(encoding="utf-8"))[
+                "jobs"
+            ]
+        ).items()
+    }
+    # merge-hold-gate has no local `name:` -- resolve via the override table.
+    live_names[COMPOSED_NAME_OVERRIDES[("ci.yml", "merge-hold-gate")]] = (
+        "merge-hold-gate"
+    )
+    # OMN-18031: `route` has a local `name:`, but the registered gate entry is
+    # the COMPOSED check-run name, so resolve it through the override table the
+    # same way.
+    live_names[COMPOSED_NAME_OVERRIDES[("ci.yml", "route")]] = "route"
+    for job_id in (
+        "supersession-baseline-oneway",
+        "yamlfmt-sentinel-baseline-oneway",
+        "yamlfmt-folded-baseline-oneway",
+        "orphan-baseline-oneway",
+    ):
+        live_names[COMPOSED_NAME_OVERRIDES[("ci.yml", job_id)]] = job_id
+
+    for name in STRICT_GATE_JOBS + SKIPPABLE_GATE_JOBS:
+        assert name in live_names, f"{name!r} does not match any live ci.yml job name"
+
+
+def test_no_asserted_workflow_has_a_pull_request_paths_filter() -> None:
+    for path in sorted(WORKFLOWS_DIR.glob("*.yml")):
+        with path.open(encoding="utf-8") as fh:
+            doc = yaml.safe_load(fh)
+        on = doc.get("on", doc.get(True))
+        if not isinstance(on, dict):
+            continue
+        pr_trigger = on.get("pull_request")
+        if not isinstance(pr_trigger, dict):
+            continue
+        msg = (
+            f"{path.name} carries a pull_request paths filter -- convert to "
+            "always-fires + in-job short-circuit before asserting any of "
+            "its jobs (documented wedge trap)."
+        )
+        assert "paths" not in pr_trigger, msg
+        assert "paths-ignore" not in pr_trigger, msg
+
+
+def test_no_job_carries_a_base_ref_dev_exemption() -> None:
+    """Anti-regression pin for the whole OMN-15768 bug class.
+
+    Regex-scans every workflow file for the `base_ref != 'dev'` skip-vector
+    shape. The ONLY reviewed, still-intentional survivor is `pre-commit`'s
+    admission gate in ci.yml (which is deliberately STRICT, not SKIPPABLE --
+    an unadmitted dev PR is meant to fail, not silently pass).
+    """
+
+    pattern = re.compile(r"base_ref\s*!=\s*['\"]dev['\"]")
+    allowed = {
+        # ci.yml: pre-commit's own `if:` (job-level) -- the OMN-15731
+        # admission-gate pilot, revised 2026-08-18 to make draft state
+        # (`!github.event.pull_request.draft`) the primary signal with
+        # `ci:ready` retained as a transition-window fallback. Reviewed and
+        # intentional: see STRICT_GATE_JOBS's "Pre-commit" entry comment in
+        # ci_summary_gate.py and TestDraftStateGateMigrationOmn15731Revision
+        # in test_label_gated_ci_pilot_omn15731.py.
+        #
+        # OMN-18580 restructured the leading guard: a job-level `always()`
+        # runs even on a CANCELLED workflow, which held this repo's
+        # concurrency group and stalled the successor run. The non-dev arm
+        # this entry exists to allow is UNCHANGED in meaning and is now the
+        # first top-level disjunct -- deliberately outside the `!cancelled()`
+        # term, because `Pre-commit` is a REQUIRED context on `main` and a
+        # skipped required check reads as passing. The condition now spans two
+        # lines under a `>-` block scalar, so its two stripped source lines are
+        # allowlisted separately.
+        (
+            "ci.yml",
+            "${{ (github.event_name != 'pull_request' || github.base_ref != 'dev')",
+        ),
+    }
+    violations: list[str] = []
+    for path in sorted(WORKFLOWS_DIR.glob("*.yml")):
+        text = path.read_text(encoding="utf-8")
+        for lineno, line in enumerate(text.splitlines(), start=1):
+            stripped = line.strip()
+            if stripped.startswith("#"):
+                # Explanatory prose (e.g. this PR's own "used to carry a
+                # base_ref != 'dev' clause, now removed" comments) is not
+                # live YAML and cannot skip anything.
+                continue
+            if pattern.search(line) and (path.name, stripped) not in allowed:
+                violations.append(f"{path.name}:{lineno}: {stripped}")
+    assert not violations, (
+        "Unreviewed `base_ref != 'dev'` skip-vector clause(s) found -- this "
+        "is the exact OMN-15768 bug class (silent skip on every dev PR while "
+        "reading as passing). Either remove the clause or add it to the "
+        "`allowed` set above with a reviewed reason:\n" + "\n".join(violations)
+    )
+
+
+def test_every_exempt_context_has_a_nonempty_reason() -> None:
+    for name, reason in EXEMPT_CONTEXTS.items():
+        assert isinstance(reason, str), (
+            f"EXEMPT_CONTEXTS[{name!r}] reason must be a string"
+        )
+        assert len(reason.strip()) > 20, (
+            f"EXEMPT_CONTEXTS[{name!r}] must carry a real, non-trivial reason"
+        )
+
+
+def test_strict_skippable_external_and_exempt_are_disjoint() -> None:
+    sets = {
+        "STRICT_GATE_JOBS": frozenset(STRICT_GATE_JOBS),
+        "SKIPPABLE_GATE_JOBS": frozenset(SKIPPABLE_GATE_JOBS),
+        "EXPECTED_EXTERNAL_CONTEXTS": frozenset(EXPECTED_EXTERNAL_CONTEXTS),
+        "EXEMPT_CONTEXTS": frozenset(EXEMPT_CONTEXTS),
+    }
+    names = list(sets)
+    for i, a in enumerate(names):
+        for b in names[i + 1 :]:
+            overlap = sets[a] & sets[b]
+            assert not overlap, f"{a} and {b} overlap: {overlap}"
+
+
+# ---------------------------------------------------------------------------
+# Behavioral core
+# ---------------------------------------------------------------------------
+
+
+def _job(
+    name: str, conclusion: str | None, status: str = "completed", attempt: int = 1
+) -> dict[str, object]:
+    return {
+        "name": name,
+        "status": status,
+        "conclusion": conclusion,
+        "run_attempt": attempt,
+    }
+
+
+def _all_green_jobs() -> list[dict[str, object]]:
+    jobs = [_job(n, "success") for n in STRICT_GATE_JOBS]
+    jobs += [_job(n, "success") for n in SKIPPABLE_GATE_JOBS]
+    return jobs
+
+
+def _all_green_check_runs() -> list[dict[str, object]]:
+    return [
+        {
+            "name": n,
+            "status": "completed",
+            "conclusion": "success",
+            "started_at": "2026-08-13T00:00:00Z",
+            "id": i,
+        }
+        for i, n in enumerate(EXPECTED_EXTERNAL_CONTEXTS)
+    ]
+
+
+class TestRunningRowsHoldTheVerdictOmn20066:
+    """In-run rows without a verdict must hold CI Summary at PENDING."""
+
+    @pytest.mark.parametrize("status", ["queued", "in_progress", "waiting", "pending"])
+    def test_running_unregistered_job_cannot_conclude_success(
+        self, status: str
+    ) -> None:
+        jobs = [*_all_green_jobs(), _job("Some New Job", None, status=status)]
+        code, report = evaluate(jobs, run_attempt=1)
+        assert code == EXIT_PENDING, report
+        assert (
+            "  default-deny sweep rows still running (PENDING, re-polled): Some New Job"
+            in report
+        )
+
+    @pytest.mark.skip(reason="OCC uses the same gate tiers for every workflow event")
+    def test_merge_group_running_unregistered_job_holds_pending(self) -> None:
+        """There is no separate merge-group gate-tier mechanism to exercise."""
+
+    def test_running_job_then_completed_success_concludes_success(self) -> None:
+        jobs = [*_all_green_jobs(), _job("Some New Job", None, status="in_progress")]
+        code, report = evaluate(jobs, run_attempt=1)
+        assert code == EXIT_PENDING, report
+
+        jobs[-1] = _job("Some New Job", "success")
+        code, report = evaluate(jobs, run_attempt=1)
+        assert code == EXIT_SUCCESS, report
+        assert "default-deny sweep rows still running" not in report
+
+    def test_running_job_then_completed_failure_fails(self) -> None:
+        jobs = [*_all_green_jobs(), _job("Some New Job", None, status="in_progress")]
+        code, report = evaluate(jobs, run_attempt=1)
+        assert code == EXIT_PENDING, report
+
+        jobs[-1] = _job("Some New Job", "failure")
+        code, report = evaluate(jobs, run_attempt=1)
+        assert code == EXIT_FAILURE, report
+        assert "default-deny sweep failures: Some New Job" in report
+        assert "default-deny sweep rows still running" not in report
+
+    def test_failure_wins_over_a_running_row(self) -> None:
+        jobs = [
+            *_all_green_jobs(),
+            _job("Failed New Job", "failure"),
+            _job("Some New Job", None, status="in_progress"),
+        ]
+        code, report = evaluate(jobs, run_attempt=1)
+        assert code == EXIT_FAILURE, report
+        assert "default-deny sweep failures: Failed New Job" in report
+
+    @pytest.mark.parametrize(
+        "name",
+        [
+            "URL Authority Gate (OMN-13563)",
+            "public-repo-hygiene / report",
+            SELF_JOB_NAME,
+        ],
+    )
+    def test_allowlisted_running_rows_do_not_hold(self, name: str) -> None:
+        jobs = [*_all_green_jobs(), _job(name, None, status="in_progress")]
+        code, report = evaluate(jobs, run_attempt=1)
+        assert code == EXIT_SUCCESS, report
+        assert "default-deny sweep rows still running" not in report
+
+    def test_every_job_needing_ci_summary_is_allowlisted(self) -> None:
+        """Waiting on a downstream job would deadlock the CI Summary poller."""
+        workflow = yaml.safe_load(
+            (WORKFLOWS_DIR / "ci.yml").read_text(encoding="utf-8")
+        )
+        for job_id, job in workflow["jobs"].items():
+            needs = job.get("needs", [])
+            if isinstance(needs, str):
+                needs = [needs]
+            if "ci-summary" in needs:
+                display_name = COMPOSED_NAME_OVERRIDES.get(
+                    ("ci.yml", job_id), job.get("name") or job_id
+                )
+                assert ci_summary_gate._is_allowlisted(display_name, SOFT_ALLOWLIST), (
+                    f"{job_id} ({display_name}) needs ci-summary "
+                    "and must be allowlisted"
+                )
+
+
+def test_strict_success_only_all_green_passes() -> None:
+    code, _ = evaluate(
+        _all_green_jobs(),
+        check_runs=_all_green_check_runs(),
+        external_contexts=EXPECTED_EXTERNAL_CONTEXTS,
+    )
+    assert code == 0
+
+
+def test_strict_gate_skipped_fails_closed() -> None:
+    victim = STRICT_GATE_JOBS[0]
+    jobs = _all_green_jobs()
+    for j in jobs:
+        if j["name"] == victim:
+            j["conclusion"] = "skipped"
+    code, report = evaluate(
+        jobs,
+        check_runs=_all_green_check_runs(),
+        external_contexts=EXPECTED_EXTERNAL_CONTEXTS,
+    )
+    assert code == 1
+    assert victim in report
+
+
+def test_strict_gate_cancelled_fails_closed() -> None:
+    victim = STRICT_GATE_JOBS[0]
+    jobs = _all_green_jobs()
+    for j in jobs:
+        if j["name"] == victim:
+            j["conclusion"] = "cancelled"
+    code, _ = evaluate(
+        jobs,
+        check_runs=_all_green_check_runs(),
+        external_contexts=EXPECTED_EXTERNAL_CONTEXTS,
+    )
+    assert code == 1
+
+
+def test_skippable_gate_skipped_passes() -> None:
+    victim = SKIPPABLE_GATE_JOBS[0]
+    jobs = _all_green_jobs()
+    for j in jobs:
+        if j["name"] == victim:
+            j["conclusion"] = "skipped"
+    code, _ = evaluate(
+        jobs,
+        check_runs=_all_green_check_runs(),
+        external_contexts=EXPECTED_EXTERNAL_CONTEXTS,
+    )
+    assert code == 0
+
+
+def test_skippable_gate_failure_fails_closed() -> None:
+    victim = SKIPPABLE_GATE_JOBS[0]
+    jobs = _all_green_jobs()
+    for j in jobs:
+        if j["name"] == victim:
+            j["conclusion"] = "failure"
+    code, _ = evaluate(
+        jobs,
+        check_runs=_all_green_check_runs(),
+        external_contexts=EXPECTED_EXTERNAL_CONTEXTS,
+    )
+    assert code == 1
+
+
+def test_missing_gate_is_pending_never_vacuous_success() -> None:
+    jobs = [j for j in _all_green_jobs() if j["name"] != STRICT_GATE_JOBS[0]]
+    code, _ = evaluate(
+        jobs,
+        check_runs=_all_green_check_runs(),
+        external_contexts=EXPECTED_EXTERNAL_CONTEXTS,
+    )
+    assert code == 2
+
+
+def test_empty_run_is_pending() -> None:
+    code, _ = evaluate([], check_runs=[], external_contexts=EXPECTED_EXTERNAL_CONTEXTS)
+    assert code == 2
+
+
+def test_default_deny_sweep_catches_an_unclassified_failing_job() -> None:
+    jobs = _all_green_jobs()
+    jobs.append(_job("Some New Unclassified Validator", "failure"))
+    code, report = evaluate(
+        jobs,
+        check_runs=_all_green_check_runs(),
+        external_contexts=EXPECTED_EXTERNAL_CONTEXTS,
+    )
+    assert code == 1
+    assert "Some New Unclassified Validator" in report
+
+
+def test_default_deny_sweep_tolerates_allowlisted_job() -> None:
+    jobs = _all_green_jobs()
+    jobs.append(_job(next(iter(SOFT_ALLOWLIST)), "failure"))
+    code, _ = evaluate(
+        jobs,
+        check_runs=_all_green_check_runs(),
+        external_contexts=EXPECTED_EXTERNAL_CONTEXTS,
+    )
+    assert code == 0
+
+
+@pytest.mark.parametrize("zone_name", ["zone-filter", "zone-filter / filter"])
+def test_failed_zone_filter_cascade_is_not_a_vacuous_success(zone_name: str) -> None:
+    """Regression pin for the PR #6435 verifier-reproduced fail-open.
+
+    A FAILED zone-filter cascades every job that `needs:` it to `skipped`.
+    All 11 docs_only-tier SKIPPABLE jobs (Type Check, Tests, ...) do, and the
+    SKIPPABLE tier tolerates `skipped` unconditionally -- so with zone-filter
+    in SOFT_ALLOWLIST the gate returned SUCCESS with zero tests and zero
+    type-checks having run. Parametrized over both name shapes GitHub can
+    surface for a reusable caller (bare id, and `<caller> / <inner job>`).
+    """
+
+    cascaded = frozenset(SKIPPABLE_GATE_JOBS[:11])
+    assert {"Type Check", "Tests"} <= cascaded, (
+        "docs_only tier reordered -- re-derive the cascaded slice"
+    )
+    assert "Contract Sync Gate (Layer 3)" not in cascaded
+    jobs = [_job(n, "success") for n in STRICT_GATE_JOBS]
+    jobs += [
+        _job(n, "skipped" if n in cascaded else "success") for n in SKIPPABLE_GATE_JOBS
+    ]
+    jobs.append(_job(zone_name, "failure"))
+    code, report = evaluate(
+        jobs,
+        check_runs=_all_green_check_runs(),
+        external_contexts=EXPECTED_EXTERNAL_CONTEXTS,
+    )
+    assert code == 1, f"fail-open: zone-filter failure yielded exit {code}\n{report}"
+    assert "zone-filter" in report
+
+
+def test_self_job_excluded_from_sweep() -> None:
+    jobs = _all_green_jobs()
+    jobs.append(_job(SELF_JOB_NAME, "failure"))
+    code, _ = evaluate(
+        jobs,
+        check_runs=_all_green_check_runs(),
+        external_contexts=EXPECTED_EXTERNAL_CONTEXTS,
+    )
+    assert code == 0
+
+
+def test_latest_attempt_wins_over_stale_failure() -> None:
+    victim = STRICT_GATE_JOBS[0]
+    # Every other job stays at the default attempt=1 (all-green). The victim
+    # carries a stale attempt-1 failure AND a later attempt-2 success; no
+    # `run_attempt` filter is passed, so dedup_latest's "higher attempt always
+    # overwrites" rule (regardless of list order) must resolve to the
+    # attempt-2 success, not the stale failure.
+    jobs = [j for j in _all_green_jobs() if j["name"] != victim]
+    jobs.append(_job(victim, "failure", attempt=1))
+    jobs.append(_job(victim, "success", attempt=2))
+    code, _ = evaluate(
+        jobs,
+        check_runs=_all_green_check_runs(),
+        external_contexts=EXPECTED_EXTERNAL_CONTEXTS,
+    )
+    assert code == 0
+
+
+def test_duplicate_same_attempt_keeps_most_blocking_state() -> None:
+    victim = STRICT_GATE_JOBS[0]
+    jobs = [
+        {
+            "name": victim,
+            "status": "completed",
+            "conclusion": "success",
+            "run_attempt": 1,
+        },
+        {
+            "name": victim,
+            "status": "completed",
+            "conclusion": "failure",
+            "run_attempt": 1,
+        },
+    ]
+    latest = dedup_latest(jobs)
+    assert latest[victim].conclusion == "failure"
+
+
+def test_external_context_absent_is_pending_never_success() -> None:
+    failures, unresolved = evaluate_external_contexts([], EXPECTED_EXTERNAL_CONTEXTS)
+    assert failures == []
+    assert set(unresolved) == set(EXPECTED_EXTERNAL_CONTEXTS)
+
+
+def test_external_context_skipped_fails_closed() -> None:
+    victim = EXPECTED_EXTERNAL_CONTEXTS[0]
+    runs = _all_green_check_runs()
+    for r in runs:
+        if r["name"] == victim:
+            r["conclusion"] = "skipped"
+    failures, unresolved = evaluate_external_contexts(runs, EXPECTED_EXTERNAL_CONTEXTS)
+    assert victim in failures
+    assert unresolved == []
+
+
+def test_external_context_none_check_runs_is_every_context_unresolved() -> None:
+    failures, unresolved = evaluate_external_contexts(None, EXPECTED_EXTERNAL_CONTEXTS)
+    assert failures == []
+    assert set(unresolved) == set(EXPECTED_EXTERNAL_CONTEXTS)
+
+
+# ---------------------------------------------------------------------------
+# OMN-16141: commits/{sha}/check-runs pagination -- a context past the first
+# 100 check-runs must resolve as present/terminal, never missing/pending.
+#
+# Live repro: occ#6618 head d5ed3417204bfe73263805532cd3e38a0d343242 carries
+# 135 check-runs (>100, i.e. 2 GitHub API pages at ?per_page=100). ci.yml's
+# `ci-summary` job now fetches that endpoint with `gh api ... --paginate
+# --slurp | jq '[.[].check_runs[]]'`, which merges every page's `check_runs`
+# array into one flat JSON array file -- the shape built and fed through
+# `_load_check_runs` below, unchanged from what the workflow step now writes.
+# ---------------------------------------------------------------------------
+
+
+def test_load_check_runs_flattened_multi_page_array_sees_later_page_context(
+    tmp_path: Path,
+) -> None:
+    """A context that only appears past check-run #100 (i.e. only on the
+    second GitHub API page) must be seen as present + success, not
+    missing/pending, once the pages have been merged into one flat array."""
+
+    page_1 = [
+        {
+            "name": f"filler-check-{i}",
+            "status": "completed",
+            "conclusion": "success",
+            "started_at": "2026-08-17T00:00:00Z",
+            "id": i,
+        }
+        for i in range(100)
+    ]
+    # The real external contexts land at index >=100 -- exactly where
+    # occ#6618's head placed them on GitHub's second page.
+    page_2 = [
+        {
+            "name": name,
+            "status": "completed",
+            "conclusion": "success",
+            "started_at": "2026-08-17T00:05:00Z",
+            "id": 100 + i,
+        }
+        for i, name in enumerate(EXPECTED_EXTERNAL_CONTEXTS)
+    ]
+    flattened = page_1 + page_2
+    assert len(flattened) > 100  # sanity: this fixture actually spans 2 pages
+
+    check_runs_file = tmp_path / "check_runs.json"
+    check_runs_file.write_text(json.dumps(flattened), encoding="utf-8")
+
+    loaded = _load_check_runs(str(check_runs_file))
+    assert loaded is not None
+    assert len(loaded) == len(flattened)
+
+    failures, unresolved = evaluate_external_contexts(
+        loaded, EXPECTED_EXTERNAL_CONTEXTS
+    )
+    assert failures == []
+    assert unresolved == [], (
+        "a context that only appears past the first 100 check-runs must "
+        "resolve as present/success, not missing/pending (OMN-16141)"
+    )
+
+
+def test_unmerged_paginate_output_is_the_bug_this_pr_fixes(tmp_path: Path) -> None:
+    """Pin for the pre-fix failure mode itself.
+
+    Per `gh help api`: "In --paginate mode ... Each page is a separate JSON
+    array or object. Pass --slurp to wrap all pages ... into an outer JSON
+    array." `commits/{sha}/check-runs` returns an OBJECT
+    (`{total_count, check_runs: [...]}`), so plain `--paginate` (no
+    `--slurp`) on a >100-check-run head wrote two back-to-back JSON objects
+    -- one per page -- into a single file. `_load_check_runs` cannot parse
+    that (`json.loads` raises `JSONDecodeError: Extra data`), catches it, and
+    returns `None` -- which `evaluate_external_contexts` treats as *every*
+    expected external context being unobserved, forever. This is the exact
+    occ#6618 symptom this PR's workflow fix (`--paginate --slurp | jq
+    '[.[].check_runs[]]'`) eliminates; this test pins the failure mode so it
+    cannot silently regress.
+    """
+
+    page_1_obj = json.dumps({"total_count": 135, "check_runs": _all_green_check_runs()})
+    page_2_obj = json.dumps({"total_count": 135, "check_runs": _all_green_check_runs()})
+    concatenated = page_1_obj + page_2_obj  # what un-slurped --paginate wrote
+
+    check_runs_file = tmp_path / "check_runs_unmerged.json"
+    check_runs_file.write_text(concatenated, encoding="utf-8")
+
+    loaded = _load_check_runs(str(check_runs_file))
+    assert loaded is None  # fail-closed: concatenated multi-page output is unparseable
+
+    failures, unresolved = evaluate_external_contexts(
+        loaded, EXPECTED_EXTERNAL_CONTEXTS
+    )
+    assert failures == []
+    assert set(unresolved) == set(EXPECTED_EXTERNAL_CONTEXTS)
+
+
+def test_latest_check_run_by_started_at_and_id() -> None:
+    runs = [
+        {
+            "name": "X",
+            "status": "completed",
+            "conclusion": "failure",
+            "started_at": "2026-08-13T00:00:00Z",
+            "id": 1,
+        },
+        {
+            "name": "X",
+            "status": "completed",
+            "conclusion": "success",
+            "started_at": "2026-08-13T00:05:00Z",
+            "id": 2,
+        },
+    ]
+    latest = latest_check_run_by_name(runs)
+    assert latest["X"].conclusion == "success"
+
+
+def test_good_conclusions_shape() -> None:
+    assert {"success", "skipped"} == GOOD_CONCLUSIONS
+    assert {"success"} == EXTERNAL_GOOD_CONCLUSIONS
+
+
+# ---------------------------------------------------------------------------
+# RED-REPLAY: OCC#6346 (merged 2026-08-11, merge commit 5399a37f)
+# ---------------------------------------------------------------------------
+
+
+def test_pr_6346_contract_compliance_red_now_fails() -> None:
+    """Real shape: Contract Compliance Check = failure, every other in-run
+    job green, on a real dev-targeting PR (not docs_only, not push).
+
+    Under the OLD needs-based aggregator this evaluated CI Summary = SUCCESS
+    because `contract-compliance` was absent from `needs:` entirely. Under
+    this gate, `Contract Compliance Check` is in SKIPPABLE_GATE_JOBS (success
+    or skipped only) so a `failure` conclusion fails closed.
+    """
+
+    jobs = _all_green_jobs()
+    for j in jobs:
+        if j["name"] == "Contract Compliance Check":
+            j["conclusion"] = "failure"
+    code, report = evaluate(
+        jobs,
+        check_runs=_all_green_check_runs(),
+        external_contexts=EXPECTED_EXTERNAL_CONTEXTS,
+    )
+    assert code == 1
+    assert "Contract Compliance Check" in report
+
+
+# ---------------------------------------------------------------------------
+# OMN-15487: the schema-purity SKIP-LAUNDERING cascade
+# ---------------------------------------------------------------------------
+# `schema-purity` (ci.yml) declares `needs: [zone-filter, test,
+# contract-compliance]` guarded by `needs.contract-compliance.result ==
+# 'success'`, so a FAILING contract-compliance does not merely fail on its
+# own -- it cascades `Schema Purity & Naming Check` to `skipped`. Under the
+# retired needs-based aggregator that skip was the laundering vector: the
+# generic rollup read `skipped` as passing and `contract-compliance` itself
+# was absent from `needs:`, so BOTH halves of the cascade were tolerated and
+# CI Summary went green over a red contract gate.
+#
+# The poller closes this at the source (contract-compliance is evaluated
+# directly, SKIPPABLE = success-or-skipped only), but nothing pinned the
+# CASCADE SHAPE itself. test_pr_6346_contract_compliance_red_now_fails above
+# holds every other job green -- including Schema Purity & Naming Check --
+# which is not what a real run looks like. These two tests pin the real
+# shape, so a future edit that moves "Contract Compliance Check" into
+# SOFT_ALLOWLIST or CLASSIFICATION_ONLY (both of which tolerate a present
+# failing job far more readily) cannot silently reopen the vector while the
+# green-fixture test above keeps passing.
+
+
+def test_contract_compliance_failure_cascading_schema_purity_skip_fails_closed() -> (
+    None
+):
+    """The real OMN-15487 cascade: contract-compliance FAILS and its
+    dependent schema-purity is consequently SKIPPED.
+
+    Both halves must not be tolerated together. Under the retired aggregator
+    this exact pair evaluated SUCCESS.
+    """
+
+    jobs = _all_green_jobs()
+    seen_failure = seen_skip = False
+    for j in jobs:
+        if j["name"] == "Contract Compliance Check":
+            j["conclusion"] = "failure"
+            seen_failure = True
+        elif j["name"] == "Schema Purity & Naming Check":
+            j["conclusion"] = "skipped"
+            seen_skip = True
+    # Guard the fixture itself: if either job is ever renamed out from under
+    # this test, fail here rather than vacuously asserting on a shape that no
+    # longer contains the cascade.
+    assert seen_failure, "fixture no longer contains 'Contract Compliance Check'"
+    assert seen_skip, "fixture no longer contains 'Schema Purity & Naming Check'"
+
+    code, report = evaluate(
+        jobs,
+        check_runs=_all_green_check_runs(),
+        external_contexts=EXPECTED_EXTERNAL_CONTEXTS,
+    )
+    assert code == 1, "contract-compliance failure laundered into a tolerated skip"
+    assert "Contract Compliance Check" in report
+
+
+def test_schema_purity_skip_alone_is_not_what_makes_the_cascade_fail() -> None:
+    """Falsification control for the test directly above.
+
+    `Schema Purity & Naming Check` is legitimately SKIPPABLE (the docs_only
+    fast lane really does skip it), so its skip alone must PASS. This proves
+    the cascade test's failure verdict comes from the contract-compliance
+    failure being read directly -- not from the skip -- which is precisely
+    the property the retired aggregator lacked.
+    """
+
+    jobs = _all_green_jobs()
+    for j in jobs:
+        if j["name"] == "Schema Purity & Naming Check":
+            j["conclusion"] = "skipped"
+    code, _ = evaluate(
+        jobs,
+        check_runs=_all_green_check_runs(),
+        external_contexts=EXPECTED_EXTERNAL_CONTEXTS,
+    )
+    assert code == 0
+
+
+# ---------------------------------------------------------------------------
+# OMN-15487 AC4: required-checks.yaml's CI Summary rationale must be TRUE
+# ---------------------------------------------------------------------------
+
+
+def test_ci_summary_rationale_describes_the_poller_not_a_needs_aggregator() -> None:
+    """`.github/required-checks.yaml` is the enforcement-parity manifest --
+    the surface an auditor reads to learn WHY a context is required and what
+    it actually covers. Its `CI Summary` row justified REQUIRED status with
+    "Fail-closed `if: always()` aggregator over ci.yml sub-jobs".
+
+    That sentence was already false when written (OMN-15487: 7 of 33 ci.yml
+    jobs were absent from `needs:` entirely) and is false again for the
+    opposite reason now that OMN-16007 landed: `ci-summary` has NO `needs:`
+    at all, and its coverage is no longer limited to `ci.yml` -- the L4 layer
+    asserts cross-workflow contexts too. A rationale that misdescribes the
+    mechanism in BOTH directions is worse than no rationale: it is what let
+    the original gap survive review.
+
+    Pin the rationale to the mechanism so it cannot drift back.
+    """
+
+    manifest = yaml.safe_load(
+        (REPO_ROOT / ".github" / "required-checks.yaml").read_text(encoding="utf-8")
+    )
+    rows = [c for c in manifest["gates"] if c["name"] == "CI Summary"]
+    assert len(rows) == 1, "expected exactly one 'CI Summary' row"
+    rationale = rows[0]["rationale"]
+
+    assert "ci_summary_gate.py" in rationale, (
+        "CI Summary's rationale must name the poller script that actually "
+        "produces the verdict"
+    )
+    # The retired mechanism's vocabulary must not reappear. `needs:` is the
+    # specific claim OMN-15487 falsified, and the gate now treats a `needs:`
+    # on ci-summary as a regression to the bug class in its own right.
+    assert "aggregator" not in rationale.lower(), (
+        "'aggregator' describes the retired needs-gated shape, not the poller"
+    )
+    assert "needs" not in rationale.lower(), (
+        "ci-summary has no `needs:`; describing one re-asserts the OMN-15487 falsehood"
+    )
+
+
+def test_no_manifest_comment_claims_occ_lacks_a_ci_summary_poller() -> None:
+    """The manifest's header block justified promoting `verify / verify` and
+    `occ-preflight / eligibility` to direct required contexts with: "`CI
+    Summary` cannot cover them: OCC has no `scripts/ci/ci_summary_gate.py`
+    poller".
+
+    OMN-16007 landed exactly that file, and both contexts are now asserted by
+    its L4 layer. The promotion remains correct (belt-and-braces, and the
+    gate says so itself), but the stated REASON is now false -- and a false
+    reason in the parity manifest is what an auditor would rely on when
+    deciding whether the promotion can be reverted.
+    """
+
+    text = (REPO_ROOT / ".github" / "required-checks.yaml").read_text(encoding="utf-8")
+    assert (REPO_ROOT / "scripts" / "ci" / "ci_summary_gate.py").is_file(), (
+        "this pin only makes sense while the poller exists"
+    )
+    assert "OCC has no" not in text, (
+        "manifest still asserts OCC lacks a ci_summary_gate.py poller; "
+        "the file exists on dev as of OMN-16007"
+    )
+    assert "plain\n# `needs:` aggregator" not in text.replace("\n#", "\n# ")
+
+
+# ---------------------------------------------------------------------------
+# Falsification control -- every EXPECTED_EXTERNAL_CONTEXTS entry is load-bearing
+# ---------------------------------------------------------------------------
+
+
+# ---------------------------------------------------------------------------
+# OMN-16285: evidence-only-predicate fast lane
+# ---------------------------------------------------------------------------
+
+# The exact 5 jobs OMN-16285 moved from STRICT_GATE_JOBS to
+# SKIPPABLE_GATE_JOBS, gated in ci.yml on `evidence-only-predicate`'s output
+# rather than `zone-filter`'s `docs_only`. Each scans a surface (src/,
+# .github/workflows/, .pre-commit-config.yaml, or a grants/allowlists diff)
+# the exact-allowlist predicate proves is unchanged on an evidence-only diff.
+EVIDENCE_PREDICATE_TIER: frozenset[str] = frozenset(
+    {
+        "No Divergent Automation PRs (OMN-14778)",
+        "no-noncanonical-lifecycle-classes",
+        "Precommit Parity Gate",
+        "Evidence Admissibility Predicate Parity",
+        "check-bot-authored-authz-guard",
+    }
+)
+
+
+def test_evidence_predicate_tier_is_a_subset_of_skippable_not_strict() -> None:
+    """Anti-drift pin: if a future edit moves one of these jobs back to
+    STRICT (or removes it from SKIPPABLE entirely) this must fail loudly
+    rather than silently changing which jobs the predicate governs."""
+
+    assert frozenset(SKIPPABLE_GATE_JOBS) >= EVIDENCE_PREDICATE_TIER
+    assert EVIDENCE_PREDICATE_TIER.isdisjoint(STRICT_GATE_JOBS)
+
+
+def test_evidence_only_predicate_job_is_classification_only_not_a_gate() -> None:
+    """The predicate job itself is a structural classifier, not a validator
+    -- it must never appear in STRICT/SKIPPABLE (a `skipped` predicate run
+    that gated ITSELF would be a self-referential vacuous pass), and must be
+    registered CLASSIFICATION_ONLY so the default-deny sweep, not a gate
+    tier, is what catches its own failure."""
+
+    name = "Evidence-Only Diff Predicate"
+    assert name not in STRICT_GATE_JOBS
+    assert name not in SKIPPABLE_GATE_JOBS
+    assert name not in SOFT_ALLOWLIST
+    assert name in CLASSIFICATION_ONLY
+
+
+def test_evidence_predicate_tier_all_skipped_with_predicate_success_is_success() -> (
+    None
+):
+    """The intended evidence-only-diff shape: the predicate job itself ran
+    and succeeded (asserting evidence_only=true), every job gated on its
+    output reports `skipped`, and every unconditional/content-validating
+    gate still reports `success`. This must evaluate SUCCESS -- proving the
+    slim path actually goes green, not just that the strict tier still
+    fails closed."""
+
+    jobs = [
+        _job(n, "skipped" if n in EVIDENCE_PREDICATE_TIER else "success")
+        for n in STRICT_GATE_JOBS + SKIPPABLE_GATE_JOBS
+    ]
+    jobs.append(_job("Evidence-Only Diff Predicate", "success"))
+    code, report = evaluate(
+        jobs,
+        check_runs=_all_green_check_runs(),
+        external_contexts=EXPECTED_EXTERNAL_CONTEXTS,
+    )
+    assert code == 0, f"evidence-only slim path did not go green:\n{report}"
+
+
+def test_failed_evidence_only_predicate_cascade_is_not_a_vacuous_success() -> None:
+    """Regression pin, same class as the zone-filter cascade test above
+    (PR #6435). A FAILED evidence-only-predicate job cascades every job
+    that `needs:` it to `skipped` (the 5-job EVIDENCE_PREDICATE_TIER, all
+    SKIPPABLE, which tolerates `skipped` unconditionally in isolation) --
+    the predicate job's OWN failure, caught by the default-deny sweep
+    because it is CLASSIFICATION_ONLY and not soft-allowlisted, is what
+    keeps this fail-closed instead of a vacuous SUCCESS."""
+
+    jobs = [
+        _job(n, "skipped" if n in EVIDENCE_PREDICATE_TIER else "success")
+        for n in STRICT_GATE_JOBS + SKIPPABLE_GATE_JOBS
+    ]
+    jobs.append(_job("Evidence-Only Diff Predicate", "failure"))
+    code, report = evaluate(
+        jobs,
+        check_runs=_all_green_check_runs(),
+        external_contexts=EXPECTED_EXTERNAL_CONTEXTS,
+    )
+    assert code == 1, (
+        f"fail-open: evidence-only-predicate failure yielded exit {code}\n{report}"
+    )
+    assert "Evidence-Only Diff Predicate" in report
+
+
+def test_evidence_predicate_tier_job_failure_still_fails_closed() -> None:
+    """A non-evidence-only diff (predicate succeeded, asserted
+    evidence_only=false) runs the full tier for real -- a genuine failure in
+    one of those 5 jobs must fail the gate exactly like any other
+    SKIPPABLE-tier failure (`success`/`skipped` are good; `failure` is not)."""
+
+    victim = next(iter(EVIDENCE_PREDICATE_TIER))
+    jobs = _all_green_jobs()
+    jobs.append(_job("Evidence-Only Diff Predicate", "success"))
+    for j in jobs:
+        if j["name"] == victim:
+            j["conclusion"] = "failure"
+    code, report = evaluate(
+        jobs,
+        check_runs=_all_green_check_runs(),
+        external_contexts=EXPECTED_EXTERNAL_CONTEXTS,
+    )
+    assert code == 1
+    assert victim in report
+
+
+@pytest.mark.parametrize("dropped_context", EXPECTED_EXTERNAL_CONTEXTS)
+def test_falsification_each_external_context_is_load_bearing(
+    dropped_context: str,
+) -> None:
+    """Deleting one EXPECTED_EXTERNAL_CONTEXTS entry from the asserted set
+    flips a fixture (that context red, everything else green) from FAILURE
+    to SUCCESS -- proving the entry actually gates something."""
+
+    runs = _all_green_check_runs()
+    for r in runs:
+        if r["name"] == dropped_context:
+            r["conclusion"] = "failure"
+
+    code_with, _ = evaluate(
+        _all_green_jobs(), check_runs=runs, external_contexts=EXPECTED_EXTERNAL_CONTEXTS
+    )
+    assert code_with == 1, (
+        f"{dropped_context!r} red did not fail the gate with it asserted"
+    )
+
+    narrowed = tuple(c for c in EXPECTED_EXTERNAL_CONTEXTS if c != dropped_context)
+    code_without, _ = evaluate(
+        _all_green_jobs(), check_runs=runs, external_contexts=narrowed
+    )
+    assert code_without == 0, (
+        f"removing {dropped_context!r} from the asserted set did not flip the "
+        "gate to SUCCESS -- it was not actually load-bearing"
+    )
+
+
+# ---------------------------------------------------------------------------
+# OMN-16095 -- CI Summary poller hang on a >100-check-run head, and a single
+# transient GitHub API read killing the job instead of retrying.
+#
+# The actual `commits/{sha}/check-runs` and `actions/runs/{id}/jobs` HTTP
+# fetches are NOT in this module -- ci_summary_gate.py only ever sees
+# whatever `--check-runs-file`/`--jobs-file` hand it (this was the whole
+# finding of OMN-16095's filing: source review of this file alone could
+# neither confirm nor rule out unpaginated fetch, because the fetch isn't
+# here). The real fetch + retry logic lives in ci.yml's "Poll job list +
+# PR-head check-runs until a terminal verdict" step, as the
+# `fetch_paginated` bash function. These tests extract that function
+# straight out of the live workflow file (brace-matched, not a hand-copied
+# string) and execute it against a stub `gh`, so a future edit to the real
+# step is what these tests exercise -- not a frozen copy that can silently
+# drift from the source of truth.
+# ---------------------------------------------------------------------------
+
+CI_SUMMARY_JOB_NAME = "ci-summary"
+CI_SUMMARY_POLL_STEP_NAME = (
+    "Poll job list + PR-head check-runs until a terminal verdict"
+)
+
+
+def _ci_summary_poll_script() -> str:
+    doc = yaml.safe_load((WORKFLOWS_DIR / "ci.yml").read_text(encoding="utf-8"))
+    for step in doc["jobs"][CI_SUMMARY_JOB_NAME]["steps"]:
+        if step.get("name") == CI_SUMMARY_POLL_STEP_NAME:
+            run = step["run"]
+            assert isinstance(run, str)
+            return run
+    msg = (
+        f"{CI_SUMMARY_POLL_STEP_NAME!r} step not found in ci.yml's "
+        f"{CI_SUMMARY_JOB_NAME!r} job"
+    )
+    raise AssertionError(msg)
+
+
+def _extract_fetch_paginated_function() -> str:
+    script = _ci_summary_poll_script()
+    start = script.index("fetch_paginated() {")
+    end_match = re.search(r"\n\}\n", script[start:])
+    assert end_match, "fetch_paginated() closing brace not found in ci.yml"
+    return script[start : start + end_match.end()]
+
+
+def _run_fetch_paginated(
+    tmp_path: Path,
+    gh_stub_script: str,
+    *,
+    merge_expr: str = "{check_runs: (map(.check_runs) | add)}",
+    fallback: str = '{"check_runs": []}',
+    url: str = "repos/x/y/commits/abc/check-runs?per_page=100",
+) -> tuple[int, Path, str]:
+    """Run the real `fetch_paginated` bash function (extracted from ci.yml)
+    against a stub `gh` on PATH, exactly the way the poll loop calls it.
+
+    Returns ``(fetch_exit_code, out_file, stdout+stderr)``.
+    """
+
+    bin_dir = tmp_path / "bin"
+    bin_dir.mkdir()
+    gh_path = bin_dir / "gh"
+    gh_path.write_text(gh_stub_script, encoding="utf-8")
+    gh_path.chmod(0o755)
+
+    out_file = tmp_path / "out.json"
+    driver = textwrap.dedent(f"""\
+        set -euo pipefail
+        {_extract_fetch_paginated_function()}
+        sleep() {{ :; }}  # skip real backoff delay in tests
+        set +e
+        fetch_paginated "{url}" '{merge_expr}' "{out_file}" '{fallback}'
+        code=$?
+        set -e
+        echo "FETCH_EXIT=$code"
+        """)
+
+    bash = shutil.which("bash")
+    assert bash is not None, "bash not found on PATH"
+    real_path = shutil.which("jq")
+    assert real_path is not None, "jq not found on PATH (required by fetch_paginated)"
+    env = {
+        "PATH": f"{bin_dir}:/usr/bin:/bin:{Path(real_path).parent}",
+        "HOME": str(tmp_path),
+    }
+    proc = subprocess.run(
+        [bash, "-c", driver],
+        capture_output=True,
+        text=True,
+        env=env,
+        cwd=tmp_path,
+        timeout=30,
+        check=False,
+    )
+    combined = proc.stdout + proc.stderr
+    match = re.search(r"FETCH_EXIT=(\d+)", combined)
+    assert match, f"driver did not report FETCH_EXIT; output:\n{combined}"
+    return int(match.group(1)), out_file, combined
+
+
+def test_poll_step_paginates_check_runs_and_jobs_with_slurp_merge() -> None:
+    """Anti-regression pin for the truncation defect: `gh api --paginate`
+    alone, piped straight to a file, prints one JSON document PER PAGE for
+    these OBJECT-rooted endpoints -- concatenating them past 100 entries is
+    invalid JSON that `_load_check_runs` silently swallows as `None`. The
+    fix must combine `--slurp` with a jq merge over every page's array."""
+
+    script = _ci_summary_poll_script()
+    assert "--paginate --slurp" in script, (
+        "poll step must call `gh api --paginate --slurp` (bare --paginate "
+        "on an object-rooted endpoint does not merge pages)"
+    )
+    assert "map(.check_runs) | add" in script, (
+        "poll step must merge every page's check_runs array before it "
+        "reaches ci_summary_gate.py"
+    )
+    assert "map(.jobs) | add" in script, (
+        "poll step must merge every page's jobs array before it reaches "
+        "ci_summary_gate.py"
+    )
+
+
+def test_poll_step_retries_are_bounded_and_guarded() -> None:
+    """Anti-regression pin for the transient-EOF defect: both fetch call
+    sites must be retried (not a bare `gh api` under `set -e`) and must not
+    propagate a retry-exhausted failure as an uncaught script exit."""
+
+    script = _ci_summary_poll_script()
+    assert "max_attempts=3" in script, "retry must be bounded at 3 attempts"
+
+    # Each `fetch_paginated \` CALL SITE (not the `fetch_paginated() {`
+    # function definition) is its own multi-line statement ending in
+    # `|| true`. Isolate each block so the "must be guarded" check pins the
+    # actual call, not just any `|| true` occurring anywhere in the script.
+    call_blocks = re.findall(r"fetch_paginated \\\n(?:.*\n)*?.*\|\| true", script)
+    assert len(call_blocks) == 2, (
+        f"expected exactly 2 guarded fetch_paginated call sites (jobs + "
+        f"check-runs), found {len(call_blocks)}:\n{script}"
+    )
+    assert any("jobs?per_page" in b for b in call_blocks), (
+        "the jobs-list fetch call site must be guarded (`|| true`) so "
+        "retry-exhaustion falls through to the fallback file instead of "
+        "killing the job under `set -euo pipefail`"
+    )
+    assert any("check-runs?per_page" in b for b in call_blocks), (
+        "the check-runs fetch call site must be guarded (`|| true`) for the same reason"
+    )
+
+
+def test_fetch_paginated_retrieves_all_105_check_runs_no_truncation(
+    tmp_path: Path,
+) -> None:
+    """Direct proof of OMN-16095 AC 2: feed the real fetch path a mocked
+    105-entry (2-page) check-runs response and prove all 105 come through,
+    with no truncation at the 100-per-page boundary."""
+
+    gh_stub = textwrap.dedent("""\
+        #!/usr/bin/env bash
+        set -euo pipefail
+        python3 - <<'PY'
+        import json
+        def page(n, offset):
+            return {
+                "total_count": 105,
+                "check_runs": [
+                    {
+                        "name": f"ctx-{i}",
+                        "id": i,
+                        "started_at": "2026-01-01T00:00:00Z",
+                        "status": "completed",
+                        "conclusion": "success",
+                    }
+                    for i in range(offset, offset + n)
+                ],
+            }
+        print(json.dumps([page(100, 0), page(5, 100)]))
+        PY
+        """)
+    exit_code, out_file, output = _run_fetch_paginated(tmp_path, gh_stub)
+    assert exit_code == 0, f"fetch_paginated should succeed on page 1:\n{output}"
+    payload = json.loads(out_file.read_text(encoding="utf-8"))
+    assert len(payload["check_runs"]) == 105, (
+        "pagination truncated the merged check-runs list: "
+        f"got {len(payload['check_runs'])}, expected 105"
+    )
+
+    # Bridge back through the real python loader/evaluator to prove the
+    # merged file is usable end-to-end, not just structurally 105-long.
+    loaded = _load_check_runs(str(out_file))
+    assert loaded is not None
+    assert len(loaded) == 105
+    expected = tuple(f"ctx-{i}" for i in (0, 50, 99, 100, 104))
+    latest = latest_check_run_by_name(loaded)
+    for name in expected:
+        assert latest[name].status == "completed"
+        assert latest[name].conclusion == "success"
+
+
+def test_fetch_paginated_retries_transient_failure_then_succeeds(
+    tmp_path: Path,
+) -> None:
+    """Direct proof of OMN-16095 defect 2's fix: a transient `gh api`
+    failure (e.g. "unexpected EOF") must consume a retry, not kill the
+    job -- the 3rd attempt succeeding must still produce a good result."""
+
+    counter_file = tmp_path / "gh_call_count"
+    gh_stub = textwrap.dedent(f"""\
+        #!/usr/bin/env bash
+        set -euo pipefail
+        n=0
+        [[ -f "{counter_file}" ]] && n=$(cat "{counter_file}")
+        n=$((n + 1))
+        echo "$n" > "{counter_file}"
+        if [[ "$n" -lt 3 ]]; then
+          echo "gh: Get https://api.github.com/...: unexpected EOF" >&2
+          exit 1
+        fi
+        python3 - <<'PY'
+        import json
+        run = {{
+            "name": "ctx-ok",
+            "id": 1,
+            "started_at": "2026-01-01T00:00:00Z",
+            "status": "completed",
+            "conclusion": "success",
+        }}
+        print(json.dumps([{{"total_count": 1, "check_runs": [run]}}]))
+        PY
+        """)
+    exit_code, out_file, output = _run_fetch_paginated(tmp_path, gh_stub)
+    assert exit_code == 0, (
+        f"a failure that resolves within max_attempts must still succeed:\n{output}"
+    )
+    assert counter_file.read_text(encoding="utf-8").strip() == "3", (
+        f"expected exactly 3 gh invocations (2 failures + 1 success), got: {output}"
+    )
+    payload = json.loads(out_file.read_text(encoding="utf-8"))
+    assert payload["check_runs"][0]["name"] == "ctx-ok"
+
+
+def test_fetch_paginated_retry_exhaustion_fails_closed_not_crashed(
+    tmp_path: Path,
+) -> None:
+    """Direct proof of AC 6 (fail-closed preserved): when `gh api` fails on
+    every attempt, `fetch_paginated` must NOT crash the poll script -- it
+    must fall through to the fallback payload, which the real
+    ci_summary_gate.py loader/evaluator must then read as PENDING (every
+    context unresolved), never a spurious SUCCESS and never an exception."""
+
+    gh_stub = textwrap.dedent("""\
+        #!/usr/bin/env bash
+        echo "gh: Get https://api.github.com/...: unexpected EOF" >&2
+        exit 1
+        """)
+    exit_code, out_file, output = _run_fetch_paginated(tmp_path, gh_stub)
+    assert exit_code == 1, (
+        f"retry-exhaustion must report failure to the caller:\n{output}"
+    )
+    assert out_file.exists(), (
+        "retry-exhaustion must still write the fallback payload file"
+    )
+    assert "attempt 1/3" in output
+    assert "attempt 2/3" in output
+    assert "attempt 3/3" in output
+    assert "retry-exhausted" in output
+
+    # Bridge into the real python gate: the fallback file must resolve to
+    # "every external context unresolved" (PENDING), matching the documented
+    # None-equivalent contract -- never a crash, never green.
+    loaded = _load_check_runs(str(out_file))
+    assert loaded == []
+    failures, unresolved = evaluate_external_contexts(
+        loaded, EXPECTED_EXTERNAL_CONTEXTS
+    )
+    assert failures == []
+    assert sorted(unresolved) == sorted(EXPECTED_EXTERNAL_CONTEXTS)
+
+
+# ---------------------------------------------------------------------------
+# OMN-18062 -- a `skipped` row that lands on a head SHA which already carries a
+# non-skipped row for the same context name is a RE-TRIGGER ARTIFACT, not a
+# verdict about that head.
+#
+# Live shape being pinned (onex_change_control#8709, 2026-09-08): `gh pr edit`
+# fired a second `guards.yml` `pull_request` run with `action == "edited"`;
+# `dep-provenance-gate`'s `if:` admits only
+# ["opened","synchronize","reopened","ready_for_review"], so that run SKIPPED
+# it and GitHub wrote a fresh `skipped` check-run onto the unchanged head 64
+# seconds after the same job had reported `success`. `CI Summary` read the
+# newest row, failed closed, and could not be cleared by a re-run -- only by a
+# new head SHA.
+#
+# Each relaxation below is paired with a positive control that must STILL fail,
+# so the test file cannot pass by having stopped asserting anything.
+# ---------------------------------------------------------------------------
+
+_VICTIM = "Dep Provenance Gate"
+_T0 = "2026-09-08T20:47:00Z"
+_T0_PLUS_64 = "2026-09-08T20:48:04Z"
+
+
+def _incident_rows(
+    second_conclusion: str, *, second_status: str = "completed"
+) -> list[dict[str, object]]:
+    """All-green external rows plus a SECOND row for `_VICTIM` 64s later."""
+
+    runs = _all_green_check_runs()
+    for r in runs:
+        if r["name"] == _VICTIM:
+            r["started_at"] = _T0
+    runs.append(
+        {
+            "name": _VICTIM,
+            "status": second_status,
+            "conclusion": second_conclusion if second_status == "completed" else None,
+            "started_at": _T0_PLUS_64,
+            "id": 10_000,
+        }
+    )
+    return runs
+
+
+def test_incident_victim_is_an_asserted_external_context() -> None:
+    """Positive control for the fixture itself: the name is really asserted."""
+
+    assert _VICTIM in EXPECTED_EXTERNAL_CONTEXTS
+
+
+def test_skip_after_success_on_same_head_is_not_a_regression() -> None:
+    """RED CONTROL (OMN-18062): success at t0, skipped at t0+64s, same head."""
+
+    runs = _incident_rows("skipped")
+    assert latest_check_run_by_name(runs)[_VICTIM].conclusion == "success"
+    failures, unresolved = evaluate_external_contexts(runs, EXPECTED_EXTERNAL_CONTEXTS)
+    assert failures == []
+    assert unresolved == []
+
+
+def test_failure_after_success_on_same_head_still_fails() -> None:
+    """POSITIVE CONTROL: a real verdict at t0+64s still wins on recency."""
+
+    runs = _incident_rows("failure")
+    assert latest_check_run_by_name(runs)[_VICTIM].conclusion == "failure"
+    failures, _ = evaluate_external_contexts(runs, EXPECTED_EXTERNAL_CONTEXTS)
+    assert _VICTIM in failures
+
+
+def test_skipped_with_no_prior_conclusion_on_the_head_still_fails() -> None:
+    """POSITIVE CONTROL: a name whose ONLY row is `skipped` still fails closed."""
+
+    runs = [r for r in _all_green_check_runs() if r["name"] != _VICTIM]
+    runs.append(
+        {
+            "name": _VICTIM,
+            "status": "completed",
+            "conclusion": "skipped",
+            "started_at": _T0_PLUS_64,
+            "id": 10_001,
+        }
+    )
+    failures, _ = evaluate_external_contexts(runs, EXPECTED_EXTERNAL_CONTEXTS)
+    assert _VICTIM in failures
+
+
+def test_two_skips_and_no_conclusion_still_fails() -> None:
+    """POSITIVE CONTROL: repeated skips do not amount to a conclusion."""
+
+    runs = [r for r in _all_green_check_runs() if r["name"] != _VICTIM]
+    runs += [
+        {
+            "name": _VICTIM,
+            "status": "completed",
+            "conclusion": "skipped",
+            "started_at": ts,
+            "id": rid,
+        }
+        for ts, rid in ((_T0, 10_002), (_T0_PLUS_64, 10_003))
+    ]
+    failures, _ = evaluate_external_contexts(runs, EXPECTED_EXTERNAL_CONTEXTS)
+    assert _VICTIM in failures
+
+
+def test_skip_first_then_success_resolves_success() -> None:
+    """A skip at t0 followed by a real success is green (unchanged behaviour)."""
+
+    runs = [r for r in _all_green_check_runs() if r["name"] != _VICTIM]
+    runs += [
+        {
+            "name": _VICTIM,
+            "status": "completed",
+            "conclusion": "skipped",
+            "started_at": _T0,
+            "id": 10_004,
+        },
+        {
+            "name": _VICTIM,
+            "status": "completed",
+            "conclusion": "success",
+            "started_at": _T0_PLUS_64,
+            "id": 10_005,
+        },
+    ]
+    failures, unresolved = evaluate_external_contexts(runs, EXPECTED_EXTERNAL_CONTEXTS)
+    assert failures == []
+    assert unresolved == []
+
+
+def test_in_progress_after_success_is_still_pending() -> None:
+    """POSITIVE CONTROL: a live re-run keeps the context PENDING, not stale-green."""
+
+    runs = _incident_rows("", second_status="in_progress")
+    failures, unresolved = evaluate_external_contexts(runs, EXPECTED_EXTERNAL_CONTEXTS)
+    assert failures == []
+    assert _VICTIM in unresolved
+
+
+def test_drop_superseded_skips_leaves_unrelated_names_untouched() -> None:
+    """The filter is per-NAME: a skip on one name cannot be cleared by another."""
+
+    rows: list[dict[str, object]] = [
+        {
+            "name": "a",
+            "status": "completed",
+            "conclusion": "success",
+            "started_at": _T0,
+            "id": 1,
+        },
+        {
+            "name": "b",
+            "status": "completed",
+            "conclusion": "skipped",
+            "started_at": _T0,
+            "id": 2,
+        },
+    ]
+    assert drop_superseded_skips(rows) == rows
+
+
+# --------------------------------------------------------------------------- #
+# OMN-18062 follow-up -- the head SHA partitions supersession.
+#
+# The original fix keyed `drop_superseded_skips` on the context NAME alone. A
+# `success` recorded on head A would then clear a `skipped` recorded on head B,
+# re-opening the skip-as-pass vector (OMN-15057 / OMN-14854) on the head
+# actually being gated. That is unreachable through the sanctioned caller --
+# it fetches `commits/{sha}/check-runs` for ONE head -- but the safety rested
+# on convention. These tests make it a property of the function.
+# --------------------------------------------------------------------------- #
+
+_HEAD_A = "a" * 40
+_HEAD_B = "b" * 40
+
+
+def _on_head(row: dict[str, object], head_sha: str) -> dict[str, object]:
+    """Stamp a check-run fixture row with the head SHA it is a verdict about.
+
+    Kept separate from the shared row builders so every test predating this
+    guard keeps producing rows with no `head_sha` key -- the payload shape the
+    partition must stay backward-compatible with.
+    """
+
+    return {**row, "head_sha": head_sha}
+
+
+def _incident_rows_on_heads(
+    first_head: str, second_head: str
+) -> list[dict[str, object]]:
+    """The incident fixture, with the two rows placed on named head SHAs."""
+
+    rows = [_on_head(r, first_head) for r in _incident_rows("skipped")]
+    rows[-1] = _on_head(rows[-1], second_head)
+    return rows
+
+
+def test_skip_on_a_different_head_is_not_superseded() -> None:
+    """RED: success@headA + skipped@headB must FAIL, not resolve to success."""
+
+    rows = _incident_rows_on_heads(_HEAD_A, _HEAD_B)
+    assert len(drop_superseded_skips(rows)) == len(rows)
+    assert latest_check_run_by_name(rows)[_VICTIM].conclusion == "skipped"
+    failures, _unresolved = evaluate_external_contexts(rows, EXPECTED_EXTERNAL_CONTEXTS)
+    assert _VICTIM in failures
+
+
+def test_same_head_supersession_still_works_with_head_shas_present() -> None:
+    """POSITIVE CONTROL: the partition does not break the fix it guards."""
+
+    rows = _incident_rows_on_heads(_HEAD_A, _HEAD_A)
+    assert latest_check_run_by_name(rows)[_VICTIM].conclusion == "success"
+    failures, unresolved = evaluate_external_contexts(rows, EXPECTED_EXTERNAL_CONTEXTS)
+    assert failures == []
+    assert unresolved == []
+
+
+def test_rows_without_a_head_sha_still_supersede() -> None:
+    """POSITIVE CONTROL: rows carrying no `head_sha` share one partition, so a
+    payload without head SHAs behaves exactly as it did before this guard."""
+
+    rows: list[dict[str, object]] = [
+        {"name": "x", "status": "completed", "conclusion": "success"},
+        {"name": "x", "status": "completed", "conclusion": "skipped"},
+    ]
+    assert [r["conclusion"] for r in drop_superseded_skips(rows)] == ["success"]
+
+
+# ---------------------------------------------------------------------------
+# OMN-18972 (parent OMN-18943, epic OMN-18527) — L5, the default-deny external
+# sweep. Ported from omnibase_infra OMN-18960; the measurement is this
+# repository's own.
+# ---------------------------------------------------------------------------
+
+SWEEP_FIXTURE = (
+    Path(__file__).resolve().parent
+    / "fixtures"
+    / "omn18972_external_sweep_check_runs.json"
+)
+SWEEP_NOW = datetime(2026, 9, 21, 6, 0, 0, tzinfo=UTC)
+
+EXIT_SUCCESS_CODE = ci_summary_gate.EXIT_SUCCESS
+EXIT_FAILURE_CODE = ci_summary_gate.EXIT_FAILURE
+
+# The one declared-advisory context, and the heads it was measured on.
+SHADOW_CONTEXT = "tests+coverage (shadow)"
+CANCELLED_SHADOW_PR = "10616"
+RUNNING_SHADOW_PR = "10630"
+CLEAN_PR = "10623"
+
+
+def _sweep_head(pr: str) -> dict[str, Any]:
+    payload = json.loads(SWEEP_FIXTURE.read_text(encoding="utf-8"))
+    head: dict[str, Any] = payload["pull_requests"][pr]
+    return head
+
+
+def _at_merge(head: dict[str, Any]) -> list[dict[str, Any]]:
+    """The rows a PRE-MERGE poller could have seen on that head.
+
+    The filter lives here rather than in the fixture so it is readable in the
+    assertion: a row that STARTED after the merge decision was written by a
+    post-merge trigger and is structurally invisible to the gate.
+    """
+
+    merged = head["merged_at"]
+    return [r for r in head["check_runs_all"] if (r.get("started_at") or "") <= merged]
+
+
+def _sweep_row(
+    name: str,
+    conclusion: str | None = "success",
+    *,
+    status: str = "completed",
+    run_id: int | None = None,
+) -> dict[str, Any]:
+    row: dict[str, Any] = {
+        "id": abs(hash(name)) % 10_000_000,
+        "name": name,
+        "status": status,
+        "conclusion": conclusion,
+        "started_at": "2026-09-21T05:00:00Z",
+        "head_sha": "d" * 40,
+    }
+    if run_id is not None:
+        row["html_url"] = (
+            "https://github.com/OmniNode-ai/onex_change_control/actions/runs/"
+            f"{run_id}/job/1"
+        )
+    return row
+
+
+def _sweep(
+    rows: list[dict[str, Any]], **kw: Any
+) -> tuple[list[str], list[str], list[str], list[str]]:
+    kw.setdefault("now", SWEEP_NOW)
+    kw.setdefault("exclusions", {})
+    return evaluate_external_sweep(rows, **kw)
+
+
+def _sweep_real_head(
+    head: dict[str, Any],
+    rows: list[dict[str, Any]],
+    **kw: Any,
+) -> tuple[list[str], list[str], list[str], list[str]]:
+    """Run the shipped sweep over a real head's rows, with that head's own
+    in-run job list and event index. Every caller below judges the same way."""
+
+    kw.setdefault("expected", EXPECTED_EXTERNAL_CONTEXTS)
+    kw.setdefault("now", SWEEP_NOW)
+    return evaluate_external_sweep(
+        rows,
+        in_run_names=frozenset(head["in_run_job_names"]),
+        events=check_run_event_index(head["workflow_runs"]),
+        **kw,
+    )
+
+
+def _sweep_eval(check_runs: list[dict[str, Any]], **kw: Any) -> tuple[int, str]:
+    """`evaluate` with L5 ON and a fully-green in-run and L4 baseline."""
+
+    kw.setdefault("now", SWEEP_NOW)
+    return evaluate(
+        _all_green_jobs(),
+        check_runs=check_runs,
+        external_contexts=EXPECTED_EXTERNAL_CONTEXTS,
+        sweep_external=True,
+        **kw,
+    )
+
+
+class TestExternalDefaultDenySweep:
+    """AC-1 / AC-4 — a red nothing else names must fail the umbrella."""
+
+    def test_red_unregistered_context_fails_and_the_same_set_green_passes(
+        self,
+    ) -> None:
+        """THE red test. Today's behaviour is the first assertion's falsifier."""
+        base = _all_green_check_runs()
+        code, report = _sweep_eval(
+            [*base, _sweep_row("Some Unregistered Gate", "failure")]
+        )
+        assert code == EXIT_FAILURE_CODE, report
+        assert "Some Unregistered Gate (failure)" in report
+
+        code, report = _sweep_eval(
+            [*base, _sweep_row("Some Unregistered Gate", "success")]
+        )
+        assert code == EXIT_SUCCESS_CODE, report
+
+    def test_the_pre_change_behaviour_is_reproducible_and_is_the_defect(self) -> None:
+        """L5 OFF is exactly today's module, and it greens the same red."""
+        rows = [
+            *_all_green_check_runs(),
+            _sweep_row("Some Unregistered Gate", "failure"),
+        ]
+        code, report = evaluate(
+            _all_green_jobs(),
+            check_runs=rows,
+            external_contexts=EXPECTED_EXTERNAL_CONTEXTS,
+        )
+        assert code == EXIT_SUCCESS_CODE, report
+
+    @pytest.mark.parametrize(
+        "conclusion",
+        [
+            "failure",
+            "timed_out",
+            "action_required",
+            "startup_failure",
+            "stale",
+            "skipped",
+            "neutral",
+            "cancelled",
+        ],
+    )
+    def test_the_bar_is_strict_and_only_success_passes(self, conclusion: str) -> None:
+        """Operator ruling, 2026-09-21: the swept population takes L4's bar.
+
+        skipped, neutral, cancelled and stale all FAIL here. A weaker default
+        for unregistered names beside an empty registry is a hidden allowlist,
+        which is the shape this ticket exists to remove.
+        """
+        failures, _f, _s, _e = _sweep([_sweep_row("Gate X", conclusion)])
+        assert failures == [f"Gate X ({conclusion})"]
+
+    def test_only_success_is_in_the_good_set(self) -> None:
+        assert frozenset({"success"}) == SWEEP_GOOD_CONCLUSIONS
+
+    def test_a_success_row_passes(self) -> None:
+        failures, _f, swept, _e = _sweep([_sweep_row("Gate X", "success")])
+        assert failures == []
+        assert swept == ["Gate X"]
+
+    def test_a_still_running_row_is_reported_and_does_not_hold_the_verdict(
+        self,
+    ) -> None:
+        failures, in_flight, swept, _e = _sweep(
+            [_sweep_row("Gate X", None, status="in_progress")]
+        )
+        assert failures == []
+        assert in_flight == ["Gate X"]
+        assert swept == ["Gate X"]
+
+    def test_a_registered_external_context_is_not_swept(self) -> None:
+        name = EXPECTED_EXTERNAL_CONTEXTS[0]
+        _f, _i, swept, _e = _sweep(
+            [_sweep_row(name, "failure")], expected=EXPECTED_EXTERNAL_CONTEXTS
+        )
+        assert swept == []
+
+    def test_an_in_run_job_is_not_double_judged(self) -> None:
+        allowlisted = sorted(SOFT_ALLOWLIST)[0]
+        _f, _i, swept, _e = _sweep(
+            [_sweep_row(allowlisted, "failure")],
+            in_run_names=frozenset({allowlisted}),
+        )
+        assert swept == []
+
+    def test_a_non_pull_request_event_row_is_not_swept(self) -> None:
+        failures, _i, swept, _e = _sweep(
+            [_sweep_row("Nightly", "failure", run_id=777)], events={777: "schedule"}
+        )
+        assert failures == []
+        assert swept == []
+
+    def test_a_pull_request_event_row_is_swept(self) -> None:
+        failures, _i, _s, _e = _sweep(
+            [_sweep_row("Nightly", "failure", run_id=777)],
+            events={777: "pull_request"},
+        )
+        assert failures == ["Nightly (failure)"]
+
+    def test_an_unattributable_row_is_swept_not_exempted(self) -> None:
+        failures, _i, _s, _e = _sweep(
+            [_sweep_row("App Written Gate", "failure")], events={1: "pull_request"}
+        )
+        assert failures == ["App Written Gate (failure)"]
+
+    def test_an_empty_event_index_enforces_rather_than_exempting(self) -> None:
+        failures, _i, _s, _e = _sweep([_sweep_row("Nightly", "failure", run_id=777)])
+        assert failures == ["Nightly (failure)"]
+
+    def test_resolve_check_run_event_reads_both_url_fields(self) -> None:
+        events = check_run_event_index(
+            [{"id": 42, "event": "push"}, {"id": 0, "event": "push"}, {"id": 43}]
+        )
+        assert events == {42: "push"}
+        url = "https://github.com/OmniNode-ai/onex_change_control/actions/runs/42/job/9"
+        assert resolve_check_run_event({"html_url": url}, events) == "push"
+        assert resolve_check_run_event({"details_url": url}, events) == "push"
+        assert resolve_check_run_event({"html_url": "https://x.test/"}, events) is None
+        assert resolve_check_run_event({}, events) is None
+
+    def test_an_absent_payload_adds_no_verdict(self) -> None:
+        assert evaluate_external_sweep(None) == ([], [], [], [])
+
+    def test_a_clean_sweep_records_what_it_looked_at(self) -> None:
+        """Rule 16 — a sweep that finds nothing and says nothing is not evidence."""
+        code, report = _sweep_eval(
+            [
+                *_all_green_check_runs(),
+                _sweep_row("Advisory A"),
+                _sweep_row("Advisory B"),
+            ]
+        )
+        assert code == EXIT_SUCCESS_CODE, report
+        assert (
+            "L5 external default-deny sweep: 2 unregistered context(s) judged" in report
+        )
+
+    def test_the_layer_prints_nothing_about_itself_when_it_did_not_run(self) -> None:
+        _code, report = evaluate(
+            _all_green_jobs(),
+            check_runs=_all_green_check_runs(),
+            external_contexts=EXPECTED_EXTERNAL_CONTEXTS,
+        )
+        assert "L5 external default-deny sweep" not in report
+
+
+class TestDeclaredAdvisoryEntries:
+    """AC-3 — the declared half of an entry is derived, not asserted."""
+
+    def test_the_shadow_context_is_a_dated_entry_like_every_other(self) -> None:
+        """There is ONE admission path, and the operator ruled out a second.
+
+        An earlier revision gave a declared-advisory producer its own undated
+        category. That is a hidden allowlist however well argued, so the
+        shadow context now carries a reason, an owner, a date and an expiry
+        like everything else, and names its producer on top.
+        """
+        entry = EXTERNAL_SWEEP_EXCLUSIONS[SHADOW_CONTEXT]
+        assert entry.declared_by == ".github/workflows/product-readiness-shadow.yml"
+        assert entry.expires == "2026-12-20"
+        assert validate_sweep_exclusions({SHADOW_CONTEXT: entry}) == []
+
+    def test_every_declared_producer_still_declares_itself_advisory(self) -> None:
+        """THE mechanism. The premise is re-read, not trusted.
+
+        If anyone makes the shadow surface authoritative, or deletes the
+        declaration, this goes red and the entry has to go.
+        """
+        assert validate_declared_producers(EXTERNAL_SWEEP_EXCLUSIONS, REPO_ROOT) == []
+
+    def test_a_missing_producer_is_refused(self) -> None:
+        bad = {
+            "X": SweepExclusion(
+                reason="r",
+                ticket="OMN-1",
+                added="2026-09-21",
+                expires="2026-10-21",
+                declared_by=".github/workflows/does-not-exist.yml",
+            )
+        }
+        findings = validate_declared_producers(bad, REPO_ROOT)
+        assert findings
+        assert "is missing" in findings[0]
+
+    def test_a_producer_without_the_declaration_is_refused(self) -> None:
+        """The falsification control: point at a real file that lacks the marker."""
+        host = ".github/workflows/ci.yml"
+        assert ADVISORY_DECLARATION_MARKER not in (REPO_ROOT / host).read_text(
+            encoding="utf-8"
+        )
+        bad = {
+            "X": SweepExclusion(
+                reason="r",
+                ticket="OMN-1",
+                added="2026-09-21",
+                expires="2026-10-21",
+                declared_by=host,
+            )
+        }
+        findings = validate_declared_producers(bad, REPO_ROOT)
+        assert findings
+        assert "no longer declares itself" in findings[0]
+
+    def test_an_entry_without_a_declared_producer_is_not_checked(self) -> None:
+        plain = {
+            "X": SweepExclusion(
+                reason="r", ticket="OMN-1", added="2026-09-21", expires="2026-10-21"
+            )
+        }
+        assert validate_declared_producers(plain, REPO_ROOT) == []
+
+    def test_the_exemption_admits_the_real_head_that_merged_with_it_cancelled(
+        self,
+    ) -> None:
+        """AC-3, on real data, both ways.
+
+        Three of the sixteen measured heads merged with the shadow context
+        cancelled. Under the strict bar the sweep fails it without the entry;
+        with the entry the name is admitted and the report names it.
+        """
+        head = _sweep_head(CANCELLED_SHADOW_PR)
+        rows = _at_merge(head)
+        assert any(
+            r["name"] == SHADOW_CONTEXT and r.get("conclusion") == "cancelled"
+            for r in rows
+        ), "the fixture no longer carries the cancelled shadow row"
+
+        without, _i, _s, _e = _sweep_real_head(head, rows, exclusions={})
+        assert f"{SHADOW_CONTEXT} (cancelled)" in without
+
+        with_entry, _i, _s, excluded = _sweep_real_head(
+            head, rows, exclusions=EXTERNAL_SWEEP_EXCLUSIONS
+        )
+        assert with_entry == [], with_entry
+        assert SHADOW_CONTEXT in excluded
+
+
+class TestSweepExclusions:
+    """AC-2 — the dated registry is closed-ended or it is an allowlist."""
+
+    def test_the_registry_holds_exactly_the_four_measured_names(self) -> None:
+        """Under the strict bar, every by-design non-green name needs an entry.
+
+        That is the point of the ruling: the tolerance is written down with a
+        reason, an owner and a date, instead of hiding inside a conclusion set
+        nobody reads.
+        """
+        assert set(EXTERNAL_SWEEP_EXCLUSIONS) == {
+            SHADOW_CONTEXT,
+            "PEP 604 Type Union Check (UP007)",
+            "occ-autobind",
+            "occ-companion-effect",
+            # Absent from the measured window and observed live on this
+            # ticket's own pull request, which the sweep refused until they
+            # were named. See their reasons in the module.
+            "occ-autobind / outcome",
+            "occ-companion-effect / mint status",
+        }
+
+    def test_every_entry_carries_a_reason_an_owner_and_both_dates(self) -> None:
+        for name, entry in EXTERNAL_SWEEP_EXCLUSIONS.items():
+            assert entry.reason.strip(), name
+            assert entry.ticket.startswith("OMN-"), name
+            assert entry.added == "2026-09-21", name
+            assert entry.expires == "2026-12-20", name
+
+    def test_every_entry_states_the_measurement_it_rests_on(self) -> None:
+        """A reason with no number in it cannot be re-argued against anything."""
+        for name, entry in EXTERNAL_SWEEP_EXCLUSIONS.items():
+            assert "16" in entry.reason, name
+
+    def test_no_entry_overlaps_the_registered_tuple(self) -> None:
+        """A name in both would be judged by L4 and never reach this layer."""
+        assert not set(EXTERNAL_SWEEP_EXCLUSIONS) & set(EXPECTED_EXTERNAL_CONTEXTS)
+
+    def test_every_shipped_entry_is_wellformed(self) -> None:
+        assert validate_sweep_exclusions(EXTERNAL_SWEEP_EXCLUSIONS) == []
+
+    def test_no_shipped_entry_has_expired(self) -> None:
+        """The calendar tripwire: an expiry reaches a person through a red test."""
+        _active, expired = active_sweep_exclusions(
+            EXTERNAL_SWEEP_EXCLUSIONS, now=datetime.now(UTC)
+        )
+        assert expired == (), (
+            f"expired sweep exclusion(s) {expired}: re-argue with fresh numbers "
+            "and a new date, or delete it and let the sweep judge the name"
+        )
+
+    @pytest.mark.parametrize(
+        ("entry", "fragment"),
+        [
+            (
+                SweepExclusion("", "OMN-1", "2026-09-20", "2026-10-20"),
+                "reason is empty",
+            ),
+            (
+                SweepExclusion("r", "see the ticket", "2026-09-20", "2026-10-20"),
+                "is not an OMN-<number> reference",
+            ),
+            (SweepExclusion("r", "OMN-1", "soon", "2026-10-20"), "added 'soon'"),
+            (SweepExclusion("r", "OMN-1", "2026-09-20", ""), "expires ''"),
+            (
+                SweepExclusion("r", "OMN-1", "2026-09-20", "2026-09-20"),
+                "is not after added",
+            ),
+            (
+                SweepExclusion("r", "OMN-1", "2026-09-20", "2027-09-20"),
+                f"exceeds the {SWEEP_EXCLUSION_MAX_DAYS}d cap",
+            ),
+        ],
+    )
+    def test_a_malformed_entry_is_refused(
+        self, entry: SweepExclusion, fragment: str
+    ) -> None:
+        findings = validate_sweep_exclusions({"X": entry})
+        assert findings
+        assert any(fragment in f for f in findings), findings
+
+    def test_a_malformed_entry_fails_the_gate_rather_than_warning(self) -> None:
+        code, report = _sweep_eval(
+            _all_green_check_runs(),
+            sweep_exclusions={"X": SweepExclusion("", "nope", "x", "y")},
+        )
+        assert code == EXIT_FAILURE_CODE, report
+        assert "L5 sweep exclusion registry REFUSED" in report
+
+    def test_an_expired_entry_stops_excluding(self) -> None:
+        expired = {"Gate X": SweepExclusion("r", "OMN-1", "2026-08-01", "2026-09-01")}
+        failures, _i, _s, excluded = _sweep(
+            [_sweep_row("Gate X", "failure")], exclusions=expired
+        )
+        assert failures == ["Gate X (failure)"]
+        assert excluded == []
+
+    def test_a_missing_clock_admits_nothing(self) -> None:
+        today = datetime.now(UTC).date()
+        live = {
+            "Gate X": SweepExclusion(
+                "r",
+                "OMN-1",
+                today.isoformat(),
+                (today + timedelta(days=30)).isoformat(),
+            )
+        }
+        failures, _i, _s, _e = evaluate_external_sweep(
+            [_sweep_row("Gate X", "failure")], exclusions=live, now=None
+        )
+        assert failures == ["Gate X (failure)"]
+
+
+class TestSweepAgainstRealHeads:
+    """AC-5 — proven on this repository's real pre-change heads."""
+
+    PRS = (CLEAN_PR, CANCELLED_SHADOW_PR, RUNNING_SHADOW_PR)
+
+    def test_the_fixture_is_the_real_unfiltered_head_state(self) -> None:
+        """Positive control for the fixture before anything is read off it."""
+        payload = json.loads(SWEEP_FIXTURE.read_text(encoding="utf-8"))
+        assert set(payload["pull_requests"]) == set(self.PRS)
+        for pr in self.PRS:
+            head = _sweep_head(pr)
+            assert len(head["check_runs_all"]) > 50, pr
+            assert len(head["workflow_runs"]) > 15, pr
+            assert len(head["in_run_job_names"]) > 30, pr
+            assert len(head["head_sha"]) == 40
+
+    @pytest.mark.parametrize("pr", PRS)
+    def test_every_real_head_passes_the_shipped_sweep_and_it_really_looked(
+        self, pr: str
+    ) -> None:
+        """Zero failures AND a non-zero population — rule 16's two halves."""
+        head = _sweep_head(pr)
+        failures, _in_flight, swept, _excluded = _sweep_real_head(head, _at_merge(head))
+        assert failures == [], failures
+        assert len(swept) >= 8, (pr, len(swept))
+
+    def test_flipping_one_real_row_flips_the_verdict(self) -> None:
+        """A synthetic red on an otherwise-clean REAL payload, and back again."""
+        head = _sweep_head(CLEAN_PR)
+        rows = _at_merge(head)
+        _f, _i, swept, _e = _sweep_real_head(head, rows)
+        target = swept[0]
+
+        assert _sweep_real_head(head, rows)[0] == []
+        flipped = [
+            {**r, "conclusion": "failure"} if r["name"] == target else r for r in rows
+        ]
+        assert _sweep_real_head(head, flipped)[0] == [f"{target} (failure)"]
+        assert _sweep_real_head(head, rows)[0] == []
+
+
+class TestSweepIsWiredIntoTheProductionPoller:
+    """The module can be perfect and the gate still ship inert.
+
+    L5 is OFF by default at the function boundary, so a module-only port
+    enforces nothing at all and every unit test still passes. These
+    assertions are the wiring.
+    """
+
+    def test_the_poller_fetches_the_runs_and_passes_the_flag(self) -> None:
+        script = _ci_summary_poll_script()
+        assert "actions/runs?head_sha=${HEAD_SHA}&per_page=100" in script, (
+            "the poller does not fetch the workflow runs, so L5 resolves no "
+            "events and every row is swept blind"
+        )
+        assert "--workflow-runs-file /tmp/ci_summary_workflow_runs.json" in script
+        assert "rm -f /tmp/ci_summary_workflow_runs.json" in script, (
+            "a stale workflow-runs file from an earlier poll would attribute "
+            "rows against the wrong index"
+        )
+        assert '--event-name "${EVENT_NAME}"' in script
+
+    def test_main_turns_the_sweep_on_for_pull_request_and_off_otherwise(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        captured: dict[str, object] = {}
+
+        def _fake_evaluate(_jobs: object, **kwargs: object) -> tuple[int, str]:
+            captured.clear()
+            captured.update(kwargs)
+            return 2, "stubbed"
+
+        monkeypatch.setattr(ci_summary_gate, "evaluate", _fake_evaluate)
+        (tmp_path / "jobs.json").write_text("[]", encoding="utf-8")
+        (tmp_path / "runs.json").write_text(
+            '{"workflow_runs": [{"id": 7, "event": "push"}]}', encoding="utf-8"
+        )
+        base = [
+            "--jobs-file",
+            str(tmp_path / "jobs.json"),
+            "--workflow-runs-file",
+            str(tmp_path / "runs.json"),
+        ]
+
+        ci_summary_gate.main([*base, "--event-name", "pull_request"])
+        assert captured["sweep_external"] is True
+        assert captured["workflow_runs"] == [{"id": 7, "event": "push"}]
+        assert captured["now"] is not None
+
+        ci_summary_gate.main([*base, "--event-name", "push"])
+        assert captured["sweep_external"] is False
+
+    def test_a_forgotten_event_name_enforces_rather_than_skipping(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        captured: dict[str, object] = {}
+
+        def _fake_evaluate(_jobs: object, **kwargs: object) -> tuple[int, str]:
+            captured.update(kwargs)
+            return 2, "stubbed"
+
+        monkeypatch.setattr(ci_summary_gate, "evaluate", _fake_evaluate)
+        (tmp_path / "jobs.json").write_text("[]", encoding="utf-8")
+        ci_summary_gate.main(["--jobs-file", str(tmp_path / "jobs.json")])
+        assert captured["sweep_external"] is True
+        assert captured["workflow_runs"] is None
+
+    def test_an_unreadable_workflow_runs_file_sweeps_rather_than_exempting(
+        self, tmp_path: Path
+    ) -> None:
+        assert ci_summary_gate._load_workflow_runs(str(tmp_path / "nope.json")) is None
+        assert ci_summary_gate._load_workflow_runs(None) is None
+
+
+# ---------------------------------------------------------------------------
+# OMN-17427 — L5 must never judge a row THIS workflow run wrote.
+#
+# Replay of the false red measured on onex_change_control#11666, head
+# 940eaf2a, CI run 36331600130, attempt 1 (job 108654652016) and again on
+# attempt 2 (job 108661642069): Pre-commit completed at 16:08:33Z, GitHub
+# created the dependent skippable gate `Migration Inventory Sync` straight to
+# `skipped` (job 108655960886, created 16:08:34Z). The poller's jobs fetch
+# did not list it yet, so it was not in `in_run_names`; the check-runs fetch a
+# moment later did. The verdict at 16:08:36Z read "gates missing/pending:
+# Pre-commit, Migration Inventory Sync" AND "L5 sweep failures (red, and named
+# by NOTHING else): Migration Inventory Sync (skipped)", and exited FAILURE on
+# a run whose re-run (attempt 3) passed with no change to the head. The same
+# shape reds CI Summary on `Schema Purity & Naming Check (skipped)`; ten
+# attempts on 2026-09-27 alone.
+# ---------------------------------------------------------------------------
+
+_OMN17427_RUN_ID = 36331600130
+_OMN17427_ROW: dict[str, Any] = {
+    "id": 108655960886,
+    "name": "Migration Inventory Sync",
+    "status": "completed",
+    "conclusion": "skipped",
+    "started_at": "2026-09-27T16:08:34Z",
+    "completed_at": "2026-09-27T16:08:33Z",
+    "head_sha": "940eaf2a854eb1b007975cbd33a6af098c253c2d",
+    "html_url": (
+        "https://github.com/OmniNode-ai/onex_change_control/actions/runs/"
+        "36331600130/job/108655960886"
+    ),
+}
+
+
+def _omn17427_jobs(*, include_late_gate: bool) -> list[dict[str, object]]:
+    """This run's jobs payload, every gate green, each row carrying run_id."""
+    jobs = [
+        {**j, "run_id": _OMN17427_RUN_ID}
+        for j in _all_green_jobs()
+        if include_late_gate or j["name"] != _OMN17427_ROW["name"]
+    ]
+    if include_late_gate:
+        for j in jobs:
+            if j["name"] == _OMN17427_ROW["name"]:
+                j["conclusion"] = "skipped"
+    return jobs
+
+
+class TestOwnRunRowsAreNotSwept:
+    def test_the_captured_race_was_a_failure_before_the_fix(self) -> None:
+        """Falsifier: without the run's identity, L5 reds the run's own gate."""
+        rows = [*_all_green_check_runs(), _OMN17427_ROW]
+        jobs = [
+            {k: v for k, v in j.items() if k != "run_id"}
+            for j in _omn17427_jobs(include_late_gate=False)
+        ]
+        code, report = evaluate(
+            jobs,
+            check_runs=rows,
+            external_contexts=EXPECTED_EXTERNAL_CONTEXTS,
+            sweep_external=True,
+            now=SWEEP_NOW,
+        )
+        assert code == EXIT_FAILURE_CODE, report
+        assert "Migration Inventory Sync (skipped)" in report
+
+    def test_the_captured_race_is_pending_then_success(self) -> None:
+        rows = [*_all_green_check_runs(), _OMN17427_ROW]
+        code, report = evaluate(
+            _omn17427_jobs(include_late_gate=False),
+            check_runs=rows,
+            external_contexts=EXPECTED_EXTERNAL_CONTEXTS,
+            sweep_external=True,
+            now=SWEEP_NOW,
+        )
+        assert code == ci_summary_gate.EXIT_PENDING, report
+        assert "L5 sweep failures" not in report
+
+        code, report = evaluate(
+            _omn17427_jobs(include_late_gate=True),
+            check_runs=rows,
+            external_contexts=EXPECTED_EXTERNAL_CONTEXTS,
+            sweep_external=True,
+            now=SWEEP_NOW,
+        )
+        assert code == EXIT_SUCCESS_CODE, report
+
+    def test_an_explicit_run_id_covers_an_empty_jobs_fetch(self) -> None:
+        """A retry-exhausted jobs fetch falls back to an empty payload; the
+        poller's --current-run-id still identifies the run's own rows."""
+        rows = [*_all_green_check_runs(), _OMN17427_ROW]
+        code, report = evaluate(
+            [],
+            check_runs=rows,
+            external_contexts=EXPECTED_EXTERNAL_CONTEXTS,
+            sweep_external=True,
+            current_run_id=_OMN17427_RUN_ID,
+            now=SWEEP_NOW,
+        )
+        assert code == ci_summary_gate.EXIT_PENDING, report
+
+    def test_the_same_red_from_another_run_is_still_swept(self) -> None:
+        """Positive control: only THIS run's rows leave the swept population."""
+        foreign = {
+            **_OMN17427_ROW,
+            "id": 1,
+            "html_url": (
+                "https://github.com/OmniNode-ai/onex_change_control/actions/runs/"
+                "1/job/1"
+            ),
+        }
+        rows = [*_all_green_check_runs(), foreign]
+        code, report = evaluate(
+            _omn17427_jobs(include_late_gate=False),
+            check_runs=rows,
+            external_contexts=EXPECTED_EXTERNAL_CONTEXTS,
+            sweep_external=True,
+            now=SWEEP_NOW,
+        )
+        assert code == EXIT_FAILURE_CODE, report
+        assert "Migration Inventory Sync (skipped)" in report
+
+    def test_the_poller_passes_its_own_run_id(self) -> None:
+        text = (
+            Path(__file__).resolve().parents[2] / ".github/workflows/ci.yml"
+        ).read_text(encoding="utf-8")
+        assert '--current-run-id "${RUN_ID}"' in text

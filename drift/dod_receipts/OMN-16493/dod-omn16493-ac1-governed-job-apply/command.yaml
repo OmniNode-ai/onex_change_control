@@ -1,0 +1,62 @@
+---
+schema_version: 1.0.0
+ticket_id: OMN-16493
+evidence_item_id: dod-omn16493-ac1-governed-job-apply
+check_type: command
+check_value: |
+  gh api 'repos/OmniNode-ai/omninode_infra/compare/6cb6a4e9d1ee8e13f78ec127f35d37b920cca3ab...dev' --jq '.status' | grep -cE '^(ahead|identical)$'
+contract_sha256: sha256:4a0c6e9ce31e4afbb935bf3b4d9b17415cabdf6c37a962841d198f988fa89105
+contract_entry_sha256: sha256:f5a396cc4532b283a5bea31f300f85a7174d1fa2eaf748b9fe94b8c78d295b38
+status: PASS
+run_timestamp: '2026-09-10T02:04:45Z'
+commit_sha: 6cb6a4e9d1ee8e13f78ec127f35d37b920cca3ab
+runner: claude-local-worktree
+verifier: omn16493-ac6-readback-close
+probe_command: |
+  gh api 'repos/OmniNode-ai/omninode_infra/compare/6cb6a4e9d1ee8e13f78ec127f35d37b920cca3ab...dev' --jq '.status' | grep -cE '^(ahead|identical)$'
+probe_stdout: |
+  1
+actual_output: |
+  PASS. AC1 -- the operative delegation_events conversion applied on onex-dev through the governed
+  k8s migrate Job, with the Job's own log as the evidence.
+
+  The operative id is 0037, not the 0031 the criterion names or the 0034 the ticket title names. The
+  2026-09-01 override in the ticket body re-points "0031" at whichever migration is operative, and the
+  chain moved 0031 -> 0032 -> 0033 -> 0034 -> 0036 -> 0037. 0034 was retired on the DATA axis (resolves
+  identity on m.tenant_slug alone, so it cannot convert a column that write-time UUID stamping has
+  already filled with canonical UUIDs). 0036 was retired on the PRIVILEGE axis (reads
+  tenant_registry_mirror after set_config('role', <delegation_events' owner>), and that owner holds no
+  SELECT on the mirror -- it aborted live on staging deploy run 34281092205 with `permission denied for
+  table tenant_registry_mirror` and rolled the whole transaction back).
+
+  THE APPLY. OmniNode-ai/omninode_infra#1258 merged 2026-09-09T01:06:54Z, squash
+  6cb6a4e9d1ee8e13f78ec127f35d37b920cca3ab. deploy-onex-staging run 34297859000 on that exact head:
+
+    == [1/6] omnibase-infra-migrate ==
+      Applying /tmp/run-migrations-rds.w1CJQD/omnibase-infra-migrate.yaml...
+    job.batch/omnibase-infra-migrate created                       01:08:28.9Z
+      Waiting for Job omnibase-infra-migrate to complete (timeout: 600s)...
+      Migration omnibase-infra-migrate completed successfully.      01:09:46.9Z
+      == Migration complete: applied=0 skipped=83 undeliverable=5 node_applied=1 node_skipped=173 ==
+
+    OMNIBASE_INFRA_MIGRATE_IMAGE: omnibase-infra-migrate:3dfe23e5e5e41f6b0c8a7501e0a6883e2dbd0a42
+    RDS target resolved: host=omninode-dev-postgres.cqjkkokeaqd2.us-east-1.rds.amazonaws.com
+
+  LIVE CORROBORATION, read-only 2026-09-10 through the serving pod: node_schema_migrations holds
+  exactly one row for this migration --
+    node:node_projection_delegation:0037_delegation_events_uuid_mixed_representation_guard_before_set_role.sql
+    applied_at 2026-09-09 01:09:18.051491+00
+  -- strictly inside the Job window above, and holds NO row for 0031, 0032, 0033, 0034 or 0036 on any
+  lane. node_applied=1 and that single ledger row are the same event.
+
+  NEGATIVE CONTROL (check 4): at the immediately preceding parent f50ecec36 the k8s Job's released-id
+  array names no 0037 at all -- grep count 0 -- so the pattern discriminates the release rather than
+  matching the file wherever it appears.
+
+  EXECUTION SCOPE, stated rather than implied: the OCC runner's token carries no cross-repo
+  actions:read on omninode_infra, so a fetch of the Job log is not re-executable there. The log lines
+  above are the receipt; the four checks are the re-executable half, reading the release through the
+  contents API.
+exit_code: 0
+pr_number: 1258
+branch: dev

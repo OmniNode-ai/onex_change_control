@@ -1,0 +1,73 @@
+---
+schema_version: "1.0.0"
+ticket_id: "OMN-14335"
+title: "refactor(OMN-14335): retire errors→models import-layering back-edge in omnibase_core"
+summary: >-
+  omnibase_core PR #1421 retires the frozen `errors -> models.**` / `errors.** -> models.**` import-layering
+  back-edge (~11 edges) by relocating the load-bearing ONEX error types DOWN into the foundation-layer
+  errors package: ModelOnexError -> errors/model_onex_error.py, ModelFailFastDetails -> errors/model_fail_fast_details.py,
+  and the internal _ModelOnexErrorData companion -> errors/model_onex_error_data.py (it moved too because
+  import-linter counts the func-local import from ModelOnexError, so leaving it in models.common would
+  re-create the edge via the relocated class). The old models.* modules (models.errors.model_onex_error,
+  models.errors.model_fail_fast_details, models.common.model_onex_error_data) are kept as thin, identity-preserving
+  re-export shims (models -> errors is downward, allowed), so the ~40+ repo-wide and cross-repo importers
+  keep working unchanged. Separately, the ModelOnexWarning / ModelRegistryError / ModelCLIAdapter convenience
+  re-exports were pruned from errors/__init__.py (they created 3 of the 4 errors(__init__)->models edges);
+  the sole consumer (tests/unit/errors/test_error_codes.py) was repointed to the canonical models.core
+  path. Both `errors -> models` ignore lines are DELETED from .importlinter. Verified by the import-linter
+  oracle: the "Foundation primitives must not import higher layers" contract stays KEPT with the allowlist
+  entries removed, proving the edges are genuinely gone (epic OMN-3210). Shares the .importlinter core-foundation-no-upward
+  block with the types→models lane (OMN-14336); only the errors ignore lines were removed — a rebase may
+  be needed if that lane lands first.
+is_seam_ticket: false
+interface_change: false
+interfaces_touched: []
+emergency_bypass:
+  enabled: false
+  justification: ""
+  follow_up_ticket_id: ""
+dod_evidence:
+  - id: "dod-omnibase_core-pr-1421"
+    description: >-
+      Independent adversarial verification (a separate verifier, NOT the implementing agent) reproduced
+      the import-linter oracle end-to-end against omnibase_core PR #1421 head b37ed93acfb205ff5f2aee5fd656949b1181c5c5
+      in the isolated worktree with PYTHONPATH cleared (grimp analyzed the worktree src, not the canonical
+      clone — ambient PYTHONPATH pointed at the canonical omnibase_core/src). `env -u PYTHONPATH uv run
+      lint-imports` kept all 4 contracts (Analyzed 4076 files, 10334 dependencies; 4 kept, 0 broken) with
+      BOTH `errors -> models` ignore lines removed. Negative control: adding a throwaway errors/_negctl.py
+      importing omnibase_core.models.common.model_onex_warning (ignore lines still removed) turned "Foundation
+      primitives must not import higher layers" BROKEN (3 kept, 1 broken), proving the edges are real
+      and genuinely removed by the relocation, not wildcard-masked; deleting the scratch file restored
+      4 kept, 0 broken. Object identity: the shim symbols at models.errors.model_onex_error.ModelOnexError,
+      models.errors.model_fail_fast_details.ModelFailFastDetails, models.common.model_onex_error_data._ModelOnexErrorData,
+      the errors package-level ModelOnexError, and the OnexError alias all `is` the relocated canonical
+      classes (not copies); ModelOnexError("boom", error_code=...) constructs and .model_dump() returns
+      the full {context, correlation_id, error_code, message, status, timestamp}. The pruned convenience
+      re-exports raise AttributeError via omnibase_core.errors (as intended) yet still resolve via their
+      canonical models.* paths; no other consumer of those symbols via the errors package remains repo-wide
+      or in infra/market/spi src. grep proof: zero real omnibase_core.models import statement under src/omnibase_core/errors/
+      (only a docstring line; none TYPE_CHECKING- or func-local-hidden). Tests: 132 passed across tests/unit/errors/,
+      80 passed across tests/unit/test_no_circular_imports.py, test_circular_import_validator.py, and
+      test_mixin_fail_fast.py. mypy diff-scope clean of NEW errors (the 4 comparison-overlap/unreachable/attr-defined
+      errors in tests/unit/errors/test_error_codes.py are PRE-EXISTING — identical at the base commit
+      b37ed93a^ on untouched lines; the test diff is a single import-repoint line). ruff check + ruff
+      format clean. File-location exemptions for model_fail_fast_details.py / model_onex_error_data.py
+      in errors/ validate clean. No runtime or deploy scope.
+    source: "manual"
+    status: "verified"
+    checks:
+      - check_type: "command"
+        check_value: >-
+          grep -q '^status: PASS$' drift/dod_receipts/OMN-14335/dod-omnibase_core-pr-1421/command.yaml
+          && grep -q '^pr_number: 1421$' drift/dod_receipts/OMN-14335/dod-omnibase_core-pr-1421/command.yaml
+  - id: "dod-occ-self"
+    description: >-
+      OCC companion self-binding: this onex_change_control PR carries the OMN-14335 contract and PASS
+      receipt for omnibase_core PR #1421, binding itself to occ-preflight by commit_sha (contract commit
+      C1), with no runtime or deploy scope.
+    source: "manual"
+    status: "verified"
+    checks:
+      - check_type: "command"
+        check_value: >-
+          grep -q '^status: PASS$' drift/dod_receipts/OMN-14335/dod-occ-self/command.yaml

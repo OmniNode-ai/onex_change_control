@@ -1,0 +1,176 @@
+#!/usr/bin/env bash
+# SPDX-FileCopyrightText: 2025 OmniNode.ai Inc.
+# SPDX-License-Identifier: MIT
+#
+# merge-proof — Resolve the environment that onex_change_control local proof
+# gates need, then run (or hand off to) that proof. Fails fast with the exact
+# `export` lines to run when the environment cannot be resolved — it never
+# proceeds on a silent wrong path. (OMN-14776, F-20 deferred half of OMN-14462)
+#
+# Why: several local proof tools resolve sibling repos from $OMNI_HOME:
+# scripts/score-canary-tiers.sh scores each sibling at "$OMNI_HOME/$repo",
+# scripts/audit_branch_protection.sh iterates the same siblings, and
+# scripts/backfill_contracts.py resolves omniclaude via $OMNI_HOME. Their naive
+# fallback ($REPO_ROOT/..) is only valid under the canonical omni_home/ layout;
+# under the mandated worktree layout
+# ($OMNI_HOME/omni_worktrees/<ticket>/onex_change_control) the parent directory
+# holds no siblings, so a correct change silently degrades (every sibling scores
+# "0 (not found)") or fails until the hidden environment is reconstructed by
+# hand — the natural workaround pressure being `--no-verify`, which rule #10
+# bans. This wrapper resolves that environment deterministically from its own
+# on-disk location (rule #8, never a hardcoded default) and, when it cannot,
+# prints the exact `export` line to run rather than failing on a wrong path.
+#
+# Usage:
+#   scripts/merge-proof [--check | --print-env | -- CMD [ARGS...]]
+#
+#   (no args)          Resolve+export env, then run the local proof
+#                      (pre-commit run --all-files).
+#   --check            Resolve env, verify the sibling repo exists, print
+#                      resolved paths, exit 0. Exit non-zero with guidance if
+#                      unresolved.
+#   --print-env        Print eval-able `export` lines for the resolved env.
+#   -- CMD [ARGS...]   Resolve+export env, then exec CMD with that env (e.g.
+#                      `scripts/merge-proof -- pre-commit run --files X`).
+#
+# Environment (auto-resolved from this script's location; export to override):
+#   OMNI_HOME           omni_home checkout root (anchor for sibling resolution)
+#   SIBLING_REPOS_DIR   parent dir holding sibling checkouts (defaults OMNI_HOME)
+set -euo pipefail
+
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" >/dev/null 2>&1 && pwd)"
+REPO_ROOT="$(cd "${SCRIPT_DIR}/.." >/dev/null 2>&1 && pwd)"
+
+# Sentinel sibling used to prove a candidate dir really is omni_home. omnibase_infra
+# is the foundational sibling OCC's cross-repo tooling depends on most.
+SENTINEL_SIBLING="omnibase_infra"
+
+RESOLVED_OMNI_HOME=""
+
+_is_dir() { [ -n "${1:-}" ] && [ -d "${1}" ]; }
+
+usage() {
+  sed -n '24,38p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//'
+}
+
+# Derive the omni_home anchor from this checkout's location. Deterministic
+# Path-relative resolution (rule #8), never a hardcoded default. Only accept a
+# candidate that actually holds the sentinel sibling checkout.
+derive_omni_home() {
+  if _is_dir "${OMNI_HOME:-}" && _is_dir "${OMNI_HOME}/${SENTINEL_SIBLING}"; then
+    printf '%s\n' "$(cd "${OMNI_HOME}" && pwd)"
+    return 0
+  fi
+  local candidate=""
+  case "${REPO_ROOT}" in
+    */omni_worktrees/*)
+      # $OMNI_HOME/omni_worktrees/<ticket>/onex_change_control
+      candidate="${REPO_ROOT%%/omni_worktrees/*}"
+      ;;
+    *)
+      # Canonical registry layout: <omni_home>/onex_change_control
+      candidate="$(cd "${REPO_ROOT}/.." >/dev/null 2>&1 && pwd)"
+      ;;
+  esac
+  if _is_dir "${candidate}" && _is_dir "${candidate}/${SENTINEL_SIBLING}"; then
+    printf '%s\n' "${candidate}"
+    return 0
+  fi
+  return 1
+}
+
+resolve_env() {
+  if RESOLVED_OMNI_HOME="$(derive_omni_home)"; then
+    :
+  else
+    RESOLVED_OMNI_HOME=""
+  fi
+}
+
+guidance_and_die() {
+  {
+    echo "error: merge-proof could not resolve the environment onex_change_control proof gates need."
+    echo
+    echo "Local proof tools (score-canary-tiers.sh, audit_branch_protection.sh,"
+    echo "backfill_contracts.py) resolve sibling repos from \$OMNI_HOME. Set the"
+    echo "environment explicitly, then re-run:"
+    echo
+    echo "  export OMNI_HOME=/path/to/omni_home"
+    echo "  export SIBLING_REPOS_DIR=\"\$OMNI_HOME\""
+    echo
+    echo "Then re-run: scripts/merge-proof --check"
+  } >&2
+  exit 3
+}
+
+main() {
+  local mode="run"
+  local -a passthrough=()
+  case "${1:-}" in
+    --check) mode="check" ;;
+    --print-env) mode="print-env" ;;
+    -h | --help)
+      usage
+      exit 0
+      ;;
+    --)
+      mode="exec"
+      shift
+      passthrough=("$@")
+      ;;
+    "") mode="run" ;;
+    *)
+      echo "merge-proof: unknown option: ${1}" >&2
+      usage >&2
+      exit 2
+      ;;
+  esac
+
+  resolve_env
+
+  # OMNI_HOME (with a real sentinel sibling) is the load-bearing anchor; without
+  # it the sibling-resolving proof tools silently degrade or fail.
+  if [ -z "${RESOLVED_OMNI_HOME}" ]; then
+    guidance_and_die
+  fi
+
+  export OMNI_HOME="${RESOLVED_OMNI_HOME}"
+  export SIBLING_REPOS_DIR="${SIBLING_REPOS_DIR:-${RESOLVED_OMNI_HOME}}"
+
+  # Strip leaked worktree-corrupting env from any delegated child. GIT_* would
+  # redirect git ops at the wrong repo (OMN-14746/14744); ambient PYTHONPATH
+  # shadows the worktree's own source with a stale canonical clone
+  # (reference_pythonpath_shadows_worktree_source).
+  unset GIT_DIR GIT_INDEX_FILE GIT_WORK_TREE PYTHONPATH
+
+  case "${mode}" in
+    check)
+      echo "merge-proof: OMNI_HOME=${OMNI_HOME}"
+      echo "merge-proof: SIBLING_REPOS_DIR=${SIBLING_REPOS_DIR}"
+      local sentinel="${OMNI_HOME}/${SENTINEL_SIBLING}"
+      if [ ! -d "${sentinel}" ]; then
+        echo "error: sentinel sibling ${SENTINEL_SIBLING} not found at ${sentinel}" >&2
+        echo "  (is OMNI_HOME pointing at a real omni_home checkout?)" >&2
+        exit 4
+      fi
+      echo "merge-proof: environment OK"
+      ;;
+    print-env)
+      echo "export OMNI_HOME=${OMNI_HOME}"
+      echo "export SIBLING_REPOS_DIR=${SIBLING_REPOS_DIR}"
+      ;;
+    exec)
+      if [ "${#passthrough[@]}" -eq 0 ]; then
+        echo "merge-proof: -- requires a command to run" >&2
+        exit 2
+      fi
+      exec "${passthrough[@]}"
+      ;;
+    run)
+      cd "${REPO_ROOT}"
+      exec pre-commit run --all-files
+      ;;
+  esac
+}
+
+main "$@"

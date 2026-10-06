@@ -1,0 +1,73 @@
+---
+schema_version: "1.0.0"
+ticket_id: "OMN-13364"
+title: "fix(OMN): deploy-runtime.sh redpanda warmup false-fail + backup-restore reverts vendored migration
+  tree"
+summary: >-
+  Two coupled deploy-runtime.sh defects, observed on the 2026-06-19 stability-test redeploy, made every
+  recent stability-test redeploy require manual broker surgery + manual migration rsync and risked silent
+  migration loss. (1) warm_broker_topic_provisioning() ran `docker compose up -d --no-deps --wait redpanda`
+  and keyed broker readiness off the compose-wait exit status; when the broker container_name collides
+  with another project's broker, Docker assigns a random prefix (e.g. 3ed1fdb8d50b_omnibase-infra-redpanda)
+  and/or leaves the recreate in 'Created', so `up --wait` errors / never reaches healthy even though a
+  healthy broker is already reachable on the lane network, and the bare call aborted under set -e, triggering
+  the destructive backup-restore. (2) On that failure with --force, cleanup_on_exit() restored the WHOLE
+  pre-build deployment tree including docker/migrations/forward/ (rsynced under docker/ with --delete),
+  silently regressing deployed migrations to the backup snapshot (it dropped node_projection_delegation/
+  0015_generation_corpus_acceptance.sql). Fix: the compose up --wait is now best-effort (guarded); broker
+  readiness is keyed off ACTUAL reachability via assert_broker_reachable(), which resolves the broker
+  by compose service label (com.docker.compose.service=redpanda, surviving a Docker name prefix) and probes
+  `rpk cluster health` on TCP/9092 inside the lane, so a prefixed name and an already-present healthy
+  broker no longer false-fail. snapshot_migration_tree() captures the freshly-synced vendored migration
+  tree after sync_files; restore_migration_tree_after_revert() re-applies it (rsync --delete) onto a restored
+  tree so deployed migrations always match the build source (origin/dev), never silently losing a forward
+  migration. Adds tests/scripts/test_deploy_runtime_warmup_restore.py (8 shell-asserting regression tests).
+  Code-only; no .201 mutation. Child of OMN-12651 (Runtime Deployment & Topic/Consumer-Group Provisioning).
+is_seam_ticket: false
+interface_change: false
+interfaces_touched: []
+emergency_bypass:
+  enabled: false
+  justification: ""
+  follow_up_ticket_id: ""
+dod_evidence:
+  - id: "dod-infra-pr-2046"
+    description: >-
+      Per-code-PR binding receipt for omnibase_infra PR #2046 (jonah/omn-13364-deploy-runtime-warmup-restore,
+      base=dev). Edits scripts/deploy-runtime.sh: adds resolve_broker_container() (resolve broker by compose
+      service label, surviving a Docker name prefix), assert_broker_reachable() (rpk cluster health on
+      TCP/9092), guards the compose up --wait so a name-prefix collision is tolerated, and adds snapshot_migration_tree()
+      + restore_migration_tree_after_revert() so a backup-restore never regresses the vendored forward-migration
+      tree. Adds tests/scripts/test_deploy_runtime_warmup_restore.py (8 tests). Binds OMN-13364 to omnibase_infra
+      PR #2046 by pr_number and commit_sha.
+    source: "manual"
+    status: "verified"
+    checks:
+      - check_type: "command"
+        check_value: >-
+          grep -q '^status: PASS$' drift/dod_receipts/OMN-13364/dod-infra-pr-2046/command.yaml
+  - id: "dod-deploy-no-runtime-impact"
+    description: >-
+      Deploy-path DoD evidence for OMN-13364. The change is a correctness fix to the deploy-runtime.sh
+      shell script (broker-readiness probe + migration-tree preservation on restore). It adds no runtime
+      node, changes no contract topic, and alters no image build inputs. It performs no .201 mutation
+      — a separate live broker-recovery run is in flight on .201; this PR is code-only. The fix takes
+      effect on the next normal stability-test redeploy invocation of deploy-runtime.sh, gating no separate
+      redeploy here. deploy
+    source: "manual"
+    status: "verified"
+    checks:
+      - check_type: "command"
+        check_value: >-
+          grep -q '^status: PASS$' drift/dod_receipts/OMN-13364/dod-deploy-no-runtime-impact/command.yaml
+  - id: "dod-occ-pr-self"
+    description: >-
+      OCC self-binding receipt for the central evidence PR carrying the OMN-13364 contract, the omnibase_infra
+      code-PR binding receipt, and the deploy no-runtime-impact receipt. Binds the OCC PR itself by pr_number
+      so the OCC receipt-gate eligibility check can resolve a PASS receipt for the evidence PR.
+    source: "manual"
+    status: "verified"
+    checks:
+      - check_type: "command"
+        check_value: >-
+          grep -q '^status: PASS$' drift/dod_receipts/OMN-13364/dod-occ-pr-self/command.yaml

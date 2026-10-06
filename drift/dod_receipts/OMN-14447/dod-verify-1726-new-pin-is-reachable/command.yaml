@@ -1,0 +1,45 @@
+---
+schema_version: "1.0.0"
+ticket_id: "OMN-14447"
+evidence_item_id: "dod-verify-1726-new-pin-is-reachable"
+check_type: "command"
+check_value: >-
+  gh api "repos/OmniNode-ai/omnibase_core/compare/dev...d08bb2313a42ad108e00cd8546c799b75953b84d" --jq
+  .status | grep -qE '^(behind|identical)$'
+status: PASS
+run_timestamp: "2026-07-12T06:30:00Z"
+commit_sha: "0971a5a2981a9098abdaaa05a7392fa60e18d5d3"
+runner: "occ-queue-runner"
+verifier: "occ-queue-verifier"
+pr_number: 1726
+probe_command: >-
+  gh api "repos/OmniNode-ai/omnibase_core/compare/dev...d08bb2313a42ad108e00cd8546c799b75953b84d" --jq
+  '{status,ahead_by,behind_by}'   # then the IDENTICAL command against the OLD dangling pin af567d7cc9a45edfc0fd3a44860e7b2a4f97a4b7
+  as the RED control
+probe_stdout: |
+  # NEW pin d08bb231 vs omnibase_core dev — it IS an ancestor (reachable):
+  {"ahead_by":0,"behind_by":1,"status":"behind"}
+  # RED control — the OLD pin af567d7c, the one that broke the build:
+  {"status":"diverged"}
+  # the old commit object still EXISTS on GitHub (gh api .../commits/af567d7c returns the sha) —
+  # it is simply an ancestor of NOTHING, which is exactly why a normal clone/fetch cannot resolve it
+  # and why the OMN-12977 sibling-pin preflight could never pass.
+  # bound check_value exit codes, run verbatim:
+  #   dev...d08bb231 (new pin) -> exit 0   GREEN  (status=behind => reachable)
+  #   dev...af567d7c (old pin) -> exit 1   RED    (status=diverged => unreachable)
+exit_code: 0
+actual_output: >-
+  PASS: asserts the newly pinned omnibase-core commit is genuinely REACHABLE from omnibase_core dev, which
+  is the actual invariant OMN-14447 restores — not merely that a different string was written into the
+  lock. GitHub's compare API reports dev...d08bb231 as status "behind", meaning the pinned commit is an
+  ancestor of dev and therefore resolvable by any normal clone or fetch. RED DIRECTION PROVEN against
+  the strongest available control: the OLD pin itself. The identical command against af567d7cc9a45edfc0fd3a44860e7b2a4f97a4b7
+  returns status "diverged" and exits 1. That commit object still exists on GitHub, but it is an ancestor
+  of nothing — it was the HEAD of a feature branch GitHub deleted on merge — which is precisely why uv
+  could not fetch it and why omnimarket's workspace build was broken for everyone. So this check does
+  not merely notice that a SHA changed; it detects the exact defect class that broke the build, and it
+  would go RED again if anyone re-pinned to an unreachable commit. It observes the product (omnibase_core's
+  ref graph), not this receipt.
+branch: "jonah/omn-14447-occ-companion-evidence"
+contract_sha256: "sha256:1ae90f0332320ccca29cbf1a6df9030d6393ed96dc20352f958e1f1091c2a6bc"
+contract_entry_sha256: "sha256:9df80db25bae7481d0871f672f620d2ab21efa2e12a62e02e697468fc9d4d617"

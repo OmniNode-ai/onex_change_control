@@ -1,0 +1,92 @@
+---
+schema_version: "1.0.0"
+ticket_id: "OMN-15240"
+title: "Unmask delegation-CLI transport errors + preflight the CLI — receipt contract for already-merged,
+  live-proven fix (false-Backlog reconciliation)"
+summary: >-
+  OMN-15240 is a false-Backlog ticket, not unbuilt work, and its fix has already been proven live. The
+  defect (double stderr truncation hiding the real delegation-CLI failure behind "onex delegation CLI
+  exited 1", which cost 38/60 acceptance-seed skips and the entire 30/30 prominent corner on 2026-07-27)
+  was fixed on jonahgabriel/steel_onslaught `main` in PR #226, merge commit 9c3adf127cca92f119b6e41d326f3d196683655d,
+  merged 2026-07-27T14:03:06Z, while the Linear ticket held a single Backlog stateHistory entry throughout.
+  This contract is the receipt surface for the dod_verify path; it makes no status change. PART 1 (masking)
+  landed in steel: `LlmTransportError` now carries the exact argv, the exit code, and the COMPLETE unsliced
+  stderr as structured fields — the `[-2000:]` slice survives only in the human-readable message string
+  — and the 240-char truncation is confined to the console print alone. PART 2 (root cause) was found
+  and is NOT steel-side: a concurrent session's canonical `omnimarket` `git pull --ff-only` tripped OMN-14060's
+  OmnimarketDriftError guard inside the onex CLI about 81s before the failing corner burned its seeds.
+  The guard fired as designed; the real gap was that nothing auto-repaired the venv after a canonical-clone
+  pull, which was filed as OMN-15242 and is now Done. A `_preflight_delegation_cli()` guard was added
+  to gate the seed loop before it can burn seeds. Live proof: the 2026-07-27T19:38Z re-run showed full
+  untruncated stderr on every skip record, and the accepted OMN-15172 battery (30/30 prominent + 30/30
+  default, replay_validity 1 on 60/60 seats) ran clean — that runtime evidence is cited to the OMN-15172
+  receipt rather than re-probed here, because every check in this contract is deliberately hosted-runnable.
+  Every check below is pinned to the merge SHA and was executed GREEN at authoring time.
+is_seam_ticket: false
+interface_change: false
+interfaces_touched: []
+evidence_requirements:
+  - kind: "ci"
+    description: "steel PR #226 is MERGED on jonahgabriel/steel_onslaught main at merge commit 9c3adf12"
+    command: "gh pr view 226 --repo jonahgabriel/steel_onslaught --json state,mergeCommit"
+emergency_bypass:
+  enabled: false
+  justification: ""
+  follow_up_ticket_id: ""
+dod_evidence:
+  - id: "dod-omn-15240-pr-226-merged"
+    description: >-
+      steel PR #226 ("OMN-15240: unmask delegation-CLI transport errors + preflight the CLI") is MERGED
+      with merge commit exactly 9c3adf127cca92f119b6e41d326f3d196683655d. State and SHA asserted together
+      so closed-unmerged, still-open, and re-landed-elsewhere all yield count 0.
+    source: "manual"
+    status: "pending"
+    checks:
+      - check_type: "command"
+        check_value: |-
+          gh pr view 226 --repo jonahgabriel/steel_onslaught --json state,mergeCommit --jq '.state + " " + (.mergeCommit.oid // "none")' | grep -cFx 'MERGED 9c3adf127cca92f119b6e41d326f3d196683655d' | grep -qx 1
+  - id: "dod-omn-15240-full-stderr-and-exit-code"
+    description: >-
+      The masking half of the fix, asserted at the exact seam where the truncation used to happen: at
+      the merge SHA `src/steel_onslaught/llm/client_delegation.py` raises `LlmTransportError` with the
+      structured field `stderr=completed.stderr,` — the COMPLETE captured stderr, with no slice — alongside
+      `exit_code=completed.returncode,`. The pre-fix shape passed only a `[-2000:]`-sliced string, so
+      a regression back to `stderr=completed.stderr[-2000:]` returns count 0 on the first leg and goes
+      RED. This is the precise discriminator between "the message reads nicely" and "the persisted record
+      actually retains the diagnosis".
+    source: "manual"
+    status: "pending"
+    checks:
+      - check_type: "command"
+        check_value: |-
+          gh api 'repos/jonahgabriel/steel_onslaught/contents/src/steel_onslaught/llm/client_delegation.py?ref=9c3adf127cca92f119b6e41d326f3d196683655d' --jq '.content' | base64 -d | grep -cF 'stderr=completed.stderr,' | grep -qx 1
+      - check_type: "command"
+        check_value: |-
+          gh api 'repos/jonahgabriel/steel_onslaught/contents/src/steel_onslaught/llm/client_delegation.py?ref=9c3adf127cca92f119b6e41d326f3d196683655d' --jq '.content' | base64 -d | grep -cF 'exit_code=completed.returncode,' | grep -qx 1
+  - id: "dod-omn-15240-console-only-truncation"
+    description: >-
+      The second truncation is confined to the console print and no longer touches the persisted record:
+      at the merge SHA `scripts/run_display_salience_battery.py` performs the slice into a console-only
+      local (`console_detail = full_detail[:240]`), leaving `full_detail` intact for the skip record.
+      Asserting the assignment to the console-scoped name — rather than merely the absence of `[:240]`
+      — is what proves the truncation was RELOCATED rather than deleted, which is the honest description
+      of the fix.
+    source: "manual"
+    status: "pending"
+    checks:
+      - check_type: "command"
+        check_value: |-
+          gh api 'repos/jonahgabriel/steel_onslaught/contents/scripts/run_display_salience_battery.py?ref=9c3adf127cca92f119b6e41d326f3d196683655d' --jq '.content' | base64 -d | grep -cF 'console_detail = full_detail[:240]' | grep -qx 1
+  - id: "dod-omn-15240-preflight-guard"
+    description: >-
+      The seed-burning failure mode is now gated ahead of the loop: at the merge SHA `scripts/run_display_salience_battery.py`
+      defines `def _preflight_delegation_cli(overlay: ModelSOApplicationOverlay) -> None:` and its definition
+      line is present exactly once. This is the structural half of the OMN-15242 lesson — a broken delegation
+      CLI must abort before 60 pre-registered seeds are consumed, not after — and a removed or renamed
+      guard returns count 0.
+    source: "manual"
+    status: "pending"
+    checks:
+      - check_type: "command"
+        check_value: |-
+          gh api 'repos/jonahgabriel/steel_onslaught/contents/scripts/run_display_salience_battery.py?ref=9c3adf127cca92f119b6e41d326f3d196683655d' --jq '.content' | base64 -d | grep -cF 'def _preflight_delegation_cli(overlay: ModelSOApplicationOverlay) -> None:' | grep -qx 1

@@ -1,0 +1,116 @@
+---
+schema_version: "1.0.0"
+ticket_id: "OMN-16615"
+title: "Wave 4: onex_change_control documentation scrub — knowledge base is the single home"
+summary: >
+  Removed all 62 markdown documents outside the operator-ruled allowed set from onex_change_control, migrating
+  12 of them to the knowledge base (9 public, 3 internal) and deleting the remaining 50 as superseded
+  or already-duplicated. CONTRIBUTING.md moved to .github/CONTRIBUTING.md, where GitHub also reads it
+  and where the allowed set covers it. The five markdown files that remain (README.md, CLAUDE.md, CHANGELOG.md,
+  SECURITY.md, .github/CONTRIBUTING.md) are exactly the validator's default allowed set. Wave 2 (OMN-16311)
+  thinned five of these documents to pointer stubs; the 2026-09-01 operator ruling states a pointer stub
+  is not a removal, so this wave deletes the stubs outright and the root README's Documentation section
+  carries the signposting role for the whole repo. Every live-code citation of a deleted document was
+  repointed at its knowledge-base URL or dropped; the five tests under tests/runbooks/ that read deleted
+  runbooks from disk were deleted with them, and the now-empty package marker removed. scripts/generate_doctrine_coverage.py
+  no longer writes docs/standards/doctrine_coverage.md and prints the matrix to stdout instead. .kb-doc-gate.yaml
+  pins this repo to mode strict and .github/workflows/kb-doc-gate.yml's input is set to match, so the
+  gate now scans the whole tree rather than only the PR diff. Historical DoD receipts and contracts under
+  contracts/, drift/ and evidence/ that quote deleted document paths were deliberately NOT rewritten:
+  each receipt binds to its contract entry by contract_entry_sha256, so editing a historical entry would
+  invalidate every receipt hash-bound to it and falsify a closed ticket's evidence record. Those probes
+  are historical assertions about a past tree state, not live checks; drift/occ_rerun_state.yaml carries
+  an empty reruns list, so none of them is re-executed by CI.
+is_seam_ticket: false
+interface_change: false
+interfaces_touched: []
+evidence_requirements:
+  - kind: "docs"
+    description: "Both knowledge-base additions merged before this removal PR (two-PR migration pattern)."
+    command: "gh pr view 67 --repo OmniNode-ai/knowledge-base --json state,mergedAt"
+  - kind: "ci"
+    description: "kb-doc-gate passes in strict mode on this branch."
+    command: "python3 scripts/kb_doc_gate.py --mode strict"
+emergency_bypass:
+  enabled: false
+  justification: ""
+  follow_up_ticket_id: ""
+dod_evidence:
+  - id: "dod-kb-public-migration-merged"
+    description: "knowledge-base PR #67 (public half, 9 migrated documents) is MERGED, so no README or
+      CLAUDE.md link in this repo points at a document that does not yet exist."
+    source: "manual"
+    status: "verified"
+    checks:
+      - check_type: "command"
+        check_value: >-
+          gh pr view 67 --repo OmniNode-ai/knowledge-base --json state --jq .state | grep -qx MERGED
+  - id: "dod-kb-internal-migration-merged"
+    description: "knowledge-base-internal PR #80 (internal half, 3 migrated documents) is MERGED."
+    source: "manual"
+    status: "verified"
+    checks:
+      - check_type: "command"
+        check_value: >-
+          gh pr view 80 --repo OmniNode-ai/knowledge-base-internal --json state --jq .state | grep -qx
+          MERGED
+  - id: "dod-occ-residual-markdown-is-only-the-allowed-set"
+    description: "Zero tracked markdown outside this repo's kb-doc-gate allowed set remains. The set is
+      the validator default (root README/CLAUDE/CHANGELOG/SECURITY plus .github/**) plus the one repo-specific
+      interlock entry drift/dod_receipts/**, which exists because the required OCC Append-Only Gate forbids
+      deleting or renaming a merged receipt artifact. Falsifiable: regrowing any doc under docs/, standards/,
+      evidence/ or anywhere else fails this count."
+    source: "manual"
+    status: "verified"
+    checks:
+      - check_type: "command"
+        check_value: >-
+          git ls-files '*.md' | awk '!/^(README|CLAUDE|CHANGELOG|SECURITY)\.md$|^\.github\/|^drift\/dod_receipts\//
+          { bad=1; print } END { exit bad }' && printf 'PASS\n'
+  - id: "dod-occ-readme-points-at-the-knowledge-base"
+    description: "The root README carries a Documentation section naming both knowledge-base repos as
+      the single home for this repo's docs — the signposting role the deleted pointer stubs used to hold
+      — AND the destination it links to actually exists on knowledge-base main. The second leg reads a
+      path outside this PR's own diff on purpose: a check that only greps text the same change wrote proves
+      the author wrote it, not that the pointer resolves."
+    source: "manual"
+    status: "verified"
+    checks:
+      - check_type: "command"
+        check_value: >-
+          grep -qF 'https://github.com/OmniNode-ai/knowledge-base-internal' README.md && grep -qF 'https://github.com/OmniNode-ai/knowledge-base)'
+          README.md && grep -qx '## Documentation' README.md && gh api repos/OmniNode-ai/knowledge-base/contents/reference/onex-change-control-decision-log.md?ref=main
+          --jq .name | grep -qx onex-change-control-decision-log.md
+  - id: "dod-occ-kb-doc-gate-flipped-to-strict"
+    description: "The gate is in strict mode on both surfaces: the repo-root .kb-doc-gate.yaml (which
+      always wins) and the thin caller's mode input (set to match so the two never read as disagreeing),
+      AND the SHA the caller pins in omniclaude really carries the validator the gate resolves. The third
+      leg reads a path outside this PR's own diff on purpose — a stale or wrong pin makes the whole gate
+      exit 2 'THE GATE DID NOT RUN', which no amount of grepping this repo would catch."
+    source: "manual"
+    status: "verified"
+    checks:
+      - check_type: "command"
+        check_value: >-
+          grep -qx 'mode: strict' .kb-doc-gate.yaml && grep -qE '^ +mode: strict$' .github/workflows/kb-doc-gate.yml
+          && gh api repos/OmniNode-ai/omniclaude/contents/scripts/kb_doc_gate.py?ref=a78b103e55f1ad595572ecde6ea818c2c585f025
+          --jq .name | grep -qx kb_doc_gate.py
+  - id: "dod-occ-no-live-code-cites-a-deleted-doc"
+    description: "No file under src/, scripts/ or .github/ still cites a document this wave deleted. Scoped
+      to live code deliberately: contracts/, drift/ and evidence/ are immutable historical receipts whose
+      probes describe a past tree state, and tests/ carries synthetic path literals that are never opened
+      from disk."
+    source: "manual"
+    status: "verified"
+    checks:
+      - check_type: "command"
+        check_value: >-
+          ! grep -rInE 'docs/(CHECK_TYPES|RECEIPT_LOCATIONS|TEMPLATE_GUIDE|VERSIONING_POLICY|EVAL_FRAMEWORK|INDEX|README)\.md|docs/standards/|docs/policy/|docs/governance/|docs/runbooks/|docs/design/'
+          src scripts .github
+  - id: "occ-self-bind-pr-8054"
+    description: "Binds OMN-16615 to this OCC doc-scrub PR #8054 (self-bind)."
+    source: "generated"
+    status: "verified"
+    checks:
+      - check_type: "command"
+        check_value: "gh pr view 8054 --repo OmniNode-ai/onex_change_control --json number,state"

@@ -1,0 +1,526 @@
+---
+schema_version: "1.0.0"
+ticket_id: "OMN-13912"
+title: "runner monitor alert cron durability"
+summary: >-
+  The self-hosted runner-fleet alert monitor was installed via a cron line that did not source .monitor-env,
+  so under cron the monitor could not resolve its host/token config and silently stopped alerting on offline
+  listeners. omnibase_infra PR #2192 installs the monitor cron through bash so .monitor-env loads, captures
+  monitor setup failures in /tmp/runner-monitor.log, uses the Tailscale MagicDNS hostname for the fleet
+  deploy/monitor host, keeps offline listeners alert-only (no auto-remediation), survives listener self-update
+  exits, and adds unit coverage so rebuild deploys do not regress to the broken cron line. Config + scripts
+  + tests only; no runtime contract or Dockerfile.runtime change (deploy-gate not applicable). Also rebases
+  the branch onto dev (originally cut from main) and COPYs omni-curl instead of the BuildKit-only heredoc
+  so runner-image-build-smoke passes under the legacy builder (shared root cause with OMN-13915).
+is_seam_ticket: false
+interface_change: false
+interfaces_touched: []
+emergency_bypass:
+  enabled: false
+  justification: ""
+  follow_up_ticket_id: ""
+dod_evidence:
+  - id: "dod-omnibase_infra-pr-2192"
+    description: >-
+      Consuming-PR binding: omnibase_infra PR #2192 makes the runner monitor alert cron durable (bash-sourced
+      .monitor-env, MagicDNS host, alert-only offline handling, self-update survival) with unit coverage,
+      and COPYs omni-curl to unblock runner-image-build-smoke under the legacy builder. Config + scripts
+      + tests only.
+    source: "manual"
+    checks:
+      - check_type: "command"
+        check_value: "grep -q '^status: PASS$' drift/dod_receipts/OMN-13912/dod-omnibase_infra-pr-2192/command.yaml"
+  - id: "dod-occ-self"
+    description: >-
+      Self-binding OCC receipt: onex_change_control PR carrying the OMN-13912 contract and receipt consumed
+      by omnibase_infra PR #2192.
+    source: "generated"
+    checks:
+      - check_type: "command"
+        check_value: "grep -q '^status: PASS$' drift/dod_receipts/OMN-13912/dod-occ-self/command.yaml"
+  - id: "dod-omnibase_infra-pr-2958"
+    description: >-
+      The ticket's ORIGINAL DoD, discharged. omnibase_infra PR #2958 adds the post-publish version-bump
+      step the ticket was opened for: scripts/ci/post_release_dev_bump.py (pure decide() + table-scoped
+      write) plus the release.yml job post-release-dev-bump that applies it, re-locks uv.lock and opens
+      an auto-merging PR against dev. Behaviour proof is a real pytest run over 35 tests: 21 unit tests
+      on the decision (armed dev==published => bump, behind dev<published => bump past published, already-ahead
+      => idempotent noop, rc refused, write is table-scoped), 10 CI tests pinning the workflow wiring
+      (job exists, needs release, gated on needs.release.outputs.version NOT on job success, never fires
+      for rc, lands via a PR against dev never a direct push, PR title carries an OMN ref), and 4 incident-replay
+      tests driving the guard over the verbatim pyproject.toml of 4529c3486 -- the commit v0.38.11 tags,
+      declaring version = "0.38.11" -- which the guard must call ARMED.
+    source: "manual"
+    checks:
+      - check_type: "command"
+        check_value: "grep -q '^status: PASS$' drift/dod_receipts/OMN-13912/dod-omnibase_infra-pr-2958/command.yaml"
+  - id: "dod-omnibase_infra-pr-2958-ci"
+    description: >-
+      Product diff scope for PR #2958 on OmniNode-ai/omnibase_infra (OMN-14425).
+    source: "generated"
+    checks:
+      - check_type: "command"
+        check_value: "gh pr view 2958 --repo OmniNode-ai/omnibase_infra --json files"
+  - id: "occ-self-bind-pr-7382"
+    description: >-
+      OCC companion PR #7382 -- self-bind for the OMN-13912 post-release-dev-bump evidence (OMN-14650).
+    source: "generated"
+    checks:
+      - check_type: "command"
+        check_value: "gh pr view 7382 --repo OmniNode-ai/onex_change_control --json number,state"
+  - id: "dod-omnibase_infra-pr-2958-wiring"
+    description: >-
+      Hosted, out-of-diff, falsifiable: the release.yml job that performs the post-release disarm is actually
+      present on omnibase_infra at the reviewed sha, and the bump script it calls exists there too. Fails
+      if either is absent or renamed.
+    source: "manual"
+    checks:
+      - check_type: "command"
+        check_value: |-
+          gh api repos/OmniNode-ai/omnibase_infra/contents/.github/workflows/release.yml?ref=50ab8952d9bd5fe151a09a542142311ee1e168ae --jq '.content' | base64 -d | grep -c 'post-release-dev-bump'
+      - check_type: "command"
+        check_value: |-
+          gh api repos/OmniNode-ai/omnibase_infra/contents/scripts/ci/post_release_dev_bump.py?ref=50ab8952d9bd5fe151a09a542142311ee1e168ae --jq '.content' | base64 -d | grep -c 'def decide'
+  - id: "occ-self-bind-pr-7687"
+    description: "Binds OMN-13912 to OCC companion PR #7687 (self-bind)."
+    source: "generated"
+    checks:
+      - check_type: "command"
+        check_value: "gh pr view 7687 --repo OmniNode-ai/onex_change_control --json number,state"
+  - id: "occ-self-bind-pr-7708"
+    description: "Binds OMN-13912 to OCC companion PR #7708 (self-bind)."
+    source: "generated"
+    checks:
+      - check_type: "command"
+        check_value: "gh pr view 7708 --repo OmniNode-ai/onex_change_control --json number,state"
+  - id: "occ-self-bind-pr-7766"
+    description: "Binds OMN-13912 to OCC companion PR #7766 (self-bind)."
+    source: "generated"
+    checks:
+      - check_type: "command"
+        check_value: "gh pr view 7766 --repo OmniNode-ai/onex_change_control --json number,state"
+  - id: "occ-self-bind-pr-7975"
+    description: "Binds OMN-13912 to OCC companion PR #7975 (self-bind)."
+    source: "generated"
+    checks:
+      - check_type: "command"
+        check_value: "gh pr view 7975 --repo OmniNode-ai/onex_change_control --json number,state"
+  - id: "occ-self-bind-pr-8333"
+    description: "Binds OMN-13912 to OCC companion PR #8333 (self-bind)."
+    source: "generated"
+    checks:
+      - check_type: "command"
+        check_value: "gh pr view 8333 --repo OmniNode-ai/onex_change_control --json number,state"
+  - id: "occ-self-bind-pr-8397"
+    description: "Binds OMN-13912 to OCC companion PR #8397 (self-bind)."
+    source: "generated"
+    checks:
+      - check_type: "command"
+        check_value: "gh pr view 8397 --repo OmniNode-ai/onex_change_control --json number,state"
+  - id: "occ-self-bind-pr-8620"
+    description: "Binds OMN-13912 to OCC companion PR #8620 (self-bind)."
+    source: "generated"
+    checks:
+      - check_type: "command"
+        check_value: "gh pr view 8620 --repo OmniNode-ai/onex_change_control --json number,state"
+  - id: "dod-OmniNode-ai-omnibase_infra-pr-3426"
+    description: "PR #3426 on OmniNode-ai/omnibase_infra — Evidence-Source autobind."
+    source: "generated"
+    checks:
+      - check_type: "command"
+        check_value: "gh pr view 3426 --repo OmniNode-ai/omnibase_infra --json number,state"
+      - check_type: "command"
+        check_value: |-
+          gh api repos/OmniNode-ai/omnibase_infra/pulls/3426/files --paginate --jq '.[].filename' | grep -cFx 'pyproject.toml'
+  - id: "occ-self-bind-pr-9037"
+    description: "Binds OMN-13912 to OCC companion PR #9037 (self-bind)."
+    source: "generated"
+    checks:
+      - check_type: "command"
+        check_value: "gh pr view 9037 --repo OmniNode-ai/onex_change_control --json number,state"
+  - id: "dod-OmniNode-ai-omnibase_infra-pr-3449"
+    description: "PR #3449 on OmniNode-ai/omnibase_infra — Evidence-Source autobind."
+    source: "generated"
+    checks:
+      - check_type: "command"
+        check_value: "gh pr view 3449 --repo OmniNode-ai/omnibase_infra --json number,state"
+      - check_type: "command"
+        check_value: |-
+          gh api repos/OmniNode-ai/omnibase_infra/pulls/3449/files --paginate --jq '.[].filename' | grep -cFx 'pyproject.toml'
+  - id: "occ-self-bind-pr-9187"
+    description: "Binds OMN-13912 to OCC companion PR #9187 (self-bind)."
+    source: "generated"
+    checks:
+      - check_type: "command"
+        check_value: "gh pr view 9187 --repo OmniNode-ai/onex_change_control --json number,state"
+  - id: "dod-OmniNode-ai-omnibase_infra-pr-3518"
+    description: "PR #3518 on OmniNode-ai/omnibase_infra — Evidence-Source autobind."
+    source: "generated"
+    checks:
+      - check_type: "command"
+        check_value: "gh pr view 3518 --repo OmniNode-ai/omnibase_infra --json number,state"
+      - check_type: "command"
+        check_value: |-
+          gh api repos/OmniNode-ai/omnibase_infra/pulls/3518/files --paginate --jq '.[].filename' | grep -cFx 'pyproject.toml'
+  - id: "occ-self-bind-pr-9467"
+    description: "Binds OMN-13912 to OCC companion PR #9467 (self-bind)."
+    source: "generated"
+    checks:
+      - check_type: "command"
+        check_value: "gh pr view 9467 --repo OmniNode-ai/onex_change_control --json number,state"
+  - id: "dod-OmniNode-ai-omnibase_infra-pr-3535"
+    description: "PR #3535 on OmniNode-ai/omnibase_infra — Evidence-Source autobind."
+    source: "generated"
+    checks:
+      - check_type: "command"
+        check_value: "gh pr view 3535 --repo OmniNode-ai/omnibase_infra --json number,state"
+      - check_type: "command"
+        check_value: |-
+          gh api repos/OmniNode-ai/omnibase_infra/pulls/3535/files --paginate --jq '.[].filename' | grep -cFx 'pyproject.toml'
+  - id: "occ-self-bind-pr-9529"
+    description: "Binds OMN-13912 to OCC companion PR #9529 (self-bind)."
+    source: "generated"
+    checks:
+      - check_type: "command"
+        check_value: "gh pr view 9529 --repo OmniNode-ai/onex_change_control --json number,state"
+  - id: "dod-OmniNode-ai-omnibase_infra-pr-3541"
+    description: "PR #3541 on OmniNode-ai/omnibase_infra — Evidence-Source autobind."
+    source: "generated"
+    checks:
+      - check_type: "command"
+        check_value: "gh pr view 3541 --repo OmniNode-ai/omnibase_infra --json number,state"
+      - check_type: "command"
+        check_value: |-
+          gh api repos/OmniNode-ai/omnibase_infra/pulls/3541/files --paginate --jq '.[].filename' | grep -cFx 'pyproject.toml'
+  - id: "occ-self-bind-pr-9548"
+    description: "Binds OMN-13912 to OCC companion PR #9548 (self-bind)."
+    source: "generated"
+    checks:
+      - check_type: "command"
+        check_value: "gh pr view 9548 --repo OmniNode-ai/onex_change_control --json number,state"
+  - id: "dod-OmniNode-ai-omnibase_infra-pr-3558"
+    description: "PR #3558 on OmniNode-ai/omnibase_infra — Evidence-Source autobind."
+    source: "generated"
+    checks:
+      - check_type: "command"
+        check_value: "gh pr view 3558 --repo OmniNode-ai/omnibase_infra --json number,state"
+      - check_type: "command"
+        check_value: |-
+          gh api repos/OmniNode-ai/omnibase_infra/pulls/3558/files --paginate --jq '.[].filename' | grep -cFx 'pyproject.toml'
+  - id: "occ-self-bind-pr-9597"
+    description: "Binds OMN-13912 to OCC companion PR #9597 (self-bind)."
+    source: "generated"
+    checks:
+      - check_type: "command"
+        check_value: "gh pr view 9597 --repo OmniNode-ai/onex_change_control --json number,state"
+  - id: "dod-OmniNode-ai-omnibase_infra-pr-3677"
+    description: "PR #3677 on OmniNode-ai/omnibase_infra — Evidence-Source autobind."
+    source: "generated"
+    checks:
+      - check_type: "command"
+        check_value: "gh pr view 3677 --repo OmniNode-ai/omnibase_infra --json number,state"
+      - check_type: "command"
+        check_value: |-
+          gh api repos/OmniNode-ai/omnibase_infra/pulls/3677/files --paginate --jq '.[].filename' | grep -cFx 'pyproject.toml'
+  - id: "occ-self-bind-pr-9963"
+    description: "Binds OMN-13912 to OCC companion PR #9963 (self-bind)."
+    source: "generated"
+    checks:
+      - check_type: "command"
+        check_value: "gh pr view 9963 --repo OmniNode-ai/onex_change_control --json number,state"
+  - id: "dod-OmniNode-ai-omnibase_infra-pr-3693"
+    description: "PR #3693 on OmniNode-ai/omnibase_infra — Evidence-Source autobind."
+    source: "generated"
+    checks:
+      - check_type: "command"
+        check_value: "gh pr view 3693 --repo OmniNode-ai/omnibase_infra --json number,state"
+      - check_type: "command"
+        check_value: |-
+          gh api repos/OmniNode-ai/omnibase_infra/pulls/3693/files --paginate --jq '.[].filename' | grep -cFx 'pyproject.toml'
+  - id: "occ-self-bind-pr-10008"
+    description: "Binds OMN-13912 to OCC companion PR #10008 (self-bind)."
+    source: "generated"
+    checks:
+      - check_type: "command"
+        check_value: "gh pr view 10008 --repo OmniNode-ai/onex_change_control --json number,state"
+  - id: "dod-OmniNode-ai-omnibase_infra-pr-3732"
+    description: "PR #3732 on OmniNode-ai/omnibase_infra — Evidence-Source autobind."
+    source: "generated"
+    checks:
+      - check_type: "command"
+        check_value: "gh pr view 3732 --repo OmniNode-ai/omnibase_infra --json number,state"
+      - check_type: "command"
+        check_value: |-
+          gh api repos/OmniNode-ai/omnibase_infra/pulls/3732/files --paginate --jq '.[].filename' | grep -cFx 'pyproject.toml'
+  - id: "occ-self-bind-pr-10117"
+    description: "Binds OMN-13912 to OCC companion PR #10117 (self-bind)."
+    source: "generated"
+    checks:
+      - check_type: "command"
+        check_value: "gh pr view 10117 --repo OmniNode-ai/onex_change_control --json number,state"
+  - id: "dod-OmniNode-ai-omnibase_infra-pr-3753"
+    description: "PR #3753 on OmniNode-ai/omnibase_infra — Evidence-Source autobind."
+    source: "generated"
+    checks:
+      - check_type: "command"
+        check_value: "gh pr view 3753 --repo OmniNode-ai/omnibase_infra --json number,state"
+      - check_type: "command"
+        check_value: |-
+          gh api repos/OmniNode-ai/omnibase_infra/pulls/3753/files --paginate --jq '.[].filename' | grep -cFx 'pyproject.toml'
+  - id: "occ-self-bind-pr-10190"
+    description: "Binds OMN-13912 to OCC companion PR #10190 (self-bind)."
+    source: "generated"
+    checks:
+      - check_type: "command"
+        check_value: "gh pr view 10190 --repo OmniNode-ai/onex_change_control --json number,state"
+  - id: "dod-OmniNode-ai-omnibase_infra-pr-3854"
+    description: "PR #3854 on OmniNode-ai/omnibase_infra — Evidence-Source autobind."
+    source: "generated"
+    checks:
+      - check_type: "command"
+        check_value: "gh pr view 3854 --repo OmniNode-ai/omnibase_infra --json number,state"
+      - check_type: "command"
+        check_value: |-
+          gh api repos/OmniNode-ai/omnibase_infra/pulls/3854/files --paginate --jq '.[].filename' | grep -cFx 'pyproject.toml'
+  - id: "occ-self-bind-pr-10479"
+    description: "Binds OMN-13912 to OCC companion PR #10479 (self-bind)."
+    source: "generated"
+    checks:
+      - check_type: "command"
+        check_value: "gh pr view 10479 --repo OmniNode-ai/onex_change_control --json number,state"
+  - id: "dod-OmniNode-ai-omnibase_infra-pr-3871"
+    description: "PR #3871 on OmniNode-ai/omnibase_infra — Evidence-Source autobind."
+    source: "generated"
+    checks:
+      - check_type: "command"
+        check_value: "gh pr view 3871 --repo OmniNode-ai/omnibase_infra --json number,state"
+      - check_type: "command"
+        check_value: |-
+          gh api repos/OmniNode-ai/omnibase_infra/pulls/3871/files --paginate --jq '.[].filename' | grep -cFx 'pyproject.toml'
+  - id: "occ-self-bind-pr-10513"
+    description: "Binds OMN-13912 to OCC companion PR #10513 (self-bind)."
+    source: "generated"
+    checks:
+      - check_type: "command"
+        check_value: "gh pr view 10513 --repo OmniNode-ai/onex_change_control --json number,state"
+  - id: "dod-OmniNode-ai-omnibase_infra-pr-3887"
+    description: "PR #3887 on OmniNode-ai/omnibase_infra — Evidence-Source autobind."
+    source: "generated"
+    checks:
+      - check_type: "command"
+        check_value: "gh pr view 3887 --repo OmniNode-ai/omnibase_infra --json number,state"
+      - check_type: "command"
+        check_value: |-
+          gh api repos/OmniNode-ai/omnibase_infra/pulls/3887/files --paginate --jq '.[].filename' | grep -cFx 'pyproject.toml'
+  - id: "occ-self-bind-pr-10588"
+    description: "Binds OMN-13912 to OCC companion PR #10588 (self-bind)."
+    source: "generated"
+    checks:
+      - check_type: "command"
+        check_value: "gh pr view 10588 --repo OmniNode-ai/onex_change_control --json number,state"
+  - id: "dod-OmniNode-ai-omnibase_infra-pr-3942"
+    description: "PR #3942 on OmniNode-ai/omnibase_infra — Evidence-Source autobind."
+    source: "generated"
+    checks:
+      - check_type: "command"
+        check_value: "gh pr view 3942 --repo OmniNode-ai/omnibase_infra --json number,state"
+      - check_type: "command"
+        check_value: |-
+          gh api repos/OmniNode-ai/omnibase_infra/pulls/3942/files --paginate --jq '.[].filename' | grep -cFx 'pyproject.toml'
+  - id: "occ-self-bind-pr-10735"
+    description: "Binds OMN-13912 to OCC companion PR #10735 (self-bind)."
+    source: "generated"
+    checks:
+      - check_type: "command"
+        check_value: "gh pr view 10735 --repo OmniNode-ai/onex_change_control --json number,state"
+  - id: "dod-OmniNode-ai-omnibase_infra-pr-3995"
+    description: "PR #3995 on OmniNode-ai/omnibase_infra — Evidence-Source autobind."
+    source: "generated"
+    checks:
+      - check_type: "command"
+        check_value: "gh pr view 3995 --repo OmniNode-ai/omnibase_infra --json number,state"
+      - check_type: "command"
+        check_value: |-
+          gh api repos/OmniNode-ai/omnibase_infra/pulls/3995/files --paginate --jq '.[].filename' | grep -cFx 'pyproject.toml'
+  - id: "occ-self-bind-pr-10903"
+    description: "Binds OMN-13912 to OCC companion PR #10903 (self-bind)."
+    source: "generated"
+    checks:
+      - check_type: "command"
+        check_value: "gh pr view 10903 --repo OmniNode-ai/onex_change_control --json number,state"
+  - id: "dod-OmniNode-ai-omnibase_infra-pr-4084"
+    description: "PR #4084 on OmniNode-ai/omnibase_infra — Evidence-Source autobind."
+    source: "generated"
+    checks:
+      - check_type: "command"
+        check_value: "gh pr view 4084 --repo OmniNode-ai/omnibase_infra --json number,state"
+      - check_type: "command"
+        check_value: |-
+          gh api repos/OmniNode-ai/omnibase_infra/pulls/4084/files --paginate --jq '.[].filename' | grep -cFx 'pyproject.toml'
+  - id: "occ-self-bind-pr-11147"
+    description: "Binds OMN-13912 to OCC companion PR #11147 (self-bind)."
+    source: "generated"
+    checks:
+      - check_type: "command"
+        check_value: "gh pr view 11147 --repo OmniNode-ai/onex_change_control --json number,state"
+  - id: "dod-OmniNode-ai-omnibase_infra-pr-4146"
+    description: "PR #4146 on OmniNode-ai/omnibase_infra — Evidence-Source autobind."
+    source: "generated"
+    checks:
+      - check_type: "command"
+        check_value: "gh pr view 4146 --repo OmniNode-ai/omnibase_infra --json number,state"
+      - check_type: "command"
+        check_value: |-
+          gh api repos/OmniNode-ai/omnibase_infra/pulls/4146/files --paginate --jq '.[].filename' | grep -cFx 'pyproject.toml'
+  - id: "occ-self-bind-pr-11353"
+    description: "Binds OMN-13912 to OCC companion PR #11353 (self-bind)."
+    source: "generated"
+    checks:
+      - check_type: "command"
+        check_value: "gh pr view 11353 --repo OmniNode-ai/onex_change_control --json number,state"
+  - id: "dod-OmniNode-ai-omnibase_infra-pr-4151"
+    description: "PR #4151 on OmniNode-ai/omnibase_infra — Evidence-Source autobind."
+    source: "generated"
+    checks:
+      - check_type: "command"
+        check_value: "gh pr view 4151 --repo OmniNode-ai/omnibase_infra --json number,state"
+      - check_type: "command"
+        check_value: |-
+          gh api repos/OmniNode-ai/omnibase_infra/pulls/4151/files --paginate --jq '.[].filename' | grep -cFx 'docker/runners/runner-image.lock.json'
+  - id: "occ-self-bind-pr-11382"
+    description: "Binds OMN-13912 to OCC companion PR #11382 (self-bind)."
+    source: "generated"
+    checks:
+      - check_type: "command"
+        check_value: "gh pr view 11382 --repo OmniNode-ai/onex_change_control --json number,state"
+  - id: "dod-OmniNode-ai-omnibase_infra-pr-4213"
+    description: "PR #4213 on OmniNode-ai/omnibase_infra — Evidence-Source autobind."
+    source: "generated"
+    checks:
+      - check_type: "command"
+        check_value: "gh pr view 4213 --repo OmniNode-ai/omnibase_infra --json number,state"
+      - check_type: "command"
+        check_value: |-
+          gh api repos/OmniNode-ai/omnibase_infra/pulls/4213/files --paginate --jq '.[].filename' | grep -cFx 'pyproject.toml'
+  - id: "occ-self-bind-pr-11656"
+    description: "Binds OMN-13912 to OCC companion PR #11656 (self-bind)."
+    source: "generated"
+    checks:
+      - check_type: "command"
+        check_value: "gh pr view 11656 --repo OmniNode-ai/onex_change_control --json number,state"
+  - id: "dod-OmniNode-ai-omnibase_infra-pr-4340"
+    description: |-
+      PR #4340 on OmniNode-ai/omnibase_infra -- hand-authored evidence (OMN-15247); occ-autobind
+      declined with skip:NO_RED_DERIVABLE_CHECK because the post-release dev version bump changes
+      only pyproject.toml, uv.lock and docker/runners/runner-image.lock.json, none of which a candidate
+      grammar reads. The PR is the OMN-13912 disarm step after the v0.38.60 release: it moves
+      [project].version to 0.38.61 so the release-identity gate stops arming against dev PRs that
+      touch src, and regenerates the runner image lock that hashes uv.lock. Content-bound at head
+      05c760ec334d2026d053585261d444f97b34d223 (grep count 1) and RED at merge base
+      0cda245be69774a9315131be8623164236e0a9b3 (grep count 0, exit 1).
+    source: "generated"
+    checks:
+      - check_type: "command"
+        check_value: |-
+          gh api 'repos/OmniNode-ai/omnibase_infra/contents/pyproject.toml?ref=05c760ec334d2026d053585261d444f97b34d223' --jq '.content' | base64 -d | grep -c '^version = "0.38.61"$'
+  - id: "dod-OmniNode-ai-omnibase_infra-pr-4340-ci"
+    description: "PR #4340 on OmniNode-ai/omnibase_infra -- product diff scope check (OMN-14425)."
+    source: "generated"
+    checks:
+      - check_type: "command"
+        check_value: "gh pr view 4340 --repo OmniNode-ai/omnibase_infra --json files"
+  - id: "dod-OmniNode-ai-omnibase_infra-pr-4412"
+    description: |-
+      PR #4412 on OmniNode-ai/omnibase_infra -- hand-authored evidence (OMN-15247); the post-release
+      dev version bump changes only pyproject.toml and uv.lock, none of which an occ-autobind candidate
+      grammar reads. The PR is the OMN-13912 disarm step after the v0.38.61 release: it moves
+      [project].version to 0.38.62 so the release-identity gate stops arming against dev PRs that
+      touch src. Content-bound at head 7961ed7cb09e928423054a9c87ddae9f5ffb03d3 (grep count 1) and
+      RED at merge base e2aa4548874020a989c807b33bf55c032e897485 (grep count 0, exit 1).
+    source: "generated"
+    checks:
+      - check_type: "command"
+        check_value: |-
+          gh api 'repos/OmniNode-ai/omnibase_infra/contents/pyproject.toml?ref=7961ed7cb09e928423054a9c87ddae9f5ffb03d3' --jq '.content' | base64 -d | grep -c '^version = "0.38.62"$'
+  - id: "dod-OmniNode-ai-omnibase_infra-pr-4412-ci"
+    description: "PR #4412 on OmniNode-ai/omnibase_infra -- product diff scope check (OMN-14425)."
+    source: "generated"
+    checks:
+      - check_type: "command"
+        check_value: "gh pr view 4412 --repo OmniNode-ai/omnibase_infra --json files"
+  - id: "dod-OmniNode-ai-omnibase_infra-pr-4512"
+    description: |-
+      PR #4512 on OmniNode-ai/omnibase_infra -- hand-authored evidence (OMN-15247); the post-release
+      dev version bump changes only pyproject.toml, uv.lock and docker/runners/runner-image.lock.json,
+      none of which an occ-autobind candidate grammar reads. The PR is the OMN-13912 disarm step after
+      the v0.38.63 release: it moves [project].version to 0.38.64 so the release-identity gate stops
+      arming against dev PRs that touch src. Content-bound at head 3307e9fd4e27325d6660721b559b0d47e1775887
+      (grep count 1) and RED at merge base 2ff03ffd124d9c053032b6fc0cec4cd8428aa704 (grep count 0, exit 1).
+    source: "generated"
+    checks:
+      - check_type: "command"
+        check_value: |-
+          gh api 'repos/OmniNode-ai/omnibase_infra/contents/pyproject.toml?ref=3307e9fd4e27325d6660721b559b0d47e1775887' --jq '.content' | base64 -d | grep -c '^version = "0.38.64"$'
+  - id: "dod-OmniNode-ai-omnibase_infra-pr-4512-ci"
+    description: "PR #4512 on OmniNode-ai/omnibase_infra -- product diff scope check (OMN-14425)."
+    source: "generated"
+    checks:
+      - check_type: "command"
+        check_value: "gh pr view 4512 --repo OmniNode-ai/omnibase_infra --json files"
+  - id: "dod-OmniNode-ai-omnibase_infra-pr-4534"
+    description: |-
+      PR #4534 on OmniNode-ai/omnibase_infra -- hand-authored evidence (OMN-15247); the post-release
+      dev version bump changes only pyproject.toml, uv.lock and docker/runners/runner-image.lock.json,
+      none of which an occ-autobind candidate grammar reads. The PR is the OMN-13912 disarm step after
+      the v0.38.64 release: it moves [project].version to 0.38.65 so the release-identity gate stops
+      arming against dev PRs that touch src. Content-bound at head f5ac0e4697c9c0862be4f774a66780cd50ee0f30
+      (grep count 1) and RED at merge base 7a76a493a5e0d5323fdafe280b79c462d2dab2c5 (grep count 0).
+    source: "generated"
+    checks:
+      - check_type: "command"
+        check_value: |-
+          gh api 'repos/OmniNode-ai/omnibase_infra/contents/pyproject.toml?ref=f5ac0e4697c9c0862be4f774a66780cd50ee0f30' --jq '.content' | base64 -d | grep -c '^version = "0.38.65"$'
+  - id: "dod-OmniNode-ai-omnibase_infra-pr-4534-ci"
+    description: "PR #4534 on OmniNode-ai/omnibase_infra -- product diff scope check (OMN-14425)."
+    source: "generated"
+    checks:
+      - check_type: "command"
+        check_value: "gh pr view 4534 --repo OmniNode-ai/omnibase_infra --json files"
+  - id: "dod-OmniNode-ai-omnibase_infra-pr-4546"
+    description: |-
+      PR #4546 on OmniNode-ai/omnibase_infra -- hand-authored evidence (OMN-15247); the post-release
+      dev version bump changes only pyproject.toml, uv.lock and docker/runners/runner-image.lock.json,
+      none of which an occ-autobind candidate grammar reads. The PR is the OMN-13912 disarm step after
+      the v0.38.65 release: it moves [project].version to 0.38.66 so the release-identity gate stops
+      arming against dev PRs that touch src. Content-bound at head 54cd1b33f68922642410de5e53855ccaa70ac74a
+      (grep count 1) and RED at merge base f31a618b7103cca4e5d33e05683635402dbe1896 (grep count 0).
+    source: "generated"
+    checks:
+      - check_type: "command"
+        check_value: |-
+          gh api 'repos/OmniNode-ai/omnibase_infra/contents/pyproject.toml?ref=54cd1b33f68922642410de5e53855ccaa70ac74a' --jq '.content' | base64 -d | grep -c '^version = "0.38.66"$'
+  - id: "dod-OmniNode-ai-omnibase_infra-pr-4546-ci"
+    description: "PR #4546 on OmniNode-ai/omnibase_infra -- product diff scope check (OMN-14425)."
+    source: "generated"
+    checks:
+      - check_type: "command"
+        check_value: "gh pr view 4546 --repo OmniNode-ai/omnibase_infra --json files"
+  - id: "dod-OmniNode-ai-omnibase_infra-pr-4591"
+    description: |-
+      PR #4591 on OmniNode-ai/omnibase_infra -- hand-authored evidence (OMN-15247); the post-release
+      dev version bump changes only pyproject.toml, uv.lock and docker/runners/runner-image.lock.json,
+      none of which an occ-autobind candidate grammar reads. The PR is the OMN-13912 disarm step after
+      the v0.38.66 release: it moves [project].version to 0.38.67 so the release-identity gate stops
+      arming against dev PRs that touch src. Content-bound at head 429d779a32ea656fdc090838ea8f93addbb9adc4
+      (grep count 1) and RED at merge base 4b40968f29dc63ba5248c2226c8f95dc8218cd1b (grep count 0).
+    source: "generated"
+    checks:
+      - check_type: "command"
+        check_value: |-
+          gh api 'repos/OmniNode-ai/omnibase_infra/contents/pyproject.toml?ref=429d779a32ea656fdc090838ea8f93addbb9adc4' --jq '.content' | base64 -d | grep -c '^version = "0.38.67"$'
+  - id: "dod-OmniNode-ai-omnibase_infra-pr-4591-ci"
+    description: "PR #4591 on OmniNode-ai/omnibase_infra -- product diff scope check (OMN-14425)."
+    source: "generated"
+    checks:
+      - check_type: "command"
+        check_value: "gh pr view 4591 --repo OmniNode-ai/omnibase_infra --json files"

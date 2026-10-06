@@ -1,0 +1,140 @@
+---
+schema_version: "1.0.0"
+ticket_id: "OMN-18111"
+title: "Autobind OCC evidence for OMN-18111"
+summary: >-
+  OCC contract minted by node_occ_companion_compute (OMN-14285) for OmniNode-ai/omnibase_infra#3380. The
+  four items the mint produced are byte-unchanged below, because editing one invalidates the receipt already
+  bound to it. The AC bindings are added as SEPARATE items instead: AC1 through AC5 each get their own
+  item and their own checks. AC6 is a post-merge live readback on the .201 dev lane (dlq_replay_history
+  row count rising from a measured baseline of 0 rows at 2026-09-10T01:55Z) and is deliberately NOT bound
+  to a check -- no command runnable from CI can reach that lane, and a check that pretended to would be
+  worse than an unbound criterion. It is recorded on the ticket.
+is_seam_ticket: false
+interface_change: false
+interfaces_touched: []
+evidence_requirements:
+  - kind: "ci"
+    description: "PR #3380 CI checks green"
+    command: "gh pr checks ${PR_NUMBER} --repo ${REPO}"
+  - kind: "tests"
+    description: |-
+      Behavior proof for PR #3380 on OmniNode-ai/omnibase_infra, derived from the PR's own diff: the test target(s) it adds or changes. Bound as dod_evidence item `dod-occ-diff-derived-behavior-proof`, executed at cwd `${OMNI_HOME}/omnibase_infra`.
+    command: |-
+      uv run pytest tests/integration/test_omn18111_dlq_tracking_dependency_wired.py tests/unit/nodes/node_dlq_replay_effect/test_omn18111_terminal_outcomes_recorded.py -q
+emergency_bypass:
+  enabled: false
+  justification: ""
+  follow_up_ticket_id: ""
+dod_evidence:
+  - id: "dod-OmniNode-ai-omnibase_infra-pr-3380"
+    description: "PR #3380 on OmniNode-ai/omnibase_infra — Evidence-Source autobind."
+    source: "generated"
+    checks:
+      - check_type: "command"
+        check_value: |-
+          gh api repos/OmniNode-ai/omnibase_infra/contents/src/omnibase_infra/nodes/node_dlq_replay_effect/handlers/handler_dlq_replay.py?ref=ce8ad48f517ea05c5369427781fd13f536e10df4 --jq '.content' | base64 -d | grep -c 'def _record_unparseable'
+      - check_type: "command"
+        check_value: |-
+          gh api repos/OmniNode-ai/omnibase_infra/pulls/3380/files --paginate --jq '.[].filename' | grep -cFx 'src/omnibase_infra/nodes/node_dlq_replay_effect/contract.yaml'
+  - id: "dod-deploy-assessment"
+    description: "Deploy-scope DoD so PR #3380 clears the deploy-gate (F-05)."
+    source: "generated"
+    checks:
+      - check_type: "command"
+        check_value: |-
+          gh api repos/OmniNode-ai/omnibase_infra/pulls/3380/files --paginate --jq '.[].filename' | grep -ciE 'nodes/|handlers/|runtime/|services/|docker|monitor_logs|deploy'
+  - id: "dod-occ-diff-derived-behavior-proof"
+    description: "PR #3380 on OmniNode-ai/omnibase_infra — diff-derived behavior proof (OMN-16434)."
+    source: "generated"
+    execution_scope: "local_done_gate"
+    checks:
+      - check_type: "test_passes"
+        check_value: |-
+          uv run pytest tests/integration/test_omn18111_dlq_tracking_dependency_wired.py tests/unit/nodes/node_dlq_replay_effect/test_omn18111_terminal_outcomes_recorded.py -q
+        cwd: "${OMNI_HOME}/omnibase_infra"
+  - id: "dod-omn18111-ac1-tracking-wired"
+    description: >-
+      AC1. The runtime supplies the contract-declared `tracking` dependency for HandlerDlqReplay, and
+      the second test in that file DISCOVERS the required names from contract.yaml rather than asserting
+      a written list, so the next dependency declared and forgotten is red there instead of silent. Both
+      tests failed on origin/dev before ce8ad48f517e.
+    source: "generated"
+    execution_scope: "local_done_gate"
+    binds_ac:
+      - "AC1"
+    checks:
+      - check_type: "test_passes"
+        check_value: |-
+          uv run pytest tests/integration/test_omn18111_dlq_tracking_dependency_wired.py -q
+        cwd: "${OMNI_HOME}/omnibase_infra"
+  - id: "dod-omn18111-ac2-parseable-recorded"
+    description: >-
+      AC2. Every terminal outcome on the parseable path produces exactly one ModelDlqReplayRecord -- one
+      COMPLETED and one QUARANTINED across a two-record run, counted per outcome so a double write fails
+      as loudly as a missing one.
+    source: "generated"
+    execution_scope: "local_done_gate"
+    binds_ac:
+      - "AC2"
+    checks:
+      - check_type: "test_passes"
+        check_value: |-
+          uv run pytest tests/unit/nodes/node_dlq_replay_effect/test_omn18111_terminal_outcomes_recorded.py -q -k test_1_every_parseable_terminal_outcome_is_recorded_exactly_once
+        cwd: "${OMNI_HOME}/omnibase_infra"
+  - id: "dod-omn18111-ac3-unparseable-recorded"
+    description: >-
+      AC3. The unparseable-record path records its terminal outcome with the DLQ coordinate it was read
+      at, and the coordinate-derived id is deterministic. RED on origin/dev, where _quarantine_unparseable
+      called the recorder from none of its three exits.
+    source: "generated"
+    execution_scope: "local_done_gate"
+    binds_ac:
+      - "AC3"
+    checks:
+      - check_type: "test_passes"
+        check_value: |-
+          uv run pytest tests/unit/nodes/node_dlq_replay_effect/test_omn18111_terminal_outcomes_recorded.py -q -k "test_2_unparseable_quarantine_is_recorded_with_its_dlq_coordinate or test_2b_unparseable_dlq_coordinate_id_is_deterministic"
+        cwd: "${OMNI_HOME}/omnibase_infra"
+      - check_type: "command"
+        check_value: |-
+          gh api repos/OmniNode-ai/omnibase_infra/contents/src/omnibase_infra/nodes/node_dlq_replay_effect/handlers/handler_dlq_replay.py?ref=ce8ad48f517ea05c5369427781fd13f536e10df4 --jq '.content' | base64 -d | grep -c 'async def _record_unparseable'
+  - id: "dod-omn18111-ac4-audit-isolated"
+    description: >-
+      AC4. A tracking write that raises leaves a CONFIRMED quarantine QUARANTINED and its offset committable.
+      This is the criterion that matters most operationally: propagating the failure would turn a confirmed
+      quarantine into a redelivery and re-amplify the OMN-18084 loop with a database outage as its trigger.
+    source: "generated"
+    execution_scope: "local_done_gate"
+    binds_ac:
+      - "AC4"
+    checks:
+      - check_type: "test_passes"
+        check_value: |-
+          uv run pytest tests/unit/nodes/node_dlq_replay_effect/test_omn18111_terminal_outcomes_recorded.py -q -k "test_3_a_failing_audit_write_never_changes_the_verdict or test_3b_absent_tracking_is_still_a_working_drain or test_3c_disabled_tracking_service_writes_nothing"
+        cwd: "${OMNI_HOME}/omnibase_infra"
+      - check_type: "command"
+        check_value: |-
+          gh api repos/OmniNode-ai/omnibase_infra/contents/src/omnibase_infra/nodes/node_dlq_replay_effect/handlers/handler_dlq_replay.py?ref=ce8ad48f517ea05c5369427781fd13f536e10df4 --jq '.content' | base64 -d | grep -c 'async def _write_audit_row'
+  - id: "dod-omn18111-ac5-lifecycle-owned"
+    description: >-
+      AC5. The runtime OWNS the tracking service's lifecycle: it is built and initialized at bootstrap
+      by _build_dlq_replay_tracking, handed to the dependency map as dlq_tracking=_dlq_replay_tracking,
+      and shut down on BOTH cleanup paths so no pool is left open on exit. The check counts the shutdown
+      call at the pushed sha and requires TWO of them, which is the half that is easy to get wrong and
+      impossible to see: one cleanup path repaired and the other forgotten leaks a pool on exactly the
+      shutdown route nobody exercises by hand. A receipt is keyed by (item, check_type), so this item
+      carries ONE command check rather than three.
+    source: "generated"
+    binds_ac:
+      - "AC5"
+    checks:
+      - check_type: "command"
+        check_value: |-
+          gh api repos/OmniNode-ai/omnibase_infra/contents/src/omnibase_infra/runtime/service_kernel.py?ref=ce8ad48f517ea05c5369427781fd13f536e10df4 --jq '.content' | base64 -d | grep -c '_dlq_replay_tracking.shutdown()'
+  - id: "occ-self-bind-pr-8872"
+    description: "Binds OMN-18111 to OCC companion PR #8872 (self-bind)."
+    source: "generated"
+    checks:
+      - check_type: "command"
+        check_value: "gh pr view 8872 --repo OmniNode-ai/onex_change_control --json number,state"

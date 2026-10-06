@@ -1,0 +1,86 @@
+---
+schema_version: "1.0.0"
+ticket_id: "OMN-14452"
+title: "OCC companion for omnimarket#1728 -- deployed GITHUB_TOKEN resolver fallback"
+summary: >
+  OCC evidence companion for OmniNode-ai/omnimarket#1728, scoped to OMN-14452. The product PR fixes the
+  deployed OCC-autogen path that could not resolve GITHUB_TOKEN through the rendered runtime secret_resolver.yaml
+  because that resolver is intentionally LLM/Slack-scoped and has enable_convention_fallback disabled.
+  The product code uses the declared env_var_fallback mechanism for GITHUB_TOKEN in the OCC companion
+  emitter and adjacent GitHub-effect handlers. Live readback before merge proved the pre-merge deployed
+  runtime still failed while consuming the PR's occ-autobind command, so this companion records product-head
+  evidence needed to land the fix; post-merge deploy validation must prove a later ticketed PR can mint
+  machine-authored OCC evidence.
+is_seam_ticket: false
+interface_change: false
+interfaces_touched: []
+evidence_requirements:
+  - kind: "manual"
+    description: "omnimarket#1728 head carries the sanctioned GITHUB_TOKEN env_var_fallback fix and focused
+      deployed-lane resolver tests"
+    command: "see dod_evidence check_values"
+emergency_bypass:
+  enabled: false
+  justification: ""
+  follow_up_ticket_id: ""
+dod_evidence:
+  - id: "dod-verify-1728-github-token-env-fallback"
+    description: >-
+      Product-observing check against omnimarket#1728 head 04633fca758a43f399f3bee42b15f10b0599ebc1. Reads
+      the changed runtime source files from the PR head and asserts that GITHUB_TOKEN resolution uses
+      the declared env_var_fallback path in the OCC companion emitter, PR lifecycle GitHub adapter, admin
+      merge, auto-rebase, comment resolution, thread reply, verification receipt generator, and GitHub
+      repo gateway token resolver.
+    source: "manual"
+    status: "verified"
+    checks:
+      - check_type: "command"
+        check_value: >-
+          for src_path in src/omnimarket/nodes/node_pr_lifecycle_fix_effect/handlers/occ_companion_emitter.py
+          src/omnimarket/nodes/node_pr_lifecycle_fix_effect/handlers/adapter_github_cli.py src/omnimarket/nodes/node_pr_lifecycle_fix_effect/handlers/handler_admin_merge.py
+          src/omnimarket/nodes/node_pr_lifecycle_fix_effect/handlers/handler_auto_rebase.py src/omnimarket/nodes/node_pr_lifecycle_fix_effect/handlers/handler_comment_resolution.py
+          src/omnimarket/nodes/node_thread_reply_effect/handlers/handler_thread_reply.py src/omnimarket/nodes/node_verification_receipt_generator/handlers/handler_verification_receipt.py
+          src/omnimarket/nodes/node_github_repo_gateway_effect/token_resolver.py; do tmp="$(mktemp)" &&
+          gh api "repos/OmniNode-ai/omnimarket/contents/${src_path}?ref=04633fca758a43f399f3bee42b15f10b0599ebc1"
+          --jq .content | base64 -d > "$tmp" && grep -F -- 'GITHUB_TOKEN' "$tmp" && grep -F -- 'env_var_fallback='
+          "$tmp"; done
+  - id: "dod-verify-1728-deployed-resolver-tests"
+    description: >-
+      Product-observing check against omnimarket#1728 head 04633fca758a43f399f3bee42b15f10b0599ebc1. Reads
+      the deployed-lane secret resolver regression tests from the PR head and asserts the RED/GREEN cases:
+      GITHUB_TOKEN is unresolvable without env_var_fallback, resolves with env_var_fallback, and still
+      fails closed when the fallback environment variable is genuinely absent.
+    source: "manual"
+    status: "verified"
+    checks:
+      - check_type: "command"
+        check_value: >-
+          secret_tests="$(mktemp)" && gh api "repos/OmniNode-ai/omnimarket/contents/tests/unit/inference/test_secret_store_resolver.py?ref=04633fca758a43f399f3bee42b15f10b0599ebc1"
+          --jq .content | base64 -d > "$secret_tests" && grep -F -- 'test_red_github_token_unresolvable_without_env_var_fallback'
+          "$secret_tests" && grep -F -- 'test_green_github_token_resolves_via_env_var_fallback' "$secret_tests"
+          && grep -F -- 'test_still_fails_closed_when_token_is_genuinely_absent' "$secret_tests"
+  - id: "dod-occ-self-branch"
+    description: >-
+      Self-bind item for this OCC companion branch. It binds the onex_change_control companion branch
+      jonah/omn-14452-occ-omnimarket-1728 so hosted OCC eligibility can associate PASS evidence with the
+      OCC PR under review. Substantive product evidence is carried by the two product-observing entries
+      above.
+    source: "manual"
+    status: "verified"
+    checks:
+      - check_type: "command"
+        check_value: >-
+          grep -q 'jonah/omn-14452-occ-omnimarket-1728' drift/dod_receipts/OMN-14452/dod-occ-self-branch/command.yaml
+  - id: "occ-self-bind-pr-4042"
+    description: >-
+      Self-bind item for onex_change_control PR #4042 after GitHub allocated the companion PR number.
+      Hosted OCC eligibility requires a PASS receipt bound to PR #4042 or one of its commit SHAs. Product-observing
+      evidence remains in the omnimarket#1728 entries above; this item only binds the OCC companion PR
+      under review.
+    source: "manual"
+    status: "verified"
+    checks:
+      - check_type: "command"
+        check_value: >-
+          grep -q '^pr_number: 4042$' drift/dod_receipts/OMN-14452/occ-self-bind-pr-4042/command.yaml
+          && grep -q '296a89011e03ad8a395f04892a2f4ca236a7e225' drift/dod_receipts/OMN-14452/occ-self-bind-pr-4042/command.yaml

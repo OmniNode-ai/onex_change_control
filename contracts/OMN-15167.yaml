@@ -1,0 +1,96 @@
+---
+schema_version: "1.0.0"
+ticket_id: "OMN-15167"
+title: "Terminal-event Kafka-forwarding subscriber (4 terminal classes only) — receipt contract for already-merged,
+  live-proven work (false-Backlog reconciliation)"
+summary: >-
+  OMN-15167 is a false-Backlog ticket, and it is stronger than code-only — it is live-proven. The forwarder
+  landed on jonahgabriel/steel_onslaught `main` in PR #218, merge commit f378cd488fd7914a1fe73898f3ee75a289873b10,
+  merged 2026-07-26T11:37:58Z, while the Linear ticket held a single Backlog stateHistory entry throughout.
+  This contract is the receipt surface for the dod_verify path; it makes no status change. What landed:
+  `src/steel_onslaught/bus/kafka_forwarder.py` with a transport-injected `KafkaTerminalEventForwarder`,
+  the topic literal declared EXACTLY ONCE as `STEEL_MATCH_TERMINAL_TOPIC = "onex.evt.steel-onslaught.match-terminal.v1"`
+  and referenced by that symbol at the publish site (never a free string, per the gate ruling that the
+  exact literal go through the governed topic-registration surfaces), a 4-class terminal whitelist over
+  the full SOEventType enum, match_id-keyed partitioning, and a single-line-rollback subscription in `match/composition.py`.
+  Live proof already banked by the accepted OMN-15172 acceptance battery — 376 event_ledger rows on that
+  exact topic, offsets 38-413 contiguous, all 60 published match_ids carrying exactly 4 events each, consumer
+  group Stable at LAG 0, all 4 terminal events forwarded 30/30 in both corners. That runtime evidence
+  is NOT re-probed here: it requires .201 lane access, and every check in this contract is deliberately
+  hosted-runnable, so the runtime facts are cited to the OMN-15172 receipt rather than restated as a check
+  that a hosted runner could not execute. Every check below is pinned to the merge SHA and was executed
+  GREEN at authoring time.
+is_seam_ticket: true
+interface_change: true
+interfaces_touched:
+  - "events"
+  - "topics"
+evidence_requirements:
+  - kind: "ci"
+    description: "steel PR #218 is MERGED on jonahgabriel/steel_onslaught main at merge commit f378cd48"
+    command: "gh pr view 218 --repo jonahgabriel/steel_onslaught --json state,mergeCommit"
+emergency_bypass:
+  enabled: false
+  justification: ""
+  follow_up_ticket_id: ""
+dod_evidence:
+  - id: "dod-omn-15167-pr-218-merged"
+    description: >-
+      steel PR #218 ("OMN-15167 — terminal-event bus forwarder (4 terminal classes, match_id-keyed, contract-declared
+      topic)") is MERGED with merge commit exactly f378cd488fd7914a1fe73898f3ee75a289873b10. State and
+      SHA asserted together so closed-unmerged, still-open, and re-landed-elsewhere all yield count 0.
+    source: "manual"
+    status: "pending"
+    checks:
+      - check_type: "command"
+        check_value: |-
+          gh pr view 218 --repo jonahgabriel/steel_onslaught --json state,mergeCommit --jq '.state + " " + (.mergeCommit.oid // "none")' | grep -cFx 'MERGED f378cd488fd7914a1fe73898f3ee75a289873b10' | grep -qx 1
+  - id: "dod-omn-15167-forwarder-topic-once"
+    description: >-
+      At the merge SHA, `src/steel_onslaught/bus/kafka_forwarder.py` defines `class KafkaTerminalEventForwarder:`
+      and declares the topic literal EXACTLY ONCE as a typed module constant: `STEEL_MATCH_TERMINAL_TOPIC:
+      str = "onex.evt.steel-onslaught.match-terminal.v1"`. The exactly-once count is the load-bearing
+      assertion, not the presence of the string: a second free-string occurrence of the topic anywhere
+      at declaration shape would break the governed topic-registration requirement, and asserting count
+      1 on the full typed-declaration line is what makes that regression RED.
+    source: "manual"
+    status: "pending"
+    checks:
+      - check_type: "command"
+        check_value: |-
+          gh api 'repos/jonahgabriel/steel_onslaught/contents/src/steel_onslaught/bus/kafka_forwarder.py?ref=f378cd488fd7914a1fe73898f3ee75a289873b10' --jq '.content' | base64 -d | grep -cF 'class KafkaTerminalEventForwarder:' | grep -qx 1
+      - check_type: "command"
+        check_value: |-
+          gh api 'repos/jonahgabriel/steel_onslaught/contents/src/steel_onslaught/bus/kafka_forwarder.py?ref=f378cd488fd7914a1fe73898f3ee75a289873b10' --jq '.content' | base64 -d | grep -cF 'STEEL_MATCH_TERMINAL_TOPIC: str = "onex.evt.steel-onslaught.match-terminal.v1"' | grep -qx 1
+  - id: "dod-omn-15167-four-terminal-classes"
+    description: >-
+      The boundary whitelist admits EXACTLY the four terminal classes the ticket scopes and no more: MATCH_STARTED,
+      MATCH_ENDED, MATCH_SCORED, VICTORY_DECLARED, asserted as exactly 4 anchored `    SOEventType.<CLASS>,`
+      whitelist entries. This is the check that enforces the leak constraint — intent, telemetry, and
+      LLM-evidence events must never cross onto the platform bus. Adding a fifth class returns 5 and goes
+      RED; dropping one returns 3 and goes RED. A substring probe for the four names would pass on the
+      module docstring alone, so the pattern is anchored to the whitelist's own indentation and trailing
+      comma.
+    source: "manual"
+    status: "pending"
+    checks:
+      - check_type: "command"
+        check_value: |-
+          gh api 'repos/jonahgabriel/steel_onslaught/contents/src/steel_onslaught/bus/kafka_forwarder.py?ref=f378cd488fd7914a1fe73898f3ee75a289873b10' --jq '.content' | base64 -d | grep -cE '^    SOEventType\.(MATCH_STARTED|MATCH_ENDED|MATCH_SCORED|VICTORY_DECLARED),$' | grep -qx 4
+  - id: "dod-omn-15167-subscribed-in-composition"
+    description: >-
+      The forwarder is actually wired, and wired the way the ticket requires: at the merge SHA `src/steel_onslaught/match/composition.py`
+      constructs it transport-INJECTED (`KafkaTerminalEventForwarder(transport=kafka_transport)`) rather
+      than letting composition build its own transport, and subscribes its publish callable exactly once
+      (`dependencies.kafka_forwarder.publish,`) — the single-line rollback point. A defined-but-never-subscribed
+      forwarder is the silent-no-op class this pair discriminates, and the subscribe leg returns count
+      0 in that case.
+    source: "manual"
+    status: "pending"
+    checks:
+      - check_type: "command"
+        check_value: |-
+          gh api 'repos/jonahgabriel/steel_onslaught/contents/src/steel_onslaught/match/composition.py?ref=f378cd488fd7914a1fe73898f3ee75a289873b10' --jq '.content' | base64 -d | grep -cF 'KafkaTerminalEventForwarder(transport=kafka_transport)' | grep -qx 1
+      - check_type: "command"
+        check_value: |-
+          gh api 'repos/jonahgabriel/steel_onslaught/contents/src/steel_onslaught/match/composition.py?ref=f378cd488fd7914a1fe73898f3ee75a289873b10' --jq '.content' | base64 -d | grep -cF 'dependencies.kafka_forwarder.publish,' | grep -qx 1

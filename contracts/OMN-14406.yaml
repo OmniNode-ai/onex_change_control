@@ -1,0 +1,125 @@
+---
+schema_version: "1.0.0"
+ticket_id: "OMN-14406"
+title: "OCC companion for omnimarket#1731 — reconcile node_occ_companion_compute per-entry hash to core.compute_contract_entry_sha256"
+summary: >
+  OCC evidence companion for OmniNode-ai/omnimarket#1731 (OMN-14406). node_occ_companion_compute (the
+  RSD-1 OCC-companion producer, OMN-14285) minted contract_entry_sha256 from a private _entry_sha256 preimage
+  (ticket_id|evidence_id|check_value|commit_sha) that omnibase_core's canonical compute_contract_entry_sha256
+  can never recompute -- that function hashes the canonical-JSON of the parsed dod_evidence entry plus
+  a pinned header subset (ticket_id, schema_version), and commit_sha is absent from the contract entirely.
+  check_receipt_contract_binding gives contract_entry_sha256 strict precedence over the legacy whole-file
+  hash, so 100% of receipts the producer minted failed the gate with an "entry hash mismatch" -- an OMN-14208
+  PAIR_INCOMPATIBLE seam (the producer and the gate were each individually green, but never matched field-by-field,
+  so wiring anything on top of the producer before this fix is an immediate 100% hard-fail). The merged
+  #1717 attestation oracle's deterministic_fingerprint folds the same wrong hash, poisoning that surface
+  too. This ticket was the hard prerequisite blocking the entire OCC autogen-producer thread (docs/handoff/2026-07-13-0035Z-rsd-factory-seam-reaping-handoff.md
+  §5). The fix deletes the private preimage and calls core's canonical compute_contract_entry_sha256 over
+  the producer's own rendered/parsed contract; a receipt whose evidence_item_id is not a declared dod_evidence
+  item (the OCC self-bind receipt) now carries no per-entry hash, mirroring the born-path emitter's existing
+  invariant. The evidence below is product-observing (reads the omnimarket PR head directly) plus the
+  independent RED-then-GREEN reproduction of the new cross-boundary gate-binding test suite.
+is_seam_ticket: true
+interface_change: false
+interfaces_touched: []
+evidence_requirements:
+  - kind: "tests"
+    description: "omnimarket#1731 head reconciles node_occ_companion_compute's per-entry hash to core's
+      canonical compute_contract_entry_sha256, proven by a cross-boundary gate-binding test suite that
+      drives the actual gate functions (check_receipt_contract_binding + compute_contract_entry_sha256),
+      independently reproduced RED (pre-fix, exact 'entry hash mismatch') then GREEN (post-fix)."
+    command: "see dod_evidence check_values"
+emergency_bypass:
+  enabled: false
+  justification: ""
+  follow_up_ticket_id: ""
+dod_evidence:
+  - id: "dod-verify-1731-broken-preimage-removed"
+    description: >-
+      Product-observing check against omnimarket#1731 head dffc0f40dacea5ebd706364919e227736a3ff3be. Reads
+      handler_occ_companion_compute.py from the PR head and asserts the private broken "_entry_sha256"
+      preimage function (ticket_id|evidence_id|check_value|commit_sha) is GONE, and the module now imports
+      and calls omnibase_core's canonical compute_contract_entry_sha256 to mint the per-entry hash from
+      the producer's own parsed contract.
+    source: "generated"
+    status: "verified"
+    checks:
+      - check_type: "command"
+        check_value: >-
+          f="$(mktemp)" && gh api "repos/OmniNode-ai/omnimarket/contents/src/omnimarket/nodes/node_occ_companion_compute/handlers/handler_occ_companion_compute.py?ref=dffc0f40dacea5ebd706364919e227736a3ff3be"
+          --jq .content | base64 -d > "$f" && ! grep -Fq -- 'def _entry_sha256(' "$f" && grep -Fq -- 'compute_contract_entry_sha256'
+          "$f" && grep -Fq -- 'def _entry_hash_for(' "$f"
+  - id: "dod-verify-1731-cross-boundary-gate-binding-test"
+    description: >-
+      Product-observing check against the PR head. Reads the new cross-boundary test file and asserts
+      it drives the REAL gate functions (omnibase_core's check_receipt_contract_binding and compute_contract_entry_sha256),
+      not a mock of them, across fresh-contract, self-bind, append-stability, and merged/two-audiences-supersede
+      cases -- the OMN-14208 seam-boundary shape, not two independent unit suites.
+    source: "generated"
+    status: "verified"
+    checks:
+      - check_type: "command"
+        check_value: >-
+          f="$(mktemp)" && gh api "repos/OmniNode-ai/omnimarket/contents/tests/unit/nodes/node_occ_companion_compute/test_occ_companion_compute_gate_binding.py?ref=dffc0f40dacea5ebd706364919e227736a3ff3be"
+          --jq .content | base64 -d > "$f" && grep -Fq -- 'check_receipt_contract_binding' "$f" && grep
+          -Fq -- 'compute_contract_entry_sha256' "$f" && grep -Fq -- 'class TestFreshCompanionIsGateRecomputable'
+          "$f" && grep -Fq -- 'class TestSelfBindReceiptHasNoUnrecomputableEntryHash' "$f" && grep -Fq
+          -- 'class TestAppendStability' "$f" && grep -Fq -- 'class TestMergedTwoAudiencesSupersedeIsRecomputable'
+          "$f"
+  - id: "dod-verify-1731-self-bind-no-entry-hash"
+    description: >-
+      Product-observing check against the PR head. Reads the handler and asserts the OCC self-bind receipt
+      path (evidence_item_id "occ-self-bind-pr-N", never a declared dod_evidence item) is minted with
+      contract_entry_sha256=None -- a per-entry hash there would fail the gate with ContractEntryNotFoundError.
+      Mirrors the born-path emitter's existing self-bind invariant.
+    source: "generated"
+    status: "verified"
+    checks:
+      - check_type: "command"
+        check_value: >-
+          f="$(mktemp)" && gh api "repos/OmniNode-ai/omnimarket/contents/src/omnimarket/nodes/node_occ_companion_compute/handlers/handler_occ_companion_compute.py?ref=dffc0f40dacea5ebd706364919e227736a3ff3be"
+          --jq .content | base64 -d > "$f" && grep -Fq -- 'contract_entry_sha256=None' "$f"
+  - id: "dod-verify-1731-red-green-reproduced"
+    description: >-
+      Independent (not trusting the implementer's commit message) RED-then-GREEN reproduction: the new
+      gate-binding test file was checked out against the PARENT commit (e21513ba, pre-fix) in an isolated
+      worktree -- all 6 tests FAILED with the exact diagnosed 'entry hash mismatch: receipt contract_entry_sha256=...
+      does not match recomputed per-entry hash ...' (a real EXISTS-but-WRONG RED, not a vacuous absence-of-function
+      RED). The same 6 tests then PASSED against the fix commit rebased onto latest dev. The full combined
+      node_occ_companion_compute + node_pr_lifecycle_fix_effect (occ_evidence_stamp / occ_companion_emitter)
+      suite (108 tests, including the merged #1717 attestation-oracle tests) passed with zero regressions,
+      and mypy --strict / ruff / pre-commit were clean on both touched modules.
+    source: "manual"
+    status: "verified"
+    checks:
+      - check_type: "command"
+        check_value: >-
+          grep -q '^status: PASS$' drift/dod_receipts/OMN-14406/dod-verify-1731-red-green-reproduced/command.yaml
+          && grep -q '6 failed in' drift/dod_receipts/OMN-14406/dod-verify-1731-red-green-reproduced/command.yaml
+          && grep -q '6 passed in' drift/dod_receipts/OMN-14406/dod-verify-1731-red-green-reproduced/command.yaml
+          && grep -q '108 passed' drift/dod_receipts/OMN-14406/dod-verify-1731-red-green-reproduced/command.yaml
+  - id: "dod-deploy-assessment-head-dffc0f40"
+    description: >-
+      Deploy assessment for omnimarket PR #1731 at head dffc0f40dacea5ebd706364919e227736a3ff3be. The
+      PR touches a pure COMPUTE handler and a template-rendering module (zero I/O, enforced by TestZeroIoPurity
+      in the existing seam suite); this evidence package performs no live deploy, runtime restart, docker
+      exec, rpk topic produce, database mutation, or .201/.200 runtime mutation. The producer this handler
+      backs is not wired live (deferred per operator ruling), so there is no runtime surface to roll out.
+    source: "manual"
+    status: "verified"
+    checks:
+      - check_type: "command"
+        check_value: >-
+          grep -q '^status: PASS$' drift/dod_receipts/OMN-14406/dod-deploy-assessment-head-dffc0f40/command.yaml
+          && grep -qi 'no live deploy' drift/dod_receipts/OMN-14406/dod-deploy-assessment-head-dffc0f40/command.yaml
+  - id: "dod-occ-self-commit"
+    description: >-
+      Self-bind item for this OCC companion PR. Asserts a fact about this companion branch so validator_occ_merge_eligibility
+      can bind a PASS receipt to the OCC PR under check via commit_sha before a PR number exists. Product-observing
+      evidence is carried by the four entries above; this item is binding only.
+    source: "manual"
+    status: "verified"
+    checks:
+      - check_type: "command"
+        check_value: >-
+          grep -q 'jonah/omn-14406-occ-companion-hash-reconcile' drift/dod_receipts/OMN-14406/dod-occ-self-commit/command.yaml

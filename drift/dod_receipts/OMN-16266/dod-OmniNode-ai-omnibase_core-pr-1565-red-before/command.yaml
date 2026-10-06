@@ -1,0 +1,56 @@
+---
+schema_version: "1.0.0"
+ticket_id: "OMN-16266"
+evidence_item_id: "dod-OmniNode-ai-omnibase_core-pr-1565-red-before"
+check_type: "command"
+check_value: >-
+  test "$(gh api -H "Accept: application/vnd.github.raw" "repos/OmniNode-ai/omnibase_core/contents/src/omnibase_core/models/ticket/model_ticket_contract.py?ref=a4580b285cb4c4f679572b474619e3b325def4a5"
+  | grep -A3 'requirements: list\[ModelRequirement\]' | grep -c max_length)" -eq 0
+contract_sha256: "sha256:8832113f3276a81557a409a97eb3a14963b1fa443ccdda8bb7a803de3e3db598"
+contract_entry_sha256: "sha256:a18e67a8150756284619ee5fcd2a3f12b47553aaff25c41d5b4e450940256f16"
+status: PASS
+run_timestamp: "2026-08-19T19:24:46Z"
+commit_sha: "e73f888560d386d6be2b95901078856239e134d2"
+runner: "claude-build-lane-tail-unblock-1"
+verifier: "hand-authored-occ-companion"
+probe_command: >-
+  gh api -H "Accept: application/vnd.github.raw" "repos/OmniNode-ai/omnibase_core/contents/src/omnibase_core/models/ticket/model_ticket_contract.py?ref=a4580b285cb4c4f679572b474619e3b325def4a5"
+  | grep -A3 "requirements: list\[ModelRequirement\]" | grep -c max_length   # unwrapped probe (raw count,
+  for the record); the BOUND check_value above wraps this in test "$(...)" -eq 0 so CI's exit code reflects
+  the assertion truth value instead of grep -c's own no-match exit status
+probe_stdout: |
+  # occurrences of 'max_length' within 3 lines of the requirements Field declaration:
+  #   ref=a4580b28 (merge-base) -> 0   (no cap -- the pre-fix bug)
+  #   ref=e73f8885 (#1565 head) -> 1   (cap added -- the fix)
+  # bound check_value (test "$(...)" -eq 0) exit codes, run verbatim:
+  #   ref=a4580b28 (merge-base) -> exit 0   PASS (assertion "count==0" is true)
+  #   ref=e73f8885 (#1565 head) -> exit 1   the same probe against head correctly fails,
+  #                                          proving a genuine differential
+actual_output: |-
+  PASS: at the immutable merge-base blob a4580b285cb4c4f679572b474619e3b325def4a5, the requirements Field
+  declaration in model_ticket_contract.py carries zero occurrences of max_length within the following 3
+  lines -- confirming the pre-fix list had no length cap. Falsifiable: a pre-existing cap would have returned
+  >=1.
+
+  REPAIR (2026-08-19, this run supersedes the 2026-08-19T18:42:53Z entry): the ORIGINAL check_value ended
+  its pipeline in a bare `grep -c max_length`. `grep -c` prints the match count regardless of outcome but
+  still exits 1 whenever the count is 0 -- documented POSIX grep behavior, not a bug in grep. Because the
+  contract-compliance runner (`onex_change_control.scripts.contract_compliance_check._check_command`) gates
+  purely on the subprocess exit code (`sh -c <check_value>`, no `pipefail`, so the pipeline's exit code is
+  the LAST command's, i.e. grep -c's), a probe whose assertion was TRUE (count really is 0 at the merge-base)
+  produced exit 1 and was reported as BLOCK/FAILED by CI -- confirmed live on run 32289368738 / job
+  96194337013: "[X] command: Command failed (exit 1)" on this exact evidence item. The prior receipt's
+  `exit_code: 0` was a hand-recorded value based on reading the printed "0", not on capturing $? -- it did
+  not reflect what CI would independently re-execute. Fixed by wrapping the identical grep -c pipeline in
+  `test "$(...)" -eq 0` (the sanctioned OMN-14447/OMN-14587/OMN-14593/OMN-14600/OMN-14605/OMN-14608
+  zero-count-assertion pattern already used elsewhere in this repo's contract corpus): `test` exits 0 when
+  its numeric comparison is true and 1 when false, independent of grep's own exit status. Also switched the
+  contents-API fetch from the JSON+`--jq .content`+`base64 -d` shape to `-H "Accept: application/vnd.github.raw"`
+  (drops the JSON/base64 decode step entirely -- more reliable for large files after a mid-transfer stream
+  failure was observed on the JSON shape today). The assertion, the pinned refs, and the differential are
+  unchanged -- only exit-code semantics and transport reliability changed. Re-executed verbatim via
+  `sh -c` (the exact invocation shape the CI runner uses): bound check_value exits 0 at the merge-base
+  (PASS) and exits 1 at head (proving the differential is real, not a same-state re-read).
+exit_code: 0
+pr_number: 1565
+branch: "jonah/omn-16266-cap-requirements-max-length"

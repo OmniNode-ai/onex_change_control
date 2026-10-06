@@ -1,0 +1,852 @@
+# SPDX-FileCopyrightText: 2025 OmniNode.ai Inc.
+# SPDX-License-Identifier: MIT
+#
+# OMN-6571: Automatically enable auto-merge (squash) on every PR opened
+# by jonahgabriel. Ensures PRs do not sit idle in the merge queue waiting
+# for manual enrollment.
+#
+# OMN-7786: Re-trigger on review and check_suite events so the workflow
+# re-attempts auto-merge after CodeRabbit review finishes and branch
+# protection gates clear. Silent continue-on-error removed; "already
+# enqueued" races are tolerated but real failures surface.
+#
+# OMN-10485: OCC eligibility preflight gate added. Auto-merge CANNOT arm
+# until the PR's ticket has passing OCC receipts. The `occ-check` job
+# queries the latest `occ-preflight / eligibility` status check result for
+# the PR via the GitHub Checks API. If the check is missing or not SUCCESS,
+# auto-merge arming is deferred (exit 0 to avoid noise) and the workflow
+# re-triggers on the next `check_suite` completion event when the preflight
+# check finishes. On merge_group events the gate re-evaluates against the
+# current OCC main SHA (no cached PR-pass accepted).
+#
+# OMN-13214: Arming auto-merge is NOT the same as enqueuing. During the
+# 2026-06-17 dev wave, CLEAN + all-required-green + armed PRs sat OUTSIDE the
+# merge queue for hours and each needed a manual enqueuePullRequest to land.
+# This workflow now (a) chooses bare --auto only when the PR base really has a
+# merge queue (otherwise it uses the repository's allowed --squash method),
+# (b) runs gh pr update-branch first on strict-update repos when the PR is
+# BEHIND, (c) explicitly calls enqueuePullRequest, and (d) VERIFIES the PR
+# actually entered the queue — failing loudly if a green+armed PR is not
+# enqueued, so the gap surfaces instead of stalling silently. The
+# classify/verify decision logic is unit-tested in
+# scripts/ci/merge_queue_enqueue.py.
+#
+# OMN-14777 (F-24): DROP `reopened` and `ready_for_review` from the
+# pull_request trigger, mirroring OMN-14763 (seed fix landed in
+# omninode_infra). Marking a draft ready-for-review used to force-arm
+# auto-merge, forcing manual draft-holds on evidence-stamped PRs during the
+# 2026-07-16 sweep. This aligns with OMN-14151 (default = do NOT auto-arm on
+# open/ready). An actually-ready green PR is still armed by the
+# pull_request_review / check_suite re-attempt paths below and by
+# workflow_dispatch -- just not by the draft->ready transition itself. This
+# workflow is NOT a required status check on dev, so narrowing it cannot
+# wedge branch protection (verified live via required_status_checks readback
+# before landing).
+#
+# OMN-16117: Governance-path exclusion. This workflow arms auto-merge for
+# every PR authored by `jonahgabriel`, gated only on `occ-preflight /
+# eligibility`. Agent sessions in this org share that GitHub identity, so an
+# agent-opened PR touching `grants/prod_promotion_grants.yaml` (the
+# OMN-13418 prod-promotion trust anchor) or `allowlists/skip_token_approvals
+# .yaml` could be armed and merged unattended with zero human review
+# (onex_change_control@main has requiresApprovingReviews=false). Live
+# near-miss 2026-08-17 ~05:30Z: a freshly opened grant PR was armed within
+# seconds; containment was manual (convertPullRequestToDraft). This is a
+# DIFFERENT closure from OMN-14919's check_bot_authored_authz_guard in
+# ci.yml, which only rejects BOT-authored (author type == Bot) PRs -- an
+# agent acting as jonahgabriel has author type User, so that guard never
+# fires here. A new "Check governance-path exclusion" step queries the PR's
+# changed-file set and gates the Enable auto-merge / Enqueue steps below on
+# it, independent of occ-preflight outcome or actor identity. Fail-closed:
+# if the changed-file set cannot be determined, it is treated as touching a
+# governance file. The decision logic is unit-tested in
+# scripts/ci/check_governance_paths.py rather than inlined in bash/YAML.
+#
+# OMN-17922 (2026-09-04): BOT-AUTHORED OCC EVIDENCE COMPANIONS ARM TOO.
+# Every OCC evidence companion is authored by the `onexbot-occ-writer`
+# GitHub App (`app/onexbot-occ-writer` via `gh pr view`, `onexbot-occ-writer
+# [bot]` in the event payload) with a title that starts with `evidence(`.
+# Until this change every arming step was gated on `actor == 'jonahgabriel'`,
+# so a CLEAN, zero-red companion sat open with `autoMergeRequest: null` until a
+# human ran `gh pr merge` by hand — and the product PR behind it stayed
+# BLOCKED on its `OCC Companion Merged Gate (OMN-15214)` check meanwhile.
+# Measured live 2026-09-04: occ#8207 (for omnibase_infra#3184) and occ#8208
+# (for omnibase_infra#3185) sat CLEAN 48/22/0 unarmed until hand-armed at
+# 17:55:38Z / 17:56:13Z; occ#8203 (OMN-14888 observation append) likewise.
+# The `Resolve PR and author` step now computes `arm=true` for exactly two
+# author shapes: the `jonahgabriel` human/agent identity (unchanged), and the
+# OCC writer App WHEN the PR title starts with `evidence(`. Every other
+# author, and the App with any other title, stays `arm=false`. The
+# occ-preflight eligibility gate and the OMN-16117 governance-path exclusion
+# run unchanged for both shapes; this widens WHO may be armed, not WHAT.
+# Pinned by tests/ci/test_auto_merge_bot_companion_arming_omn17922.py, which
+# executes this step's own bash under both event paths.
+#
+# OMN-17922 / OMN-17875: THE ARMING TOKEN IS `secrets.CROSS_REPO_PAT`, NOT
+# `secrets.GITHUB_TOKEN`. GitHub completes an armed auto-merge as the identity
+# that armed it, and a GITHUB_TOKEN- or App-token-authored merge fires no
+# `push` (and no `pull_request: closed`) event on `dev` — GitHub's documented
+# Actions-recursion prevention, proven on this org by the OMN-16373 controlled
+# probe (App-token push 38ffe1f4: marker workflow did not fire; jonahgabriel
+# control push fd534b2a: run 32562988366 fired). omnibase_infra#3178 ported
+# omninode_infra's PAT arming for this reason on 2026-09-04 and its own AC3
+# proof PR (omnibase_infra#3181) then produced 4 push-event runs. This repo
+# has three dev workflows a suppressed merge would starve:
+# validate-validator-requirements.yml (push: dev — the OMN-13299 fleet gate),
+# validator-g2-ip-family.yml (push: dev — the G2 validators), and
+# todo-audit-on-merge.yml (pull_request: closed on dev). Because this change
+# is what makes bot companions merge under the arming identity at all, the
+# credential and the actor widening land together. `CROSS_REPO_PAT` is an
+# existing org secret already consumed by ci.yml, evidence-import.yml,
+# nightly-promote.yml and staleness-monitor.yml in this repo; no new
+# credential is minted. Only the two merge-state-MUTATING steps carry it; the
+# read-only resolve step stays on GITHUB_TOKEN.
+# OMN-17922 (2026-09-18, second pass): COMPANIONS ARM PROMPTLY, NOT
+# EVENTUALLY. The first pass made bot companions arm at all; arming still
+# waited on `check_suite: completed` delivery, so a companion whose eligibility
+# check went green in ~60s sat unarmed for 3-18 minutes (four measured on this
+# repo 2026-09-18; table in the eligibility step below) and four lanes armed one
+# by hand that morning. The eligibility step now polls its own reading on the
+# companion `opened` path, bounded, instead of taking it once. No gate was
+# relaxed: SUCCESS is still the only arming state, a concluded FAILURE still
+# exits 1, and an exhausted budget defers exactly as before. Pinned by
+# tests/ci/test_auto_merge_companion_poll_omn17922.py, which executes the step's
+# own bash against a scripted Checks API.
+#
+# OMN-18797 (2026-09-19): THE BUDGET WAS SHORTER THAN THE QUEUE, AND ITS STATED
+# FALLBACK DID NOT ARRIVE. The second OMN-17922 pass assumed the eligibility
+# check is merely SLOW TO CONCLUDE. Under a merge burst it is slow to START:
+# occ#10322 (evidence for omniclaude#2255) opened 01:08:45Z, its Auto-Merge run
+# took 18 readings of `status=missing conclusion=missing` and gave up at
+# 01:12:07Z, and its `occ-preflight / eligibility` check-run was CREATED at
+# 01:13:56Z — 112 seconds AFTER the poll stopped — started 01:13:59Z and
+# concluded SUCCESS at 01:14:35Z. The job was queued, not slow:
+# actions/runs/35411720602/jobs reports created_at 01:13:56Z against a run whose
+# startedAt is 01:08:54Z, five minutes of runner queueing.
+#
+# The deferral comment said it was "leaving the existing check_suite path to arm
+# later". That path is real (runs 35414814097, 35411370615 and 35408670382 each
+# resolved a companion) but it is sparse and not one-per-PR: between 01:02:31Z
+# and 02:03:56Z not one Auto-Merge run fired on any event while at least six
+# check suites completed on that head. The companion stayed mergeable and
+# unarmed for 26 minutes and a human merged it by hand.
+#
+# Two changes, neither of which relaxes a gate and neither of which touches a
+# credential:
+#
+#   1. The companion budget is 900s, and it covers `workflow_dispatch` as well
+#      as `pull_request`, so re-dispatching this workflow for a stuck companion
+#      is a real recovery rather than one more single reading.
+#   2. An exhausted budget on the companion path FAILS the run instead of
+#      deferring green. An unarmed companion behind a green run is
+#      indistinguishable from one nothing ever looked at.
+#
+# Deliberately NOT done: re-dispatching this workflow on exhaustion, which is
+# the shape that would survive a lost runner. `workflow_dispatch` sent with
+# `secrets.GITHUB_TOKEN` creates no run (Actions-recursion prevention), and the
+# `onexbot-occ-writer` installation (148180820) holds `actions: read`, not
+# write — read live 2026-09-19 from /orgs/OmniNode-ai/installations, where
+# `onexbot` (123040063) is also read-only on Actions. So no existing identity
+# can dispatch, and the only remaining credential is `CROSS_REPO_PAT`, whose
+# reads in this job are ratcheted at exactly two by OMN-16373
+# (tests/test_omn_16373_cross_repo_pat_retirement.py). Widening that ratchet, or
+# granting the App Actions:write, is an authorization decision and not this
+# change's to make. Pinned by
+# tests/ci/test_auto_merge_companion_budget_omn18797.py.
+# OMN-19216 (2026-09-22): RE-ADD `ready_for_review` to the pull_request
+# trigger, by operator decision. OMN-14777 dropped it because the ready
+# flip force-armed PRs someone meant to hold; since then a PR opened as a
+# draft was never armed by its flip and needed a manual arming step. Now
+# the OMN-18179 hold gate (a hold label, or auto-merge disabled after its
+# last enable, refuses to arm) carries the draft-hold that trigger
+# removal used to provide, so the flip no longer arms a held PR.
+# Arming stays limited to the allowed author (the resolve step reads the
+# PR author from the payload, not the sender who flipped it), and the
+# Enable step returns early when the PR is already armed, so a ready flip
+# racing a check_suite or review event cannot arm twice.
+#
+# OMN-20042 (2026-09-30): ARM ON `synchronize` AND `reopened` TOO. A window
+# companion rewritten (force-pushed) during the `opened` run's 900s companion
+# eligibility wait loses the arm for good: the wait sees the eligibility run
+# cancelled, the run fails, and no later `pull_request` event re-ran it. 18 of
+# 53 window arming runs failed that way; OCC#11957 sat CLEAN and unarmed for 48
+# minutes until a workflow_dispatch (run 36746460030) armed it. A new push
+# now starts a fresh run that waits on the new head's eligibility. Safe because:
+# the OMN-18179 hold gate covers `synchronize` and `reopened` exactly as it
+# covers `ready_for_review` (a held PR is never armed); the concurrency group
+# is keyed per PR with cancel-in-progress, so the new run supersedes the old
+# run's wait; the Enable step returns early when the PR is already armed; and
+# the author gate reads the PR author from the payload, not the pusher.
+# Pinned by tests/ci/test_auto_merge_rearm_on_rewrite_omn20042.py.
+name: Auto-Merge
+
+on:
+  pull_request:
+    types: [opened, synchronize, reopened, ready_for_review]
+  pull_request_review:
+    types: [submitted, dismissed]
+  check_suite:
+    types: [completed]
+  workflow_dispatch:
+    inputs:
+      pr_number:
+        description: "PR number to enable auto-merge on"
+        required: true
+        type: string
+
+permissions:
+  contents: write
+  pull-requests: write
+  checks: read
+
+# OMN-18797: key the group by the PR on EVERY path that carries one.
+# `github.event.pull_request.number` is empty on the check_suite and
+# workflow_dispatch paths, so the previous expression collapsed every such run
+# for every PR into one `Auto-Merge-refs/heads/dev` group under
+# `cancel-in-progress: true` — one PR's re-attempt cancelled another PR's, and
+# the check_suite path is the only automatic re-attempt this workflow has. A
+# property an event does not carry indexes to null in an expression, so each
+# alternative simply falls through on the events it does not apply to, and
+# `github.ref` stays the last-resort key for an event with no PR at all.
+#
+# OMN-20482: the group also carries the event name. A check_suite re-attempt
+# for a PR landed in the same `Auto-Merge-<pr>` group as that PR's pull_request
+# run and, under `cancel-in-progress: true`, cancelled it at checkout (annotation
+# "Canceling since a higher priority waiting request for Auto-Merge-<pr>
+# exists"). The survivor writes its `Enable Auto-Merge` check-run on the default
+# branch's sha, never on the PR head, so the head kept only the cancelled copy
+# and `CI Summary` failed closed on it. A run is now superseded only by a newer
+# run of its own event class: a newer push still replaces the older
+# pull_request run, and a newer check_suite completion still replaces the older
+# one, but no class cancels another.
+concurrency:
+  group: >-
+    ${{ github.workflow }}-${{ github.event_name }}-${{
+      github.event.pull_request.number
+      || github.event.inputs.pr_number
+      || github.event.check_suite.pull_requests[0].number
+      || github.ref
+    }}
+  cancel-in-progress: true
+
+jobs:
+  auto-merge:
+    name: Enable Auto-Merge
+    runs-on: >-
+      ${{
+        (github.event_name == 'pull_request' &&
+         github.event.pull_request.head.repo.full_name != github.repository)
+        && fromJSON(vars.OMNI_PUBLIC_PR_RUNS_ON_JSON || '["ubuntu-latest"]')
+        || fromJSON(vars.OMNI_TRUSTED_CI_RUNS_ON_JSON || '["self-hosted","omnibase-ci"]')
+      }}
+    steps:
+      - name: Resolve PR and author
+        id: resolve
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GH_REPO: ${{ github.repository }}
+          EVENT_NAME: ${{ github.event_name }}
+          PR_FROM_PAYLOAD: ${{ github.event.pull_request.number }}
+          PR_FROM_DISPATCH: ${{ github.event.inputs.pr_number }}
+          CHECK_SUITE_PRS: ${{ toJson(github.event.check_suite.pull_requests) }}
+          PR_AUTHOR_FROM_PAYLOAD: ${{ github.event.pull_request.user.login }}
+          PR_TITLE_FROM_PAYLOAD: ${{ github.event.pull_request.title }}
+        run: |
+          set -euo pipefail
+          case "$EVENT_NAME" in
+            pull_request|pull_request_review)
+              PR="$PR_FROM_PAYLOAD"
+              ACTOR="$PR_AUTHOR_FROM_PAYLOAD"
+              TITLE="$PR_TITLE_FROM_PAYLOAD"
+              ;;
+            workflow_dispatch)
+              PR="$PR_FROM_DISPATCH"
+              ACTOR="$(gh pr view "$PR" --json author --jq '.author.login')"
+              TITLE="$(gh pr view "$PR" --json title --jq '.title')"
+              ;;
+            check_suite)
+              PR="$(echo "$CHECK_SUITE_PRS" | jq -r 'if type == "array" and length > 0 then .[0].number else empty end')"
+              if [ -z "$PR" ]; then
+                echo "check_suite had no associated PRs; nothing to do"
+                echo "skip=true" >> "$GITHUB_OUTPUT"
+                exit 0
+              fi
+              ACTOR="$(gh pr view "$PR" --json author --jq '.author.login')"
+              TITLE="$(gh pr view "$PR" --json title --jq '.title')"
+              ;;
+            *)
+              echo "unsupported event: $EVENT_NAME"
+              echo "skip=true" >> "$GITHUB_OUTPUT"
+              exit 0
+              ;;
+          esac
+          # OMN-17922: arming-actor decision. Exactly two author shapes arm:
+          #   1. jonahgabriel (unchanged since OMN-6571);
+          #   2. the onexbot-occ-writer App — `app/onexbot-occ-writer` on the
+          #      `gh pr view` path, `onexbot-occ-writer[bot]` in the event
+          #      payload — and ONLY when the title starts with `evidence(`,
+          #      the shape every OCC evidence companion carries.
+          # Any other author, or the App with any other title, does not arm.
+          # This is deliberately not "any Bot": dependabot, github-actions and
+          # any future App stay outside the gate.
+          # OMN-17922 (2026-09-18): `companion` names the ONE shape whose
+          # eligibility reading is worth waiting for in-run — the OCC writer
+          # App's `evidence(` PR. It is strictly narrower than `arm`: the
+          # `jonahgabriel` identity arms but is never a companion, so no human
+          # PR pays for the poll. Nothing gates ON `companion` except the poll
+          # budget; it grants no authority `arm` does not already grant.
+          ARM=false
+          COMPANION=false
+          case "$ACTOR" in
+            jonahgabriel)
+              ARM=true
+              ;;
+            app/onexbot-occ-writer|onexbot-occ-writer\[bot\])
+              case "$TITLE" in
+                "evidence("*)
+                  ARM=true
+                  COMPANION=true
+                  ;;
+                *) ARM=false ;;
+              esac
+              ;;
+          esac
+          echo "actor=${ACTOR} title=${TITLE} arm=${ARM} companion=${COMPANION}"
+          {
+            echo "pr=$PR"
+            echo "actor=$ACTOR"
+            echo "arm=$ARM"
+            echo "companion=$COMPANION"
+            echo "skip=false"
+          } >> "$GITHUB_OUTPUT"
+
+      - uses: actions/checkout@v7
+
+      # OMN-10485: OCC eligibility gate.
+      # Query the `occ-preflight / eligibility` check result for the PR's head SHA.
+      # - SUCCESS → proceed to arm auto-merge.
+      # - PENDING / missing → defer silently; re-triggered when occ-preflight completes.
+      # - FAILURE → hard fail; log reason and exit 1 to surface the block.
+      # merge_group events skip this step; branch protection enforces occ-preflight
+      # as a required status check for the merge group itself.
+      #
+      # OMN-17922 (2026-09-18): BOUNDED WAIT ON THE COMPANION `opened` PATH.
+      # OMN-17922 made bot-authored OCC evidence companions arm at all. It did
+      # not make them arm PROMPTLY, because the decision above is taken once per
+      # event and the `pull_request: opened` run reaches this step before the
+      # companion's own eligibility check has started. Arming then waits for a
+      # `check_suite: completed` event, and that delivery is neither immediate
+      # nor one-per-PR. Measured on this repo 2026-09-18, four companions opened
+      # in one window:
+      #
+      #   PR      opened     eligibility SUCCESS   armed      wasted
+      #   10179   08:15:07   08:16:01 (+54s)       08:28:27   12m26s
+      #   10181   08:15:51   08:16:47 (+56s)       08:28:28   11m41s
+      #   10180   08:15:29   —                     08:33:42   18m13s
+      #   10183   08:31:39   08:32:43 (+64s)       08:35:47    3m04s
+      #
+      # In every case eligibility was green inside ~60s and the companion then
+      # sat unarmed for minutes, while the product PR behind it stayed BLOCKED on
+      # its `OCC Companion Merged Gate (OMN-15214)` check. Four lanes hand-armed
+      # a companion on the morning of 2026-09-18 for exactly this reason
+      # (FRICTION rows in docs/tracking/ROLLING_WORK_LEDGER.md).
+      #
+      # The fix is a bounded poll, NOT a relaxed gate. Nothing about WHAT is
+      # required changed: SUCCESS is still the only state that arms, a concluded
+      # FAILURE still hard-fails, and exhausting the budget defers exactly as
+      # before, leaving the existing check_suite path to arm later. The poll is
+      # scoped to the one shape that measurably suffers — the OCC writer App's
+      # `evidence(` companion, on the `pull_request` event — so human PRs, the
+      # check_suite re-attempt path and workflow_dispatch are byte-identical in
+      # behaviour and cost. A `pull_request`-triggered run of this job takes
+      # ~16s today; at ~12 companions/hour the added runner time is well under a
+      # minute per companion and under 15 minutes per hour in total.
+      #
+      # Deliberately NOT done here: arming before eligibility concludes on the
+      # grounds that `occ-preflight / eligibility` is a required status check on
+      # `dev` and GitHub would hold the merge anyway. That is true today and is
+      # a property of branch protection, which this workflow cannot read with
+      # `secrets.GITHUB_TOKEN`; making it readable would put the PAT on a third,
+      # read-only step. A gate that stays fail-closed on its own evidence is
+      # worth more than the last ~60 seconds.
+      - name: Check OCC eligibility preflight status
+        id: occ_gate
+        if: steps.resolve.outputs.skip != 'true' && steps.resolve.outputs.arm == 'true' && github.event_name != 'merge_group'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GH_REPO: ${{ github.repository }}
+          PR: ${{ steps.resolve.outputs.pr }}
+          # OMN-17922: the poll budget is non-zero for exactly one shape — a bot
+          # OCC evidence companion on its own `opened` event. Every other actor,
+          # title and event resolves to 0 and takes a single reading, which is
+          # the pre-OMN-17922-poll behaviour unchanged.
+          # OMN-18797: 180s was shorter than the queue. The measured worst case
+          # is 5m05s from companion open to the eligibility JOB BEING CREATED
+          # (occ#10322, 2026-09-19), against a budget that expired at 3m22s.
+          # 900s carries ~2.5x that margin and costs nothing in the ordinary
+          # case, where the poll exits on the first terminal reading in ~16s.
+          # The budget also covers `workflow_dispatch`, so re-dispatching this
+          # workflow at a stuck companion is a real recovery path rather than
+          # one more single reading.
+          ELIGIBILITY_POLL_SECONDS: >-
+            ${{ (steps.resolve.outputs.companion == 'true' && (github.event_name == 'pull_request' || github.event_name == 'workflow_dispatch')) && '900' || '0' }}
+          ELIGIBILITY_POLL_INTERVAL_SECONDS: "10"
+          # OMN-18797: scopes the fail-closed exhaustion below to the same shape
+          # the budget is scoped to. The check_suite path keeps its silent
+          # deferral: a late event finding a still-pending check is ordinary,
+          # and it carries no budget to have exhausted.
+          COMPANION: ${{ steps.resolve.outputs.companion }}
+        run: |
+          set -euo pipefail
+
+          head_sha="$(gh pr view "$PR" --repo "$GH_REPO" --json headRefOid --jq '.headRefOid')"
+          if [ -z "$head_sha" ]; then
+            echo "::warning::Could not resolve head SHA for PR #${PR}; deferring auto-merge"
+            echo "defer=true" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+
+          # The check_run name is "eligibility" (job key in occ-preflight.yml) nested
+          # under the "OCC Preflight" workflow. GitHub exposes it as
+          # "occ-preflight / eligibility". A busy PR head can have more than one
+          # Checks API page, and `gh api --paginate --slurp` emits one array containing
+          # every object-rooted page. Select only after flattening every page.
+          # When all candidates have a start timestamp, use the repository's canonical
+          # `(started_at, id)` latest-wins order (also used by ci_summary_gate.py); the
+          # selected run's status controls pass, fail, or defer. A queued run can omit
+          # `started_at`; the API exposes no creation timestamp to establish its order,
+          # so defer rather than inventing an ordering rule.
+          #
+          # OMN-17922: this reading is a function so the poll below re-takes it
+          # whole. Every failure path still yields '{}', i.e. missing/missing,
+          # which is a deferring (never an arming) reading. It writes the reading
+          # to a FILE rather than stdout, because its `::warning::` lines have to
+          # reach stdout for Actions to parse them as workflow commands, and a
+          # command-substituted function would capture them into the reading.
+          eligibility_file="$(mktemp)"
+          read_eligibility() {
+            local check_pages check_result
+            if check_pages="$(gh api \
+              "repos/${GH_REPO}/commits/${head_sha}/check-runs?per_page=100" \
+              --paginate --slurp 2>&1)"; then
+              if ! check_result="$(printf '%s' "$check_pages" | jq -cer '
+                if type != "array" then
+                  error("check-runs pages must be an array")
+                elif any(.[]; if type != "object" then true elif (has("check_runs") | not) then true elif (.check_runs | type) != "array" then true else false end) then
+                  error("every check-runs page must be an object with an array check_runs field")
+                else
+                  .
+                end
+                | [.[] | .check_runs[]
+                    | if type != "object" then error("check-runs entry must be an object") elif (has("name") | not) or ((.name | type) != "string") then error("check-runs entry name missing or invalid") else . end
+                    | select(.name == "eligibility" or .name == "occ-preflight / eligibility")]
+                | if any(.[]; ((.started_at | type) != "string") or (.started_at == "")) then
+                    {conclusion: null, status: "in_progress", defer_reason: "missing_started_at"}
+                  else
+                    (sort_by([
+                      .started_at,
+                      (.id as $id | if ($id | type) == "number" then $id elif ($id | type) == "string" then ($id | tonumber) else error("check run id missing or invalid") end)
+                    ]) | last // {})
+                  end')"; then
+                echo "::warning::Could not parse paginated OCC eligibility checks for PR #${PR}; deferring auto-merge"
+                check_result='{}'
+              fi
+            else
+              echo "::warning::Could not query paginated OCC eligibility checks for PR #${PR}; deferring auto-merge"
+              check_result='{}'
+            fi
+            printf '%s' "$check_result" > "$eligibility_file"
+          }
+
+          # OMN-17922: poll until the reading is TERMINAL (completed) or the
+          # budget runs out. A zero budget takes exactly one reading. The
+          # deadline is computed once, so a slow API call shortens the poll
+          # rather than extending the job past its budget.
+          poll_seconds="${ELIGIBILITY_POLL_SECONDS:-0}"
+          interval_seconds="${ELIGIBILITY_POLL_INTERVAL_SECONDS:-10}"
+          case "$poll_seconds" in ''|*[!0-9]*) poll_seconds=0 ;; esac
+          case "$interval_seconds" in ''|*[!0-9]*|0) interval_seconds=10 ;; esac
+          deadline=$(( $(date +%s) + poll_seconds ))
+          attempts=0
+
+          while :; do
+            read_eligibility
+            check_result="$(cat "$eligibility_file")"
+            attempts=$(( attempts + 1 ))
+            conclusion="$(printf '%s' "$check_result" | jq -r '.conclusion // "missing"')"
+            status="$(printf '%s' "$check_result" | jq -r '.status // "missing"')"
+            [ "$status" = "completed" ] && break
+            [ "$(date +%s)" -lt "$deadline" ] || break
+            echo "occ-preflight status=${status} conclusion=${conclusion} — waiting ${interval_seconds}s (attempt ${attempts}, budget ${poll_seconds}s)"
+            sleep "$interval_seconds"
+          done
+
+          if [ "$(printf '%s' "$check_result" | jq -r '.defer_reason // empty')" = "missing_started_at" ]; then
+            echo "::warning::An OCC eligibility check for PR #${PR} has no started_at; its recency is ambiguous, so auto-merge will defer"
+          fi
+
+          echo "occ-preflight status=${status} conclusion=${conclusion} after ${attempts} reading(s), budget ${poll_seconds}s"
+
+          if [ "$status" = "completed" ] && [ "$conclusion" = "success" ]; then
+            echo "OCC eligibility: PASS — proceeding to arm auto-merge"
+            echo "defer=false" >> "$GITHUB_OUTPUT"
+          elif [ "$status" = "completed" ] && { [ "$conclusion" = "failure" ] || [ "$conclusion" = "action_required" ]; }; then
+            echo "::error::OCC PREFLIGHT FAILED for PR #${PR} (head ${head_sha}). Auto-merge will not arm until OCC eligibility is satisfied."
+            echo "::error::Add a passing receipt to drift/dod_receipts/ in onex_change_control for all dod_evidence items cited in this PR's ticket contract."
+            exit 1
+          elif [ "${COMPANION:-false}" = "true" ] && [ "$poll_seconds" -gt 0 ]; then
+            # OMN-18797: a companion that spent its whole budget without a
+            # terminal reading is NOT armed, and saying so quietly is how
+            # occ#10322 went unnoticed for 26 minutes. The run goes red. It is
+            # not a required check on `dev` (read back live 2026-09-19: the four
+            # required contexts are CI Summary, required-check-skip-guard /
+            # check-skip-vectors, verify / verify and occ-preflight /
+            # eligibility) and this job is not in CI Summary's
+            # EXPECTED_EXTERNAL_CONTEXTS, so a red run raises an alarm without
+            # blocking anything. Arming is not foreclosed either: a later
+            # check_suite event still runs this workflow and still arms.
+            echo "defer=true" >> "$GITHUB_OUTPUT"
+            echo "::error::companion PR #${PR} is NOT armed: OCC eligibility read ${status}/${conclusion} and never reached success across ${attempts} reading(s) within a ${poll_seconds}s budget. Check occ-preflight on head ${head_sha} — if it is green now, arm with: gh workflow run auto-merge.yml --repo ${GH_REPO} -f pr_number=${PR}"
+            exit 1
+          else
+            # PENDING or missing: defer. Auto-merge workflow re-fires on check_suite completion.
+            echo "::notice::OCC preflight ${status}/${conclusion} for PR #${PR} — deferring auto-merge arming until eligibility check completes"
+            echo "defer=true" >> "$GITHUB_OUTPUT"
+          fi
+
+      # OMN-16117: Governance-path exclusion. A PR whose diff touches a
+      # governance file must never be armed for auto-merge or enqueued,
+      # regardless of occ-preflight outcome. Fail-closed: if the
+      # changed-file set cannot be resolved from the GitHub API, this is
+      # treated identically to "touches a governance file" (excluded) --
+      # never as "safe to arm". The pure decision logic (and the
+      # None-vs-empty-list distinction between "undetermined" and
+      # "genuinely touches nothing") lives in
+      # scripts/ci/check_governance_paths.py and is unit-tested there.
+      - name: Check governance-path exclusion
+        id: governance_gate
+        if: steps.resolve.outputs.skip != 'true' && steps.resolve.outputs.arm == 'true'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GH_REPO: ${{ github.repository }}
+          PR: ${{ steps.resolve.outputs.pr }}
+        run: |
+          set -euo pipefail
+          # NOTE: --paginate cannot be combined with --jq here (gh emits one
+          # JSON array PER PAGE, so a >100-file PR would silently produce
+          # multiple concatenated JSON documents and --jq would only see the
+          # first page). Fetch raw pages, then `jq -s` (slurp) combines
+          # however many page-documents were emitted into one array before
+          # flattening to filenames -- correct for both the 1-page and
+          # multi-page case.
+          if changed_files_json="$(gh api "repos/${GH_REPO}/pulls/${PR}/files" --paginate 2>/dev/null | jq -c -s '[.[][].filename]')" \
+            && [ -n "$changed_files_json" ]; then
+            :
+          else
+            echo "::warning::Could not resolve the changed-file set for PR #${PR} via the GitHub API; failing closed (OMN-16117)."
+            changed_files_json="null"
+          fi
+
+          result="$(python3 scripts/ci/check_governance_paths.py check --changed-files-json "$changed_files_json")"
+          echo "governance-path check: ${result}"
+
+          if [ "$result" = "exclude" ]; then
+            echo "::warning::PR #${PR} touches a governance file (or its changed-file set could not be determined) — auto-merge will NOT be armed (OMN-16117)."
+            echo "exclude=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "exclude=false" >> "$GITHUB_OUTPUT"
+          fi
+
+      # OMN-18179: this job used to arm auto-merge with no check for whether a
+      # human had already turned it off. It fires on `pull_request: opened` and
+      # again on `pull_request_review`, so an explicit `gh pr merge
+      # --disable-auto` could be undone by the next trigger and the PR would
+      # merge as soon as its checks went green. Converting to draft was the only
+      # durable pause. Three PRs were armed over a human decision inside 24
+      # hours, one of them a prod scale-down taking 13 Deployments to zero
+      # replicas (omninode_infra#1310, armed 2026-09-10T17:15:29Z, disabled
+      # 18:50:55Z, converted to draft 18:52:35Z to contain it).
+      #
+      # The rule is small: the most recent human decision wins. Re-arming by
+      # hand writes a fresh enable event after the disable, so automation
+      # resumes with no special case. The decision logic is pure and unit-tested
+      # in scripts/ci/check_auto_merge_hold.py; this step only fetches.
+      - name: Check for a previously disabled auto-merge (OMN-18179)
+        id: hold_gate
+        if: steps.resolve.outputs.skip != 'true' && steps.resolve.outputs.arm == 'true'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GH_REPO: ${{ github.repository }}
+          PR: ${{ steps.resolve.outputs.pr }}
+        run: |
+          set -euo pipefail
+          owner="${GH_REPO%/*}"
+          name="${GH_REPO#*/}"
+          # Two measured API details this query depends on (2026-09-11):
+          #
+          # 1. itemTypes MUST list all three enable variants. Arming with an
+          #    explicit method -- `--squash --auto`, which is what this repo
+          #    uses -- emits AutoSquashEnabledEvent, NOT AutoMergeEnabledEvent.
+          #    A filter naming only the latter returns an empty enable history
+          #    for every PR this workflow has ever armed.
+          # 2. Do NOT read timelineItems.totalCount. It ignores the itemTypes
+          #    filter and returns the unfiltered timeline length: the query that
+          #    returned 2 filtered nodes for omninode_infra#1310 reported
+          #    totalCount 7, and 2 nodes / totalCount 13 for #1313.
+          #
+          # tests/ci/test_auto_merge_hold_omn18179.py asserts this filter and
+          # the helper's event tuples stay in lockstep, and that totalCount
+          # never appears in this file.
+          # shellcheck disable=SC2016 # GraphQL variables are interpreted by GitHub, not this shell.
+          if ! payload="$(gh api graphql \
+            -f query='query($owner:String!,$name:String!,$pr:Int!){repository(owner:$owner,name:$name){pullRequest(number:$pr){labels(first:100){nodes{name}} timelineItems(last:100, itemTypes:[AUTO_MERGE_ENABLED_EVENT,AUTO_SQUASH_ENABLED_EVENT,AUTO_REBASE_ENABLED_EVENT,AUTO_MERGE_DISABLED_EVENT]){nodes{__typename ... on AutoMergeEnabledEvent{createdAt} ... on AutoSquashEnabledEvent{createdAt} ... on AutoRebaseEnabledEvent{createdAt} ... on AutoMergeDisabledEvent{createdAt reason}}}}}}' \
+            -f owner="$owner" \
+            -f name="$name" \
+            -F pr="$PR")"; then
+            echo "::warning::Could not read the auto-merge timeline for PR #${PR}; holding (OMN-18179)."
+            payload=""
+          fi
+
+          # A response whose shape is anything other than the expected array is
+          # "undetermined", never "empty and therefore safe" -- the helper
+          # distinguishes the two and fails closed on the former.
+          if [ -n "$payload" ]; then
+            timeline_json="$(printf '%s' "$payload" | jq -c 'if (.data.repository.pullRequest.timelineItems.nodes | type) == "array" then .data.repository.pullRequest.timelineItems.nodes else null end')"
+            labels_json="$(printf '%s' "$payload" | jq -c 'if (.data.repository.pullRequest.labels.nodes | type) == "array" then [.data.repository.pullRequest.labels.nodes[].name] else null end')"
+          else
+            timeline_json="null"
+            labels_json="null"
+          fi
+
+          verdict="$(python3 scripts/ci/check_auto_merge_hold.py hold \
+            --timeline-json "$timeline_json" \
+            --labels-json "$labels_json")"
+          echo "auto-merge hold check for PR #${PR}: ${verdict}"
+
+          if [ "$verdict" = "hold" ]; then
+            echo "::warning::PR #${PR} has a previously disabled auto-merge or carries the deliberate-pause label (or its state could not be read); auto-merge will NOT be armed (OMN-18179). Re-arm by hand to resume."
+            echo "hold=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "hold=false" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Enable auto-merge
+        if: >-
+          steps.resolve.outputs.skip != 'true' &&
+          steps.resolve.outputs.arm == 'true' &&
+          steps.occ_gate.outputs.defer != 'true' &&
+          steps.governance_gate.outputs.exclude != 'true' &&
+          steps.hold_gate.outputs.hold != 'true'
+        env:
+          # OMN-17922 / OMN-17875: MUST be CROSS_REPO_PAT. GitHub completes an
+          # armed auto-merge as the arming identity, and a GITHUB_TOKEN- or
+          # App-token-authored merge fires no push / pull_request:closed event
+          # on dev (OMN-16373 probe). Do not "modernise" this back to
+          # GITHUB_TOKEN or to an onexbot-occ-writer App token.
+          GH_TOKEN: ${{ secrets.CROSS_REPO_PAT }}
+          GH_REPO: ${{ github.repository }}
+          PR: ${{ steps.resolve.outputs.pr }}
+        run: |
+          set -euo pipefail
+          # OMN-19216: a ready flip, a check_suite completion and a review can each
+          # reach this step for one PR. An already-armed PR is left alone rather
+          # than armed a second time.
+          armed="$(gh pr view "$PR" --repo "$GH_REPO" --json autoMergeRequest --jq '.autoMergeRequest != null')"
+          if [ "$armed" = "true" ]; then
+            echo "PR #${PR} is already armed; not arming again (OMN-19216)."
+            exit 0
+          fi
+          # The merge method is set by a queue when the actual PR base has one, so
+          # queue-backed bases require bare --auto. A no-queue base requires an
+          # explicit method in non-interactive gh; this repository permits squash only.
+          # Fail closed on either base or queue-query ambiguity rather than guessing a
+          # strategy. OMN-13214's enqueue + verify step below remains authoritative for
+          # queue-backed bases.
+          base_ref="$(gh pr view "$PR" --repo "$GH_REPO" --json baseRefName --jq '.baseRefName')"
+          if [ -z "$base_ref" ]; then
+            echo "::error::Could not resolve base branch for PR #${PR}; refusing to arm auto-merge"
+            exit 1
+          fi
+
+          owner="${GH_REPO%/*}"
+          name="${GH_REPO#*/}"
+          # shellcheck disable=SC2016 # GraphQL variables are interpreted by GitHub, not this shell.
+          if ! queue_state="$(gh api graphql \
+            -f query='query($owner:String!,$name:String!,$branch:String!){repository(owner:$owner,name:$name){mergeQueue(branch:$branch){id}}}' \
+            -f owner="$owner" \
+            -f name="$name" \
+            -f branch="$base_ref" \
+            --jq 'if (.data | type) != "object" then error("GraphQL data missing or invalid") elif (.data.repository | type) != "object" then error("repository missing or invalid") elif (.data.repository | has("mergeQueue") | not) then error("mergeQueue field missing") elif .data.repository.mergeQueue == null then "no_queue" elif ((.data.repository.mergeQueue | type) == "object" and (.data.repository.mergeQueue.id | type) == "string" and (.data.repository.mergeQueue.id | length) > 0) then "queue" else error("invalid mergeQueue response") end')"; then
+            echo "::error::Could not determine merge-queue state for ${GH_REPO}/${base_ref}; refusing to arm auto-merge"
+            exit 1
+          fi
+
+          case "$queue_state" in
+            queue)
+              merge_args=(--auto)
+              ;;
+            no_queue)
+              if ! squash_allowed="$(gh api "repos/${GH_REPO}" --jq '.allow_squash_merge')"; then
+                echo "::error::Could not verify the allowed merge method for ${GH_REPO}; refusing to arm auto-merge"
+                exit 1
+              fi
+              if [ "$squash_allowed" != "true" ]; then
+                echo "::error::No merge queue and squash is not allowed for ${GH_REPO}; refusing to arm auto-merge"
+                exit 1
+              fi
+              merge_args=(--auto --squash)
+              ;;
+            *)
+              echo "::error::Unexpected merge-queue state '${queue_state}'; refusing to arm auto-merge"
+              exit 1
+              ;;
+          esac
+
+          echo "merge-queue state for '${base_ref}': ${queue_state}"
+          if output=$(gh pr merge "$PR" --repo "$GH_REPO" "${merge_args[@]}" 2>&1); then
+            echo "auto-merge enabled: $output"
+          elif echo "$output" | grep -qiE "already enqueued|already queued|auto-merge already enabled"; then
+            echo "auto-merge not newly enabled (expected): $output"
+          else
+            echo "auto-merge failed: $output"
+            exit 1
+          fi
+
+      - name: Enqueue armed PR and verify it entered the queue
+        if: >-
+          steps.resolve.outputs.skip != 'true' &&
+          steps.resolve.outputs.arm == 'true' &&
+          steps.occ_gate.outputs.defer != 'true' &&
+          steps.governance_gate.outputs.exclude != 'true' &&
+          steps.hold_gate.outputs.hold != 'true'
+        env:
+          # OMN-17922 / OMN-17875: this step mutates merge state (`gh pr
+          # update-branch` pushes onto the PR head; enqueuePullRequest hands
+          # the merge to a queue), so it carries the same non-suppressing
+          # identity as the arming step above.
+          GH_TOKEN: ${{ secrets.CROSS_REPO_PAT }}
+          GH_REPO: ${{ github.repository }}
+          PR: ${{ steps.resolve.outputs.pr }}
+        run: |
+          set -euo pipefail
+          OWNER="${GH_REPO%/*}"
+          NAME="${GH_REPO#*/}"
+
+          classify() {
+            python3 scripts/ci/merge_queue_enqueue.py classify \
+              --pr-json "$1" --strict-update "$2"
+          }
+
+          # Is the target (default) branch strict-update? On strict repos a BEHIND
+          # PR cannot enqueue until its branch is updated. OCC dev IS strict-update.
+          DEFAULT_BRANCH="$(gh repo view "$GH_REPO" --json defaultBranchRef --jq '.defaultBranchRef.name')"
+          STRICT="$(gh api "repos/${GH_REPO}/branches/${DEFAULT_BRANCH}/protection/required_status_checks" \
+            --jq '.strict' 2>/dev/null || echo "false")"
+          [ "$STRICT" = "true" ] || STRICT="false"
+          echo "strict-update on '${DEFAULT_BRANCH}': ${STRICT}"
+
+          fetch_pr() {
+            # isInMergeQueue is only on the GraphQL PullRequest object, NOT a
+            # `gh pr view --json` field, so fetch PR state via GraphQL.
+            # shellcheck disable=SC2016  # $owner/$name/$number are GraphQL vars, not shell vars
+            gh api graphql \
+              -f owner="$OWNER" \
+              -f name="$NAME" \
+              -F number="$PR" \
+              -f query='
+                query($owner:String!, $name:String!, $number:Int!) {
+                  repository(owner: $owner, name: $name) {
+                    pullRequest(number: $number) {
+                      isInMergeQueue
+                      mergeStateStatus
+                      mergeable
+                      autoMergeRequest {
+                        enabledAt
+                      }
+                    }
+                  }
+                }' \
+              --jq '.data.repository.pullRequest'
+          }
+
+          PR_JSON="$(fetch_pr)"
+          ACTION="$(classify "$PR_JSON" "$STRICT")"
+          echo "classified action: ${ACTION}"
+
+          case "$ACTION" in
+            already_queued)
+              echo "PR #${PR} already in the merge queue — nothing to do."
+              exit 0
+              ;;
+            wait)
+              echo "PR #${PR} is not enqueueable yet (BLOCKED/DIRTY/DRAFT/UNKNOWN); will re-fire on next event."
+              exit 0
+              ;;
+            blocked)
+              echo "::warning::PR #${PR} in an unrecognised merge state: $(printf '%s' "$PR_JSON" | jq -r '.mergeStateStatus'). Not enqueuing."
+              exit 0
+              ;;
+            update_branch_then_enqueue)
+              echo "PR #${PR} is BEHIND on a strict-update repo — updating branch before enqueue (OMN-13214)."
+              # Do NOT treat every non-zero update-branch result as benign: a real
+              # failure here silently leaves a strict-update PR stuck BEHIND with no
+              # enqueue and no failure signal. Tolerate only known no-op/race
+              # messages; surface everything else as a hard failure.
+              if ! ub_out="$(gh pr update-branch "$PR" --repo "$GH_REPO" 2>&1)"; then
+                if echo "$ub_out" | grep -qiE "already up to date|not behind|no update needed|already merged"; then
+                  echo "update-branch no-op: $ub_out"
+                else
+                  echo "::error::update-branch failed for PR #${PR}: $ub_out"
+                  exit 1
+                fi
+              else
+                echo "update-branch succeeded: $ub_out"
+              fi
+              echo "update-branch issued; the resulting check run re-fires this workflow when CI is green."
+              exit 0
+              ;;
+            enqueue)
+              : # fall through to enqueue below
+              ;;
+            *)
+              echo "::error::unexpected action '${ACTION}' from classifier"
+              exit 1
+              ;;
+          esac
+
+          PR_ID="$(gh api graphql -f query='{repository(owner:"'"$OWNER"'",name:"'"$NAME"'"){pullRequest(number:'"$PR"'){id}}}' --jq '.data.repository.pullRequest.id')"
+          if [ -z "$PR_ID" ] || [ "$PR_ID" = "null" ]; then
+            echo "::error::could not resolve PR node id for #${PR}"
+            exit 1
+          fi
+
+          # shellcheck disable=SC2016  # $prId is a GraphQL variable, not a shell var
+          if enq_out=$(gh api graphql -f query='mutation($prId:ID!){enqueuePullRequest(input:{pullRequestId:$prId}){mergeQueueEntry{position}}}' -f prId="$PR_ID" 2>&1); then
+            echo "enqueue issued: ${enq_out}"
+          else
+            if echo "$enq_out" | grep -qiE "merge queue (is )?not enabled|does not have a merge queue|merge_queue_not_enabled"; then
+              echo "repo has no merge queue — arming auto-merge is sufficient: ${enq_out}"
+              exit 0
+            fi
+            if echo "$enq_out" | grep -qiE "already (in|enqueued|queued)|in the merge queue"; then
+              echo "benign enqueue race (already queued): ${enq_out}"
+            else
+              echo "::error::enqueuePullRequest failed for #${PR}: ${enq_out}"
+              exit 1
+            fi
+          fi
+
+          # OMN-13214 ENFORCEMENT: verify the PR actually entered the queue.
+          # Poll briefly — GitHub may take a few seconds to reflect the entry.
+          for attempt in 1 2 3 4 5; do
+            sleep 6
+            PR_AFTER="$(fetch_pr)"
+            if python3 scripts/ci/merge_queue_enqueue.py verify --pr-json "$PR_AFTER"; then
+              echo "VERIFIED: PR #${PR} is in the merge queue."
+              exit 0
+            fi
+            echo "not yet in queue (attempt ${attempt}/5); state=$(printf '%s' "$PR_AFTER" | jq -r '.mergeStateStatus')"
+          done
+
+          echo "::error::PR #${PR} is green + armed but did NOT enter the merge queue after enqueue (OMN-13214 armed-but-not-enqueued). Manual intervention required."
+          exit 1

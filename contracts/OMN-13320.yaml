@@ -1,0 +1,58 @@
+---
+schema_version: "1.0.0"
+ticket_id: "OMN-13320"
+title: "fix(OMN-13320): stale-run cleanup must protect the current PR head run"
+summary: >-
+  OCC evidence for the omnimarket fix in node_pr_lifecycle_fix_effect (Enforcement Map F4). Stale-run
+  cleanup previously cancelled the pull_request workflow run tied to the current PR head SHA, which re-triggered
+  the very checks the merge was waiting on and added latency; ancient re-runs that had not yet queued
+  returned HTTP 409 ("Cannot cancel a workflow re-run that has not yet queued") and were mishandled. The
+  fix adds GitHubCliAdapter.cancel_obsolete_runs, which enumerates pull_request runs for the PR branch,
+  NEVER cancels the run whose head_sha equals the current PR head, force-cancels every obsolete-head run
+  via /actions/runs/<id>/force-cancel, and classifies HTTP 409 as stale metadata (skip, no retry, no raise).
+  GitHubApiError now carries status_code so the 409 branch keys off the HTTP code, not message string-matching.
+  Non-409 GitHub errors still fail loud.
+is_seam_ticket: false
+interface_change: false
+interfaces_touched: []
+emergency_bypass:
+  enabled: false
+  justification: ""
+  follow_up_ticket_id: ""
+dod_evidence:
+  - id: "dod-head-run-survives"
+    description: >-
+      Runnable DoD: running cleanup against a PR with an in-flight head run leaves the head run id untouched
+      while obsolete-head runs are force-cancelled, and an HTTP 409 on force-cancel is classified stale
+      and skipped (next obsolete run still cancelled; non-409 fails loud). The focused suite tests/unit/nodes/node_pr_lifecycle_fix_effect/test_adapter_github_cli.py
+      passes, including test_cancel_obsolete_runs_protects_current_head_run, test_cancel_obsolete_runs_skips_http_409_stale,
+      and test_cancel_obsolete_runs_reraises_non_409.
+    source: "manual"
+    status: "verified"
+    checks:
+      - check_type: "command"
+        check_value: "grep -q '^status: PASS$' drift/dod_receipts/OMN-13320/dod-head-run-survives/command.yaml"
+  - id: "dod-deploy-gate"
+    description: >-
+      Deploy-gate evidence for the merge-sweep runtime path this fix touches (node_pr_lifecycle_fix_effect
+      EFFECT handler adapter_github_cli.py): after merge, deploy the omnimarket dev runtime and confirm
+      node_pr_lifecycle_fix_effect loads and its cancel_obsolete_runs path force-cancels only obsolete-head
+      pull_request runs while leaving the current PR head run untouched. Pre-merge proof is the focused
+      adapter suite (8 passed) asserting the head run id survives, the HTTP 409 path is skipped, and a
+      non-409 error fails loud. No live prod deploy or runtime restart was performed as part of this pre-merge
+      evidence update.
+    source: "manual"
+    status: "verified"
+    checks:
+      - check_type: "command"
+        check_value: "grep -q '^status: PASS$' drift/dod_receipts/OMN-13320/dod-deploy-gate/command.yaml
+          && grep -q 'deploy omnimarket' drift/dod_receipts/OMN-13320/dod-deploy-gate/command.yaml"
+  - id: "dod-occ-pr"
+    description: >-
+      Self-binding receipt for this OCC PR, which carries the central contracts/OMN-13320.yaml consumed
+      by the omnimarket fix PR Receipt Gate via Evidence-Source.
+    source: "manual"
+    status: "verified"
+    checks:
+      - check_type: "command"
+        check_value: "grep -c '^ticket_id: \"OMN-13320\"$' contracts/OMN-13320.yaml"

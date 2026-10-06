@@ -1,0 +1,51 @@
+---
+schema_version: "1.0.0"
+ticket_id: "OMN-12942"
+title: "fix(OMN-12942): restore llm_routing base-table-before-view migration + base-table-before-view
+  ordering gate"
+summary: >-
+  Restore the node_projection_llm_routing projection view migration that was pruned during the 2026-06-11
+  04:24Z stability hot-patch. The 0001 view composes projection_routing_decision over llm_routing_decisions,
+  but that base table only existed in the flat infra forward set (065) — never in the node's own migration
+  set — so a clean node-set forward run hard-fails on the missing relation (leading hypothesis for the
+  :13002 projection-api instability, P0.1b / OMN-12953). The fix adds an idempotent, self-contained base
+  table migration 0000_create_llm_routing_decisions.sql (schema identical to infra 065) ordered before
+  the view, and ships an enforcement ratchet — scripts/ci/check_migration_base_before_view.py — that statically
+  asserts every node migration set creates base tables (or earlier views) before any view that reads them,
+  wired as a pre-commit hook AND a ci.yml step with tests/ci/test_check_migration_base_before_view.py.
+  node_projection_savings/077 was pruned alongside but is already correctly ordered in-node (074 base
+  before 077 view); the gate confirms it. No live lane mutated; runtime re-verification is deploy_pending
+  behind the batch stability rebuild.
+is_seam_ticket: false
+interface_change: false
+interfaces_touched: []
+dod_evidence:
+  - id: "dod-product-pr-1168"
+    description: "omnimarket PR #1168 adds node_projection_llm_routing/0000_create_llm_routing_decisions.sql
+      (self-contained base table ordered before the 0001 view) and the enforcement ratchet scripts/ci/check_migration_base_before_view.py
+      (pre-commit hook + ci.yml step) with 9 unit tests. Local proof: ruff/mypy --strict clean; pre-commit
+      on changed files all pass (incl. new gate); 84 migration/ci tests pass; SQL applied on throwaway
+      Postgres 16 (base+view exit 0, view queryable; savings 074->077 + delegation dep exit 0). Gate proven
+      to flag the defect when the base table is removed."
+    source: "manual"
+    status: "verified"
+    checks:
+      - check_type: "command"
+        check_value: >-
+          grep -q '^status: PASS$' "$CONTRACT_REPO_DIR/drift/dod_receipts/OMN-12942/dod-product-pr-1168/command.yaml"
+          && grep -q '^ticket_id: "OMN-12942"$' "$CONTRACT_REPO_DIR/drift/dod_receipts/OMN-12942/dod-product-pr-1168/command.yaml"
+          && grep -q '^pr_number: 1168$' "$CONTRACT_REPO_DIR/drift/dod_receipts/OMN-12942/dod-product-pr-1168/command.yaml"
+  - id: "dod-occ-pr"
+    description: "This OCC PR carries the OMN-12942 central contract and the dod-product-pr-1168 receipt
+      that omnimarket PR #1168's Receipt-Gate Evidence-Source resolves via Evidence-Source: OCC#<this-pr>."
+    source: "manual"
+    status: "verified"
+    checks:
+      - check_type: "command"
+        check_value: >-
+          grep -q '^status: PASS$' "$CONTRACT_REPO_DIR/drift/dod_receipts/OMN-12942/dod-occ-pr/command.yaml"
+          && grep -q '^ticket_id: "OMN-12942"$' "$CONTRACT_REPO_DIR/drift/dod_receipts/OMN-12942/dod-occ-pr/command.yaml"
+emergency_bypass:
+  enabled: false
+  justification: ""
+  follow_up_ticket_id: ""

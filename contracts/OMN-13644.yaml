@@ -1,0 +1,68 @@
+---
+schema_version: "1.0.0"
+ticket_id: "OMN-13644"
+title: "Plumb context_pack_hash through delegation orchestrator + projection on all terminals"
+summary: >-
+  Plumbs context_pack_hash through the omnimarket delegation orchestrator and the delegation projection
+  so it persists on ALL terminals. ModelDelegationResult gained the field upstream (OMN-13646, omnibase_core
+  0.46.1 @ 52ee18b4c8fcc517996084437266f0738caf1cb5) but omnimarket never set it: the orchestrator collected
+  the hash into TerminalEmissionInputs at the three terminal sites yet built ModelDelegationResult WITHOUT
+  it (dead field), and the projection converter dropped it, so every row read the '' default. This change
+  pins the hash ONCE at request acceptance into DelegationWorkflowState (handle_delegation_request) and
+  sets ModelDelegationResult(context_pack_hash=...) inside the single terminal builder (_emit_terminal),
+  so it persists identically on COMPLETED and FAILED/ESCALATED terminals (the terminals read the pinned
+  state value, not the live request — escalation / prompt-text loss cannot drop it). The projection converter
+  (_canonical_result_to_task_delegated_payload) carries the hash into ModelTaskDelegatedEvent so the row
+  mapping reads a real value. Non-empty only on the ON arm (an actual context pack was injected); the
+  '' OFF-arm default is preserved verbatim. No bespoke co-writer event (OMN-13629 anti-pattern), no Plugin*,
+  no new REST; topics stay contract-sourced. Pin bump (pyproject.toml + uv.lock) adopts the upstream field.
+  Dev lane only; redeploy is a separate serialized step. Product PR: omnimarket #1455.
+is_seam_ticket: false
+interface_change: false
+interfaces_touched: []
+emergency_bypass:
+  enabled: false
+  justification: ""
+  follow_up_ticket_id: ""
+dod_evidence:
+  - id: "dod-omnimarket-pr-1455"
+    description: >-
+      omnimarket PR #1455 captures context_pack_hash at request acceptance into DelegationWorkflowState
+      and sets it on the canonical ModelDelegationResult inside the single terminal builder, so COMPLETED
+      and FAILED terminals both carry it; the projection converter carries it into ModelTaskDelegatedEvent.
+      New unit tests (test_context_pack_hash_plumb_omn13644.py) prove the ON arm non-empty hash reaches
+      both terminals + the projection payload and the OFF arm '' default is preserved; 7 passed. Targeted
+      delegation + projection suites 499 passed/1 skipped; full suite 9818 passed (3 pre-existing Kafka-broker
+      integration failures unrelated); mypy --strict clean on both touched handlers; ruff + pre-commit
+      clean.
+    source: "manual"
+    status: "verified"
+    checks:
+      - check_type: "command"
+        check_value: >-
+          grep -q '^status: PASS$' drift/dod_receipts/OMN-13644/dod-omnimarket-pr-1455/command.yaml &&
+          grep -q '^pr_number: 1455$' drift/dod_receipts/OMN-13644/dod-omnimarket-pr-1455/command.yaml
+  - id: "dod-deploy-assessment"
+    description: >-
+      Deploy assessment for omnimarket PR #1455. Pure handler-logic plumb + dependency pin bump; no live
+      deploy, runtime restart, topic mutation, or .201 mutation is performed (dev lane only; the serialized
+      dev redeploy + live psql proof is a separate step).
+    source: "manual"
+    status: "verified"
+    checks:
+      - check_type: "command"
+        check_value: >-
+          grep -q '^status: PASS$' drift/dod_receipts/OMN-13644/dod-deploy-assessment/command.yaml &&
+          grep -q '^pr_number: 1455$' drift/dod_receipts/OMN-13644/dod-deploy-assessment/command.yaml
+          && grep -qi 'no live deploy' drift/dod_receipts/OMN-13644/dod-deploy-assessment/command.yaml
+  - id: "dod-occ-self"
+    description: >-
+      Self-binding OCC eligibility receipt for this onex_change_control PR. Carries the OMN-13644 contract
+      and DoD receipts onto dev and binds the OCC evidence PR itself with a PASS receipt whose pr_number
+      is this PR's number.
+    source: "manual"
+    status: "verified"
+    checks:
+      - check_type: "command"
+        check_value: >-
+          grep -q '^status: PASS$' drift/dod_receipts/OMN-13644/dod-occ-self/command.yaml

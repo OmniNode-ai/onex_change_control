@@ -1,0 +1,86 @@
+---
+schema_version: "1.0.0"
+ticket_id: "OMN-13404"
+title: "Fix 0016_delegation_quality_bar_evidence cold-apply: CREATE OR REPLACE VIEW reorders an existing
+  column"
+summary: >-
+  node_projection_delegation migration 0016_delegation_quality_bar_evidence did CREATE OR REPLACE VIEW
+  projection_delegation_quality_gate AS ... that inserted the two new authority columns (avg_actual_score,
+  avg_required_bar) ahead of the existing by_check_type column. Postgres forbids renaming/reordering an
+  existing output column at a given ordinal via CREATE OR REPLACE VIEW, so the view (which already exists
+  from 0010) failed to apply with "ERROR: cannot change name of view column by_check_type to avg_actual_score".
+  Because the forward-migration runner stops on first error (ON_ERROR_STOP=1), this blocked 0017_premium_counterfactual,
+  0018_delegation_cost_measurements, and 0019_delegation_budget_state on every cold lane, and the same
+  view-from-0010 + unapplied-0016 state blocks it on warm stability too. The minimal fix preserves the
+  15 existing column ordinals/names exactly as 0010 created them and appends the two new columns at ordinals
+  16-17, so CREATE OR REPLACE VIEW is legal; name-based consumers (contract projection columns list) are
+  unaffected. No DROP VIEW / CASCADE needed — pg_depend shows no object depends on projection_delegation_quality_gate
+  other than this view itself. The fix is shipped on omnimarket source PR #1327 and re-vendored byte-identical
+  into omnibase_infra docker/migrations/forward via sync-node-migrations.sh on omnibase_infra PR #2056.
+  This OCC PR carries the central contract consumed by both PR Receipt Gates via Evidence-Source.
+is_seam_ticket: false
+interface_change: false
+interfaces_touched: []
+emergency_bypass:
+  enabled: false
+  justification: ""
+  follow_up_ticket_id: ""
+dod_evidence:
+  - id: "dod-001"
+    description: >-
+      MANDATORY empirical cold-apply proof: a scratch throwaway Postgres 16 with a freshly-created cold
+      omnidash_analytics DB applied the full node_projection_delegation set 0007..0019 in lexical order
+      with psql -v ON_ERROR_STOP=1 -f (the exact runner semantics). All 14 files applied clean — including
+      the previously-failing 0016_delegation_quality_bar_evidence (now CREATE VIEW, no error) and the
+      downstream 0017/0018/0019. Resulting projection_delegation_quality_gate has 17 columns: ordinals
+      1-15 identical to 0010, avg_actual_score at 16, avg_required_bar at 17; view selectable. Scratch
+      container torn down. Proven on omnimarket PR #1327 / omnibase_infra PR #2056.
+    source: "manual"
+    status: "verified"
+    checks:
+      - check_type: "command"
+        check_value: "grep -q 'PASS' drift/dod_receipts/OMN-13404/dod-001/command.yaml"
+  - id: "dod-002"
+    description: >-
+      The CREATE OR REPLACE VIEW is legal because every pre-existing column keeps its 0010 ordinal/name;
+      the two new columns are appended. Verified by an information_schema.columns ordinal_position dump:
+      1 overall_pass_rate ... 15 latest_projection_updated_at, 16 avg_actual_score, 17 avg_required_bar.
+    source: "manual"
+    status: "verified"
+    checks:
+      - check_type: "command"
+        check_value: "grep -q 'PASS' drift/dod_receipts/OMN-13404/dod-002/command.yaml"
+  - id: "dod-003"
+    description: >-
+      The omnibase_infra vendored copy under docker/migrations/forward/nodes/node_projection_delegation/
+      is byte-identical to the fixed omnimarket source (cmp -s), produced via sync-node-migrations.sh;
+      pre-commit run on the changed omnimarket migration file passes including the migration base-table-before-view
+      gate. Proven on omnimarket PR #1327 / omnibase_infra PR #2056.
+    source: "manual"
+    status: "verified"
+    checks:
+      - check_type: "command"
+        check_value: "grep -q 'PASS' drift/dod_receipts/OMN-13404/dod-003/command.yaml"
+  - id: "dod-deploy"
+    description: >-
+      Deploy-gate evidence: a single idempotent forward-migration SQL fix (no source/handler/contract/schema-intent
+      change — the view end-state columns match the original 0016 intent; only HOW it reaches that state
+      changed, from column-reorder to column-append). The runner is id-based (schema_migrations PK, skip-manifest,
+      no checksum); no lane has applied the broken 0016 (it has been failing everywhere), so on next redeploy
+      every lane applies the fixed 0016 clean. Empirically proven on a cold scratch DB (dod-001). Re-vendored
+      byte-identical into omnibase_infra (dod-003).
+    source: "manual"
+    status: "verified"
+    checks:
+      - check_type: "command"
+        check_value: "grep -q 'PASS' drift/dod_receipts/OMN-13404/dod-deploy/command.yaml"
+  - id: "dod-occ-pr"
+    description: >-
+      Self-binding receipt for this OCC PR, which carries the central contract consumed by both the omnimarket
+      PR #1327 and omnibase_infra PR #2056 Receipt Gates via Evidence-Source. The probe greps the OCC
+      tree and proves contracts/OMN-13404.yaml is present.
+    source: "manual"
+    status: "verified"
+    checks:
+      - check_type: "command"
+        check_value: "grep -c '^ticket_id: \"OMN-13404\"$' contracts/OMN-13404.yaml"

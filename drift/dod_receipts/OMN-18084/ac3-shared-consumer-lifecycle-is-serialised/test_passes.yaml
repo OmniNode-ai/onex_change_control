@@ -1,0 +1,53 @@
+---
+schema_version: "1.0.0"
+ticket_id: "OMN-18084"
+evidence_item_id: "ac3-shared-consumer-lifecycle-is-serialised"
+check_type: "test_passes"
+check_value: |-
+  uv run pytest tests/unit/nodes/node_dlq_replay_effect/test_omn18084_shared_consumer_lifecycle.py -q
+contract_sha256: "sha256:d007aaee4c32683e9aebf051ab0e83bd497906837cb0f33740208ff3e2b37e41"
+contract_entry_sha256: "sha256:4e56277ab67e62788b8c31efdecb6a845a840e43b31e35e9f79fcada0a45466c"
+status: PASS
+run_timestamp: "2026-09-09T17:54:01+00:00"
+commit_sha: "e13932a406b5bc5ef34fefc210896238ce9a1909"
+runner: "dlq-loop-fix"
+verifier: "occ-union-resolve-same-ticket-companion"
+probe_command: |-
+  gh api repos/OmniNode-ai/omnibase_infra/commits/e13932a406b5bc5ef34fefc210896238ce9a1909 --jq .sha \
+    && (cd "${OMNI_HOME}/omni_worktrees/OMN-18084/omnibase_infra" \
+        && uv run pytest tests/unit/nodes/node_dlq_replay_effect/test_omn18084_shared_consumer_lifecycle.py -q -p no:cacheprovider)
+probe_stdout: |
+  e13932a406b5bc5ef34fefc210896238ce9a1909
+  ...                                                                      [100%]
+  3 passed in 0.24s
+actual_output: |-
+  PASS: 3 tests green at e13932a406b5bc5ef34fefc210896238ce9a1909. The whole node package is also green, 58 tests, so the mutex does
+  not disturb the bounded-run, idle-wait or quarantine behaviour the other modules pin.
+
+  At the parent commit a4393794 test_a_peer_dispatcher_cannot_stop_a_consumer_a_peer_is_using
+  fails with:
+
+    AssertionError: a dispatcher sharing the consumer failed while a peer tore it down:
+    ['RuntimeError: Consumer not started']
+
+  which is the exact error carried by all 2,000 sampled dead-letter records.
+
+  Recorded because it changed the test rather than the conclusion: the FIRST version of this test
+  passed at the parent. It created the second dispatcher and let it run without controlling when
+  its drain body executed, so the peer's teardown always landed after the victim had already
+  finished. A test that reproduces a race by luck is a test that will report green on a lane that
+  is looping, so the double now takes a scheduling gate per drain and the interleaving is
+  deterministic in both directions.
+
+  The double SUBCLASSES the production DLQConsumer and overrides only start, stop, commit_offsets
+  and consume_messages, so the _started flag and the _consumer field it moves are the production
+  ones and no Kafka is touched. The gate is a scheduling hook, not a semantic change: it controls
+  WHEN the generator body runs, which on the lane is whenever the loop reaches the task
+  asyncio.wait_for(anext(...)) scheduled. The _started assertion still runs first in that body.
+
+  test_every_started_consumer_is_stopped_exactly_once is the control against the obvious wrong
+  fix. Serialising by simply never stopping the consumer would satisfy the first two tests and
+  hold a broker connection and group membership open, which stalls the group at
+  max_poll_interval_ms instead of failing loudly - a worse failure than the one being repaired.
+exit_code: 0
+pr_number: 3365

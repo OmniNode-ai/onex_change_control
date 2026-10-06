@@ -1,0 +1,76 @@
+---
+schema_version: "1.0.0"
+ticket_id: "OMN-13137"
+title: "fix(runtime): _validate_routing over-requires event_model for operation_match"
+summary: >-
+  RuntimeLocal._validate_routing (~L632-643) unconditionally required event_model.{name,module} for every
+  handler_routing entry. event_model is only meaningful for routing_strategy: payload_type_match — operation_match
+  routes by the `operation` field and does not use event_model. 230/295 omnimarket contracts are operation_match
+  without event_model and are correct as authored; the validator was producing spurious errors for all
+  of them at runtime startup. Fix: read routing_strategy from the routing map and branch validation —
+  payload_type_match requires event_model; operation_match (and any non-payload strategy) requires `operation`
+  and skips event_model checks. Handler.{name,module} and subscribe_topic checks remain for all strategies.
+is_seam_ticket: false
+interface_change: false
+interfaces_touched: []
+evidence_requirements:
+  - kind: "ci"
+    description: "CI passes on the omnibase_infra merge PR"
+    command: "gh pr checks"
+emergency_bypass:
+  enabled: false
+  justification: ""
+  follow_up_ticket_id: ""
+dod_evidence:
+  - id: "dod-unit-tests"
+    description: >-
+      4 new unit tests in tests/unit/runtime/test_validate_routing_operation_match.py: (1) operation_match
+      without event_model produces zero event_model errors; (2) operation_match missing operation field
+      produces an error; (3) payload_type_match missing event_model still errors (regression guard); (4)
+      real node_integration_sweep_orchestrator handler_routing block validates clean (boot gate). All
+      4 pass. Pre-existing _validate_routing tests updated to declare routing_strategy: payload_type_match
+      explicitly.
+    source: "manual"
+    status: "verified"
+    checks:
+      - check_type: "command"
+        check_value: >-
+          grep -q '^status: PASS$' "drift/dod_receipts/OMN-13137/dod-unit-tests/command.yaml" && grep
+          -q '^ticket_id: "OMN-13137"$' "drift/dod_receipts/OMN-13137/dod-unit-tests/command.yaml"
+  - id: "dod-boot-gate"
+    description: >-
+      Boot gate: _validate_routing called directly against the real node_integration_sweep_orchestrator
+      contract YAML (routing_strategy: operation_match, 2 handlers, no event_model). Returns empty errors
+      list. Confirmed via uv run python -c "<inline validator call>" on the fixed worktree.
+    source: "manual"
+    status: "verified"
+    checks:
+      - check_type: "command"
+        check_value: >-
+          grep -q '^status: PASS$' "drift/dod_receipts/OMN-13137/dod-boot-gate/command.yaml" && grep -q
+          '^ticket_id: "OMN-13137"$' "drift/dod_receipts/OMN-13137/dod-boot-gate/command.yaml"
+  - id: "dod-occ-pr-self"
+    description: >-
+      This onex_change_control OCC PR carries the central OMN-13137 contract and receipts that the omnibase_infra
+      code PR Receipt-Gate resolves via Evidence-Source: OCC#<this-pr> / Evidence-Ticket: OMN-13137.
+    source: "manual"
+    status: "verified"
+    checks:
+      - check_type: "command"
+        check_value: >-
+          grep -q '^status: PASS$' "drift/dod_receipts/OMN-13137/dod-occ-pr-self/command.yaml" && grep
+          -q '^ticket_id: "OMN-13137"$' "drift/dod_receipts/OMN-13137/dod-occ-pr-self/command.yaml"
+  - id: "dod-deploy-assessment"
+    description: >-
+      Deploy assessment: deploy_pending = false. Pure validator change in omnibase_infra — no emitter,
+      topic, envelope shape, or cross-repo API change. No Kafka topic mutation, no container restart,
+      no .201 mutation. The fix is a Python-only conditional in _validate_routing; it is exercised by
+      existing unit tests in CI. Normal post-merge batched dev lane rebuild picks it up automatically.
+      No live deploy or hot-patch required.
+    source: "manual"
+    status: "verified"
+    checks:
+      - check_type: "command"
+        check_value: >-
+          grep -q 'No live deploy' "drift/dod_receipts/OMN-13137/dod-deploy-assessment/command.yaml" &&
+          grep -q '^status: PASS$' "drift/dod_receipts/OMN-13137/dod-deploy-assessment/command.yaml"

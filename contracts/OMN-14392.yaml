@@ -1,0 +1,66 @@
+---
+schema_version: "1.0.0"
+ticket_id: "OMN-14392"
+title: "fix(OMN-14392): make dod_verify OMN-13996 regression test hermetic"
+summary: >-
+  omnimarket PR #1719 fixes a flaking node_dod_verify regression test: TestOmn13996Regression::test_static_pass_receipt_no_longer_masks_unmerged_pr
+  mocked the EvidenceCollector for its first half but then built a fresh, unmocked HandlerDodVerify()
+  and called handler.handle() directly for the second half, which shelled out to the live gh pr view/gh
+  pr checks for the hardcoded omnibase_infra#2216 -- a PR that has since merged, so the test failed deterministically
+  instead of passing. The fix overrides handler._make_collector (a pre-existing test-only seam already
+  used by the sibling test test_handler_overall_failed_when_live_check_fails) to return the already-mocked
+  collector, making the test fully offline while leaving the OMN-13996 regression assertions unchanged.
+  Independent adversarial verification confirmed the test retains teeth: reintroducing the OMN-13996 masking
+  bug in EvidenceCollector._verify_live_pr (unconditional pass) drives the test RED; reverting restores
+  GREEN across the full 18-test file.
+is_seam_ticket: false
+interface_change: false
+interfaces_touched: []
+emergency_bypass:
+  enabled: false
+  justification: ""
+  follow_up_ticket_id: ""
+dod_evidence:
+  - id: "dod-omnimarket-pr-1719-head-b85d1b25"
+    description: >-
+      Independent adversarial verification of omnimarket PR #1719 at head b85d1b25f8a3fb592a2f4ae6b68982b59a847643.
+      Confirmed the hermetic-test fix retains teeth: mutating EvidenceCollector._verify_live_pr to unconditionally
+      pass (reintroducing the exact OMN-13996 masking bug) drove TestOmn13996Regression::test_static_pass_receipt_no_longer_masks_unmerged_pr
+      RED; reverting the mutation restored GREEN across the full 18-test file (0.20s). Confirmed structurally
+      offline by patching EvidenceCollector._fetch_pr_merge_state and _fetch_pr_checks_green at the class
+      level to raise if any unmocked instance were reached -- both TestOmn13996Regression tests still
+      passed. Confirmed only the I/O boundary (collector construction) is mocked; the verdict computation
+      in HandlerDodVerify._handle_typed remains fully live.
+    source: "manual"
+    status: "verified"
+    checks:
+      - check_type: "command"
+        check_value: >-
+          grep -q '^status: PASS$' drift/dod_receipts/OMN-14392/dod-omnimarket-pr-1719-head-b85d1b25/command.yaml
+          && grep -q '^pr_number: 1719$' drift/dod_receipts/OMN-14392/dod-omnimarket-pr-1719-head-b85d1b25/command.yaml
+          && grep -q 'b85d1b25f8a3fb592a2f4ae6b68982b59a847643' drift/dod_receipts/OMN-14392/dod-omnimarket-pr-1719-head-b85d1b25/command.yaml
+  - id: "dod-deploy-assessment-head-b85d1b25"
+    description: >-
+      Deploy-surface assessment for omnimarket PR #1719 head b85d1b25f8a3fb592a2f4ae6b68982b59a847643:
+      the diff is limited to one test file (tests/unit/nodes/node_dod_verify/test_omn_14207_live_pr_state_check.py,
+      10 insertions, 1 deletion). It does not register a new service deployment, mutate runtime configuration,
+      perform a deploy or restart, change topics, add a migration, or touch .201.
+    source: "manual"
+    status: "verified"
+    checks:
+      - check_type: "command"
+        check_value: >-
+          grep -q '^status: PASS$' drift/dod_receipts/OMN-14392/dod-deploy-assessment-head-b85d1b25/command.yaml
+          && grep -qi 'no live deploy' drift/dod_receipts/OMN-14392/dod-deploy-assessment-head-b85d1b25/command.yaml
+  - id: "dod-occ-self-commit"
+    description: >-
+      OCC self-binding: this onex_change_control branch carries the OMN-14392 central contract and PASS
+      receipts for omnimarket PR #1719 head b85d1b25f8a3fb592a2f4ae6b68982b59a847643. The receipt binds
+      the first evidence commit for occ-preflight eligibility before the OCC PR number exists.
+    source: "manual"
+    status: "verified"
+    checks:
+      - check_type: "command"
+        check_value: >-
+          grep -q '^status: PASS$' drift/dod_receipts/OMN-14392/dod-occ-self-commit/command.yaml && grep
+          -q 'jonah/omn-14392-occ-pr1719' drift/dod_receipts/OMN-14392/dod-occ-self-commit/command.yaml

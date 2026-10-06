@@ -1,0 +1,52 @@
+---
+schema_version: "1.0.0"
+ticket_id: "OMN-13500"
+title: "test(OMN-13500): burn down omniclaude faked-boundary findings to zero"
+summary: >-
+  omniclaude PR #1849 eliminates all 61 no-faked-boundary detector findings by replacing MagicMock/AsyncMock
+  boundary doubles with typed contract-level fakes (C1 routing FakeAgentRouter, C2 skill-dispatcher FakeTaskDispatcher,
+  C3 wiring real MessageDispatchEngine + in-memory bridge) and recorded-replay / real httpx.MockTransport
+  at the true inference egress (C4). The only runtime source change is a backward-compatible dependency-injection
+  seam added to src/omniclaude/nodes/node_local_llm_inference_effect/backends/backend_vllm.py: the synchronous
+  VllmInferenceBackend gains an optional sync_transport keyword (default None -> httpx's real network
+  transport) so tests can inject httpx.MockTransport and exercise the REAL request-serialization and error-handling
+  paths without a live endpoint. Default production behavior is unchanged. The detector goes 61 -> 0 (full-repo
+  --report-only). Runtime rebuild/deploy is explicitly outside this OCC evidence PR and remains operator-gated.
+is_seam_ticket: false
+interface_change: false
+interfaces_touched: []
+emergency_bypass:
+  enabled: false
+  justification: ""
+  follow_up_ticket_id: ""
+dod_evidence:
+  - id: "dod-omniclaude-pr-1849"
+    description: >-
+      Consuming-PR binding: omniclaude PR #1849 carries the OMN-13500 faked-boundary burn-down. The no-faked-boundary
+      detector reports zero findings (61 -> 0) via runtime_no_faked_boundary --report-only ., the non-integration
+      test suite is green (11158 passed, 58 skipped), and ruff/mypy are clean. Real probe: gh pr view
+      1849 --repo OmniNode-ai/omniclaude --json number,state,headRefOid,headRefName,title,files.
+    source: "manual"
+    checks:
+      - check_type: "command"
+        check_value: "grep -q '^status: PASS$' drift/dod_receipts/OMN-13500/dod-omniclaude-pr-1849/command.yaml"
+  - id: "dod-deploy-assessment"
+    description: >-
+      Deploy disposition for the runtime-path change in omniclaude PR #1849 (src/omniclaude/nodes/node_local_llm_inference_effect/backends/backend_vllm.py):
+      the PR adds only a backward-compatible sync_transport injection seam (default None preserves the
+      real httpx transport), performs NO live runtime mutation in the PR or its CI, and does not change
+      default production behavior. The seam takes effect only on the next operator-gated runtime rebuild/deploy;
+      no live deploy is claimed by this PR.
+    source: "manual"
+    checks:
+      - check_type: "command"
+        check_value: "grep -q '^status: PASS$' drift/dod_receipts/OMN-13500/dod-deploy-assessment/command.yaml"
+  - id: "dod-occ-self"
+    description: >-
+      Self-binding OCC receipt: onex_change_control PR carrying this OMN-13500 contract and the dod-omniclaude-pr-1849
+      and dod-deploy-assessment receipts, consumed by omniclaude PR #1849 through Receipt Gate, OCC eligibility,
+      and deploy-gate (Evidence-Source pinned to this OCC PR head).
+    source: "generated"
+    checks:
+      - check_type: "command"
+        check_value: "grep -q '^status: PASS$' drift/dod_receipts/OMN-13500/dod-occ-self/command.yaml"

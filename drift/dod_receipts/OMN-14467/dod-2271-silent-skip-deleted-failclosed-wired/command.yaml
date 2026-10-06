@@ -1,0 +1,42 @@
+---
+schema_version: "1.0.0"
+ticket_id: "OMN-14467"
+evidence_item_id: "dod-2271-silent-skip-deleted-failclosed-wired"
+check_type: "command"
+check_value: >-
+  C=$(gh api "repos/OmniNode-ai/omnibase_infra/contents/scripts/trigger_rebuild_on_merge.py?ref=f304e13b64e011ee3ae081349178c4f7fd4f99a3"
+  --jq .content 2>/dev/null | base64 -d 2>/dev/null); test "$(printf '%s' "$C" | grep -c 'require_producer_preconditions')"
+  -ge 1 && test "$(printf '%s' "$C" | grep -cE 'click\.echo\([^)]*skipping publish')" -eq 0
+status: PASS
+run_timestamp: "2026-07-12T18:31:00Z"
+commit_sha: "f304e13b64e011ee3ae081349178c4f7fd4f99a3"
+runner: "occ-queue-runner"
+verifier: "rt6-builder"
+pr_number: 2271
+probe_command: >-
+  C=$(gh api "repos/OmniNode-ai/omnibase_infra/contents/scripts/trigger_rebuild_on_merge.py?ref=f304e13b64e011ee3ae081349178c4f7fd4f99a3"
+  --jq .content 2>/dev/null | base64 -d 2>/dev/null); test "$(printf '%s' "$C" | grep -c 'require_producer_preconditions')"
+  -ge 1 && test "$(printf '%s' "$C" | grep -cE 'click\.echo\([^)]*skipping publish')" -eq 0   # then re-run
+  VERBATIM at omnibase_infra dev (e811995d), where trigger_rebuild_on_merge.py EXISTS but is WRONG, and
+  at a bogus SHA
+probe_stdout: |
+  # bound check_value exit codes, run verbatim (verifier, 2026-07-12):
+  #   ref=f304e13b (omnibase_infra#2271 head) -> exit 0   GREEN  (require_=2, click.echo-skip=0)
+  #   ref=e811995d (infra dev)                 -> exit 1   RED    <- EXISTS but WRONG (require_=0, click.echo-skip=1)
+  #   ref=000...0  (bogus SHA)                  -> exit 1   RED    <- not vacuous (require_=0)
+exit_code: 0
+actual_output: >-
+  PASS: at #2271's head trigger_rebuild_on_merge.py routes the producer through require_producer_preconditions
+  (2 occurrences) and the click.echo("... skipping publish") silent-skip CALL is deleted (0 occurrences).
+  "skipping publish" survives at #2271's head ONLY on the explanatory comment line ("# replaces printed
+  'KAFKA_BOOTSTRAP_SERVERS is not set -- skipping publish'"), which is why the deletion clause matches
+  the click.echo( CALL, not a bare substring -- a naive substring check would false-RED here. RED PROVEN
+  against a ref where the artifact EXISTS BUT IS WRONG: omnibase_infra dev (e811995d) HAS trigger_rebuild_on_merge.py,
+  but it still carries click.echo("KAFKA_BOOTSTRAP_SERVERS is not set -- skipping publish") then sys.exit(0)
+  and never calls require_producer_preconditions -> exit 1. Exit 1 at a bogus SHA. Corroborated by the
+  verifier's live A/B: identical CLI input (real runtime change, broker unset, not --dry-run) exits 0
+  GREEN at dev (prints "skipping publish") and exits 1 RED at #2271's head (fail-closed ProducerZeroOutputError).
+  This is a gh-api content read and therefore workspace-INDEPENDENT -- it observes the product regardless
+  of the DoD runner's cwd.
+branch: "jonah/omn-14467-occ-companion"
+contract_entry_sha256: "sha256:13707bb1c44135dc8d97bd737b3201828bf9b7f39f22f149cbaa612ad7a41daa"

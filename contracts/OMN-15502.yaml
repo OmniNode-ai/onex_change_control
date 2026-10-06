@@ -1,0 +1,91 @@
+---
+schema_version: "1.0.0"
+ticket_id: "OMN-15502"
+title: "Preserve generation failure authority without fabricating zero-usage failures"
+summary: >
+  Manual OCC companion for OmniNode-ai/omnimarket PR #1989. The product change preserves typed endpoint-resolution
+  and empty-artifact failure causes through the generation terminal boundary, keeps routing state invocation-local,
+  and retains honest completed semantics when a valid artifact has no provider usage block. This is source
+  evidence only: the approval-gated rebuilt cloud replay is still owed, and OMN-15518 owns physical exactly-once
+  redelivery.
+is_seam_ticket: true
+interface_change: true
+interfaces_touched:
+  - "events"
+  - "topics"
+evidence_requirements:
+  - kind: "ci"
+    description: "Omnimarket PR #1989 CI checks green"
+    command: "gh pr checks 1989 --repo OmniNode-ai/omnimarket"
+emergency_bypass:
+  enabled: false
+  justification: ""
+  follow_up_ticket_id: ""
+dod_evidence:
+  - id: "dod-market1989-generation-failure-authority"
+    description: >-
+      Binds OMN-15502 to omnimarket PR #1989 at exact head 9a563587af81a8e19e1eb3c5b311f9a8bc04264b, base
+      dev, and tree 573f446737ce705123ce1ae81b7e3261f1ba58e3. The reviewed regressions prove endpoint-unavailable
+      cause preservation with cleared stale artifacts, definition-B failed-topic selection without handler
+      self-publication, explicit empty-artifact failure, valid unknown-usage completion, invocation-local
+      concurrent retry routes, and subtype-preserving replay. The strict OMN-15518 physical-redelivery
+      xfail is explicitly outside this claim. The terminal payload carries failure_class/failure_reason,
+      but this item does not claim the current generation_events projection persists them.
+    source: "manual"
+    status: "verified"
+    checks:
+      - check_type: "command"
+        check_value: >-
+          head_sha="$(gh api repos/OmniNode-ai/omnimarket/pulls/1989 --jq .head.sha)" && test "$head_sha"
+          = "9a563587af81a8e19e1eb3c5b311f9a8bc04264b" && test "$(gh api repos/OmniNode-ai/omnimarket/pulls/1989
+          --jq .base.ref)" = "dev" && test "$(gh api repos/OmniNode-ai/omnimarket/git/commits/$head_sha
+          --jq .tree.sha)" = "573f446737ce705123ce1ae81b7e3261f1ba58e3" && test "$(gh api "repos/OmniNode-ai/omnimarket/contents/src/omnimarket/nodes/node_generation_consumer/handlers/handler_generation_consumer.py?ref=$head_sha"
+          --jq .sha)" = "9a30d888cbe2382ef50ffc508d91d0a4360141cf" && test "$(gh api "repos/OmniNode-ai/omnimarket/contents/src/omnimarket/nodes/node_generation_consumer/models/model_generation.py?ref=$head_sha"
+          --jq .sha)" = "e939dea93701a1acea8df9dd6e21c9a2b4c8425b" && test "$(gh api "repos/OmniNode-ai/omnimarket/contents/src/omnimarket/nodes/node_generation_consumer/contract.yaml?ref=$head_sha"
+          --jq .sha)" = "0cce7dc64d555187345677bc9db551466dc95185" && test "$(gh api "repos/OmniNode-ai/omnimarket/contents/tests/unit/nodes/node_generation_consumer/test_endpoint_failure_omn15502.py?ref=$head_sha"
+          --jq .sha)" = "ff5727641ef7dddd4137fce36423bdb2c6d11fe9" && endpoint_tests="$(gh api "repos/OmniNode-ai/omnimarket/contents/tests/unit/nodes/node_generation_consumer/test_endpoint_failure_omn15502.py?ref=$head_sha"
+          --jq .content | base64 -d)" && terminal_tests="$(gh api "repos/OmniNode-ai/omnimarket/contents/tests/unit/nodes/node_generation_consumer/test_single_terminal_authority_omn15469.py?ref=$head_sha"
+          --jq .content | base64 -d)" && handler_tests="$(gh api "repos/OmniNode-ai/omnimarket/contents/tests/unit/nodes/node_generation_consumer/test_handler_generation_consumer.py?ref=$head_sha"
+          --jq .content | base64 -d)" && contract_body="$(gh api "repos/OmniNode-ai/omnimarket/contents/src/omnimarket/nodes/node_generation_consumer/contract.yaml?ref=$head_sha"
+          --jq .content | base64 -d)" && printf '%s' "$endpoint_tests" | grep -q 'test_reused_handler_preserves_endpoint_failure_as_failed_terminal'
+          && printf '%s' "$endpoint_tests" | grep -q 'test_valid_artifact_with_unknown_zero_usage_remains_completed'
+          && printf '%s' "$endpoint_tests" | grep -q 'test_empty_provider_artifact_is_an_explicit_failed_terminal'
+          && printf '%s' "$endpoint_tests" | grep -q 'test_concurrent_generation_retries_keep_their_own_active_route'
+          && printf '%s' "$endpoint_tests" | grep -q 'DispatchResultApplier' && printf '%s' "$handler_tests"
+          | grep -q 'test_returns_failed_benchmark_for_wiring_without_self_publish' && printf '%s' "$terminal_tests"
+          | grep -q 'test_replay_returns_same_terminal_subtype_without_expensive_work' && printf '%s'
+          "$terminal_tests" | grep -q 'OMN-15518: generic def-B replay republishes the deterministic envelope'
+          && printf '%s' "$contract_body" | grep -q 'failure: onex.evt.omnimarket.node-generation-failed.v1'
+          && printf 'market1989 generation failure authority PASS\n'
+  - id: "dod-deploy-assessment"
+    description: >-
+      Exact-head deploy-scope assessment for omnimarket PR #1989. The complete eight-file diff is limited
+      to the generation consumer runtime contract, handler/model, and unit regressions; it changes no
+      Docker, manifest, or deployment composition. A rebuilt image and correlated live cloud replay remain
+      required before AC3 can close, and no deploy is claimed here.
+    source: "manual"
+    status: "verified"
+    checks:
+      - check_type: "command"
+        check_value: >-
+          head_sha="$(gh api repos/OmniNode-ai/omnimarket/pulls/1989 --jq .head.sha)" && test "$head_sha"
+          = "9a563587af81a8e19e1eb3c5b311f9a8bc04264b" && files="$(gh api repos/OmniNode-ai/omnimarket/pulls/1989/files
+          --paginate --jq '.[].filename' | LC_ALL=C sort)" && expected="$(printf '%s\n' 'src/omnimarket/nodes/node_generation_consumer/contract.yaml'
+          'src/omnimarket/nodes/node_generation_consumer/handlers/handler_generation_consumer.py' 'src/omnimarket/nodes/node_generation_consumer/models/model_generation.py'
+          'tests/unit/nodes/node_generation_consumer/test_endpoint_failure_omn15502.py' 'tests/unit/nodes/node_generation_consumer/test_handler_generation_consumer.py'
+          'tests/unit/nodes/node_generation_consumer/test_omn12813_output_format_fix.py' 'tests/unit/nodes/node_generation_consumer/test_p2_seam_extensions.py'
+          'tests/unit/nodes/node_generation_consumer/test_single_terminal_authority_omn15469.py')" &&
+          test "$files" = "$expected" && printf 'market1989 deploy scope source-only PASS; rebuilt live
+          replay owed\n'
+  - id: "occ-self-bind-pr-5733"
+    description: >-
+      Binds the OMN-15502 central evidence to OCC companion PR #5733 and its immutable pre-self-bind payload
+      commit bd7b76723e264fd3ddedb69471dc05f2aabdb005 with exact tree aaf69309ebc466a35e7c46c4eaabf393ecb7400f.
+    source: "manual"
+    status: "verified"
+    checks:
+      - check_type: "command"
+        check_value: >-
+          gh api repos/OmniNode-ai/onex_change_control/commits/bd7b76723e264fd3ddedb69471dc05f2aabdb005
+          --jq .sha | grep -qx 'bd7b76723e264fd3ddedb69471dc05f2aabdb005' && test "$(gh api repos/OmniNode-ai/onex_change_control/git/commits/bd7b76723e264fd3ddedb69471dc05f2aabdb005
+          --jq .tree.sha)" = 'aaf69309ebc466a35e7c46c4eaabf393ecb7400f'

@@ -1,0 +1,78 @@
+---
+schema_version: "1.0.0"
+ticket_id: "OMN-13639"
+title: "feat(golden-chain): per-chain freshness/recency assertion in node_golden_chain_sweep"
+summary: >
+  node_golden_chain_sweep validated that the latest projected tail row contains the expected fields but
+  never asserted the row is recent, so a chain read green when its only matching row was a weeks-old fixture/seed
+  and no fresh flow had occurred -- a green verdict masked a dead/idle producer. This adds an optional
+  per-chain freshness threshold: ModelChainDefinition gains max_row_age_seconds (int | None, ge=0) and
+  timestamp_field (default created_at), configured in golden_chains.yaml / the chain contract. When a
+  chain declares max_row_age_seconds and the latest tail row's timestamp_field value is older than the
+  threshold -- or recency cannot be proven (timestamp column absent or unparseable) -- the chain is downgraded
+  to a distinct STALE tri-state (EnumChainStatus.STALE; overall sweep status EnumSweepStatus.WARN, non-blocking)
+  and the row age is reported (ModelChainResult.row_age_seconds, GoldenChainSweepResult.chains_stale).
+  Green now requires recent flow, not merely a matching historical row. Field-presence FAIL still takes
+  precedence over freshness; GATED (idle) takes precedence over WARN (stale); STALE + FAIL -> PARTIAL.
+  The compute stays pure and deterministic: the reference clock is injected via now_iso (request) / --now-iso
+  (CLI) and the handler never reads the system clock; a freshness-gated chain dispatched without now_iso
+  fails fast (ERROR), never a silent pass. The pattern_learning and evaluation chains gain a 24h freshness
+  window. No new node, no envelope/contract-API change, no live-lane mutation.
+is_seam_ticket: false
+interface_change: false
+interfaces_touched: []
+evidence_requirements:
+  - kind: "tests"
+    description: >
+      A new failing-first suite proving the freshness downgrade: fresh row -> PASS, stale row -> STALE
+      (overall WARN), row-age reporting, no-threshold back-compat (old rows still PASS), field-presence
+      FAIL precedence over freshness, missing/unparseable timestamp -> STALE, missing now_iso on a freshness-gated
+      chain -> ERROR (fail-fast), mixed PASS+STALE -> WARN, STALE+FAIL -> PARTIAL, boundary-exactly-at-threshold
+      -> PASS, and the packaged registry exposing the threshold on the pattern_learning + evaluation chains.
+      Existing registry-driven sweep tests updated to inject now_iso and a fresh created_at for the two
+      newly-gated chains.
+    command: "uv run pytest tests/test_golden_chain_sweep_freshness.py -q"
+emergency_bypass:
+  enabled: false
+  justification: ""
+  follow_up_ticket_id: ""
+dod_evidence:
+  - id: "dod-omnimarket-pr"
+    description: >
+      omnimarket product PR adds EnumChainStatus.STALE + EnumSweepStatus.WARN, ModelChainDefinition.timestamp_field
+      + max_row_age_seconds, ModelChainResult.row_age_seconds + GoldenChainSweepResult.chains_stale, the
+      per-chain freshness evaluation in the handler (pure, now_iso-injected), registry + contract.yaml
+      + SKILL.md + CLI --now-iso wiring, a 24h freshness window on pattern_learning + evaluation in golden_chains.yaml,
+      and tests/test_golden_chain_sweep_freshness.py. Full local verify passes (pytest 9010, mypy --strict
+      clean, ruff clean, pre-commit clean on changed files, import-check clean).
+    source: "manual"
+    checks:
+      - check_type: "command"
+        check_value: "grep -q '^status: PASS$' drift/dod_receipts/OMN-13639/dod-omnimarket-pr/command.yaml
+          && grep -Eq '^pr_number: [0-9]+$' drift/dod_receipts/OMN-13639/dod-omnimarket-pr/command.yaml
+          && grep -q 'passed' drift/dod_receipts/OMN-13639/dod-omnimarket-pr/command.yaml"
+  - id: "dod-deploy-assessment"
+    description: >
+      Deploy assessment: this PR adds enum/model fields, a pure handler freshness branch, registry/contract/SKILL/CLI
+      wiring, and tests in omnimarket -- no new node, no envelope/contract-API change, no live-lane mutation.
+      node_golden_chain_sweep is a read_only pure-compute probe; the freshness check operates on caller-supplied
+      rows + an injected reference clock and performs zero live I/O. No live deploy is performed by this
+      PR. The recency logic was nonetheless proven against REAL live fixture rows on the stability-test
+      lane via a read-only psql probe (pattern_learning ~3.7d old, evaluation ~27.5d old, both -> STALE/overall
+      WARN). The receipt check_value carries the deploy keyword for the deploy-gate.
+    source: "manual"
+    checks:
+      - check_type: "command"
+        check_value: "grep -q '^status: PASS$' drift/dod_receipts/OMN-13639/dod-deploy-assessment/command.yaml
+          && grep -Eq '^pr_number: [0-9]+$' drift/dod_receipts/OMN-13639/dod-deploy-assessment/command.yaml
+          && grep -q 'No live deploy' drift/dod_receipts/OMN-13639/dod-deploy-assessment/command.yaml"
+  - id: "dod-occ-pr-self"
+    description: >
+      Self-binding OCC eligibility receipt for the dev->main promotion PR: this onex_change_control PR
+      carries the OMN-13639 contract and dod receipts onto main, satisfying the receipt-to-PR binding
+      required by validator_occ_merge_eligibility (a PASS receipt whose pr_number binds to this PR).
+    source: "manual"
+    checks:
+      - check_type: "command"
+        check_value: "grep -Eq '^status: \"?PASS\"?$' drift/dod_receipts/OMN-13639/dod-occ-pr-self/command.yaml
+          && grep -Eq '^pr_number: [0-9]+$' drift/dod_receipts/OMN-13639/dod-occ-pr-self/command.yaml"

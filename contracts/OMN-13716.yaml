@@ -1,0 +1,59 @@
+---
+schema_version: "1.0.0"
+ticket_id: "OMN-13716"
+title: "Fix sweep input-default gaps: shim_audit paths Field required + doc_freshness_sweep hang"
+summary: >-
+  Two COMPUTE sweep nodes whose no-arg invocations were broken: (a) shim_audit: ModelShimScanRequest.paths
+  had no default, so `onex skill shim_audit` (no-arg) raised ValidationError paths Field required. Fixed:
+  paths defaults to None; handler resolves workspace repo src/ dirs from OMNI_HOME (matching DocFreshnessSweepRequest.omni_home
+  pattern). (b) doc_freshness_sweep: no-scope full-repo scan hung >9min because scanning all default repos
+  via resolve_references was unbounded. Fixed: DocFreshnessSweepRequest gains per_repo_timeout_s (default
+  30s); each repo is scanned in a ThreadPoolExecutor thread; timed-out repos are skipped with a warning
+  and the scan completes in bounded time. Both fixes are in the node input model / handler layer only.
+  No skill_mapping.yaml change, no new topics, no interface seam change.
+is_seam_ticket: false
+interface_change: false
+interfaces_touched: []
+evidence_requirements:
+  - kind: "tests"
+    description: "PASS receipts bind targeted omnimarket evidence for both fixes."
+    command: >-
+      grep -q '^status: PASS$' drift/dod_receipts/OMN-13716/dod-tests/command.yaml && grep -q '^status:
+      PASS$' drift/dod_receipts/OMN-13716/dod-deploy-assessment/command.yaml && grep -q '^status: PASS$'
+      drift/dod_receipts/OMN-13716/dod-occ-self/command.yaml
+emergency_bypass:
+  enabled: false
+  justification: ""
+  follow_up_ticket_id: ""
+dod_evidence:
+  - id: "dod-tests"
+    description: >-
+      All targeted shim_scanner and doc_freshness_sweep tests pass (36 passed): shim_audit no-arg path
+      instantiates ModelShimScanRequest() with paths=None; doc_freshness per_repo_timeout_s test confirms
+      slow-repo is timed out and overall call completes within budget. Full suites: tests/nodes/node_shim_scanner/,
+      tests/integration/node_shim_scanner/, tests/integration/node_doc_freshness_sweep/.
+    source: "manual"
+    checks:
+      - check_type: "command"
+        check_value: >-
+          grep -q '^status: PASS$' drift/dod_receipts/OMN-13716/dod-tests/command.yaml
+  - id: "dod-deploy-assessment"
+    description: >-
+      Deploy-gate assessment for the runtime handler path touch: these are COMPUTE node input model and
+      handler changes only (paths default + ThreadPoolExecutor timeout). No live deploy, restart, docker
+      exec, rpk topic produce, or .201 mutation is required before merge. The deploy-gate is satisfied
+      by this explicit no-deploy assessment.
+    source: "manual"
+    checks:
+      - check_type: "command"
+        check_value: >-
+          grep -q '^status: PASS$' drift/dod_receipts/OMN-13716/dod-deploy-assessment/command.yaml &&
+          grep -q 'deploy-gate' drift/dod_receipts/OMN-13716/dod-deploy-assessment/command.yaml
+  - id: "dod-occ-self"
+    description: >-
+      Self-binding OCC receipt: this onex_change_control PR carries the OMN-13716 contract and receipts.
+    source: "manual"
+    checks:
+      - check_type: "command"
+        check_value: >-
+          grep -q '^status: PASS$' drift/dod_receipts/OMN-13716/dod-occ-self/command.yaml
