@@ -216,3 +216,22 @@ dod_evidence:
       - check_type: "command"
         check_value: |-
           gh api repos/OmniNode-ai/omnimarket/commits/ce4c9a7792f2ba3677f82ed8d4bea2ae7ef77abf --jq '.files[].filename' | grep -c '^src/omnimarket/nodes/node_projection_usage_by_model_day/contract.yaml$'
+  - id: "dod-omn19978-pr4301-proof-no-postgres"
+    description: >-
+      Successor to dod-occ-diff-derived-behavior-proof-pr-4301. That item runs four pytest files with
+      uv in an omnibase_infra checkout whose cwd is ${OMNI_HOME}/omnibase_infra, unpinned, and the integration
+      file in it needs a Postgres server (initdb), a git checkout and .proof-dependencies, so a closer
+      host without them cannot pass it. What omnibase_infra#4301 (merge commit 6b97547573) changed for
+      this ticket is the vendoring of the two usage-by-model-day node migrations, byte-identical to omnimarket#3073.
+      This check proves that without a database or a checkout, pinned to commits: at 6b97547573 the two
+      vendored SQL files hash to the sha256 values the shipped vendor test pins (0763b51e2d8f for 0000,
+      2bf2ec13f194 for 0001), both hashes equal the omnimarket source files at 02acdb34b9 (omnimarket#3073's
+      merge), and the application-migrations ledger at 6b97547573 carries both tenant rows with those
+      hashes. At the merge's parent 0607e9c383 the vendored files do not exist and the probe exits 1.
+      Unbound to AC1 and AC2, as the item it replaces was.
+    evidence_artifact: "supersedes_dod_evidence:dod-occ-diff-derived-behavior-proof-pr-4301"
+    source: "manual"
+    checks:
+      - check_type: "command"
+        check_value: |-
+          T=$(printf '\t'); R() { gh api "repos/OmniNode-ai/$1/contents/$2?ref=$3" -H 'Accept: application/vnd.github.raw'; }; I=6b97547573420652ee1124bad61cdb65769f2771; K=02acdb34b9624a61b3e273dac50988f15301e87d; V=docker/migrations/forward/nodes/node_projection_usage_by_model_day; M=src/omnimarket/nodes/node_projection_usage_by_model_day/migrations; C=0000_create_usage_by_model_day.sql; G=0001_grant_usage_by_model_day.sql; H0=0763b51e2d8fc794001d3ab1f9a39618a281fdf55c9acf89677a7e84ef0e9683; H1=2bf2ec13f194a2dfa0738cb57f65a765b730a1739416d40e7126678254fe979f; N=node:node_projection_usage_by_model_day; S() { sha256sum | cut -d' ' -f1; }; test "$(R omnibase_infra $V/$C $I | S)" = "$H0" && test "$(R omnibase_infra $V/$G $I | S)" = "$H1" && test "$(R omnimarket $M/$C $K | S)" = "$H0" && test "$(R omnimarket $M/$G $K | S)" = "$H1" && n=$(R omnibase_infra docker/migrations/forward/_ledger/application-migrations.tsv $I | grep -cF -e "nodes/node_projection_usage_by_model_day/$C$T$N$T$N${T}tenant$T$N:$C$T$H0" -e "nodes/node_projection_usage_by_model_day/$G$T$N$T$N${T}tenant$T$N:$G$T$H1") && test "$n" = 2 && gh api repos/OmniNode-ai/omnibase_infra/commits/$I --jq .sha
