@@ -3668,6 +3668,10 @@ class _CaptureDumper(yaml.SafeDumper):
     line marker (OMN-15479); a literal block survives it unchanged.
     """
 
+    def increase_indent(self, flow: bool = False, indentless: bool = False) -> None:
+        # OMN-20665: yamlfmt indents block sequences, including capture hashes.
+        return super().increase_indent(flow=flow, indentless=False)
+
 
 def _represent_capture_str(dumper: yaml.SafeDumper, data: str) -> yaml.Node:
     style = "|" if "\n" in data else None
@@ -3675,6 +3679,18 @@ def _represent_capture_str(dumper: yaml.SafeDumper, data: str) -> yaml.Node:
 
 
 _CaptureDumper.add_representer(str, _represent_capture_str)
+
+
+def _render_capture_document(document: dict[str, object]) -> str:
+    """Render the captured document in the repository's formatter shape."""
+    return yaml.dump(
+        document,
+        Dumper=_CaptureDumper,
+        sort_keys=False,
+        allow_unicode=True,
+        width=100,
+        explicit_start=True,
+    )
 
 
 def normalize_probe_stdout(text: str) -> str:
@@ -3871,16 +3887,20 @@ def capture_probe(
     )
     target["duration_ms"] = duration_ms
     target["verifier"] = PROBE_CAPTURE_VERIFIER
-    target["artifact_sha256"] = probe_capture_record(command, recorded)
-    receipt_path.write_text(
-        yaml.dump(
-            document,
-            Dumper=_CaptureDumper,
-            sort_keys=False,
-            allow_unicode=True,
-            width=100,
-        )
+    # Render before hashing and refuse any representation that changes capture
+    # fields. The honesty gate reads these same parsed fields from the bytes.
+    rendered_target = _capture_target(
+        yaml.safe_load(_render_capture_document(document))
     )
+    if rendered_target is None or (
+        rendered_target.get("probe_command") != command
+        or rendered_target.get("probe_stdout") != recorded
+    ):
+        raise ProbeCaptureError(
+            f"{receipt_path}: YAML rendering changed captured fields"
+        )
+    target["artifact_sha256"] = probe_capture_record(command, recorded)
+    receipt_path.write_text(_render_capture_document(document))
     return target
 
 
