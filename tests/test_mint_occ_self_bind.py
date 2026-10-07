@@ -95,6 +95,9 @@ PROBE_STDOUT = '{"headRefName":"fixture/branch","number":4242,"state":"OPEN"}\n'
 WORKFLOW_PATH = (
     Path(__file__).resolve().parents[1] / ".github/workflows/occ-self-bind-mint.yml"
 )
+PREFLIGHT_WORKFLOW_PATH = (
+    Path(__file__).resolve().parents[1] / ".github/workflows/call-occ-preflight.yml"
+)
 
 
 @dataclass(frozen=True)
@@ -860,6 +863,29 @@ def test_the_workflow_enumerates_every_commit_not_just_the_head() -> None:
     assert "--pr-commit-sha" in raw
     assert ".commits[].oid" in raw
     assert ".commits[].messageHeadline" in raw
+
+
+def test_the_workflow_checks_out_the_sha_preflight_judges() -> None:
+    """OCC#13183: mint judged the branch tip eligible; preflight owed a self-bind."""
+    mint_workflow = yaml.safe_load(WORKFLOW_PATH.read_text(encoding="utf-8"))
+    preflight_workflow = yaml.safe_load(
+        PREFLIGHT_WORKFLOW_PATH.read_text(encoding="utf-8")
+    )
+    mint_checkout = next(
+        step
+        for step in mint_workflow["jobs"]["mint"]["steps"]
+        if step.get("uses", "").startswith("actions/checkout@")
+    )
+    preflight_checkout = next(
+        step
+        for job in preflight_workflow["jobs"].values()
+        for step in job.get("steps", [])
+        if step.get("name") == "Check out PR head"
+    )
+    assert mint_checkout["with"]["ref"] == "${{ github.event.pull_request.head.sha }}"
+    assert preflight_checkout["with"]["ref"].startswith(
+        "${{ github.event.pull_request.head.sha"
+    )
 
 
 # ---------------------------------------------------------------------------

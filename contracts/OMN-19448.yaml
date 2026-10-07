@@ -199,6 +199,38 @@ dod_evidence:
           pr view 4475 --repo OmniNode-ai/omnibase_infra --json mergedAt --jq '.mergedAt // "null"')"
           && test "$state" = "CLOSED" && test "$merged" = "null" && printf 'omnibase_infra PR #4475 closed-unmerged
           terminal-state PASS\n'
+  - id: dod-dev201-1006-omn-19448-ac3-live
+    description: Fresh dev-lane AC3 behavioral probe following the 2026-10-06 deploy. Executes the ticket
+      falsifier; no historical receipt or source-inspection substitute. Proposed by readback-dev201-1903
+      for independent acceptance. OMN-19448 AC2 is not asserted by this item.
+    source: generated
+    execution_scope: local_done_gate
+    checks:
+      - check_type: command
+        check_value: |-
+          python3 -c 'import json, subprocess, sys
+          sql = "BEGIN READ ONLY;\nSELECT json_build_object('"'"'observed_at'"'"', now(), '"'"'deploy_boundary'"'"', '"'"'2026-10-06T16:01:00Z'"'"',\n  '"'"'rows_after_deploy'"'"', count(*), '"'"'failed_rows'"'"', count(*) FILTER (WHERE terminal_ok=false),\n  '"'"'failed_null_cause'"'"', count(*) FILTER (WHERE terminal_ok=false AND terminal_failure_cause IS NULL),\n  '"'"'columns_read'"'"', (SELECT json_agg(column_name ORDER BY column_name) FROM information_schema.columns\n    WHERE table_schema='"'"'public'"'"' AND table_name='"'"'delegation_events'"'"'\n      AND column_name IN ('"'"'trace_id'"'"','"'"'routed_model'"'"','"'"'answering_backend'"'"','"'"'finish_reason'"'"','"'"'truncated'"'"')))\nFROM public.delegation_events WHERE written_at >= TIMESTAMPTZ '"'"'2026-10-06T16:01:00Z'"'"';\nCOMMIT;\n"
+          r = subprocess.run(["ssh", "-o", "BatchMode=yes", "-o", "ConnectTimeout=15", "jonah@192.168.86.201", "docker exec -i omnibase-infra-postgres psql -X -qAt -v ON_ERROR_STOP=1 -U postgres -d omnidash_analytics"], input=sql, text=True, capture_output=True, timeout=60)
+          sys.stderr.write(r.stderr)
+          if r.returncode:
+              sys.stdout.write(r.stdout)
+              raise SystemExit(r.returncode)
+          d = json.loads(r.stdout)
+          print(json.dumps(d, sort_keys=True))
+          assert d["failed_rows"] > 0, "No failed rows: cannot claim a non-vacuous readback"
+          assert d["failed_null_cause"] == 0, "AC3 falsified: post-deploy failed row with NULL cause"
+          assert set(d["columns_read"]) == {"trace_id", "routed_model", "answering_backend", "finish_reason", "truncated"}, d
+          '
+    binds_ac:
+      - AC3
+    ac_bindings:
+      - label: AC3
+        criterion_hash: 469fd35454fa2f06e976a192604b562dc87c477425911d7b0cee0e6b8c03db30
+        proposed_by: readback-dev201-1903
+    supersedes_ac_binding:
+      - item: dod-OmniNode-ai-omnimarket-pr-2881
+        label: AC3
+        reason: Replace source or historical receipt inspection with a fresh executable dev-lane AC3 falsifier.
   - id: "dod-OmniNode-ai-omnibase_infra-pr-4673-ci"
     description: "PR #4673 on OmniNode-ai/omnibase_infra — product diff scope check (OMN-14425)."
     source: "generated"
