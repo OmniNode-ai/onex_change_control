@@ -20,6 +20,17 @@ This module asks both questions. Its rules, in the order they fire:
   ``binds_ac`` does not claim.
 * ``ac_binding_duplicate`` — two records for one criterion.
 
+**Hosted rule — it needs no ticket body, but runs only on changed contracts.**
+
+* ``ac_binding_self_accepted`` — **OMN-17427.** A record whose ``accepted_by``
+  is the lane that proposed it. A binding is never accepted by its author: a
+  second lane re-runs the bound check and accepts it. An independent
+  acceptance of the same label anywhere in the contract clears it, because a
+  merged item cannot be edited and an appended record is the only shape a
+  re-acceptance can take. It is not a local rule because the pre-commit step
+  is also run with ``--all-files`` in CI, and merged contracts already carry
+  self-accepted records that no PR touching another ticket can correct.
+
 **Ticket rules — they need the ticket body, and an absent body is RED.**
 
 * ``ac_binding_unknown_criterion`` — the item claims a criterion the ticket
@@ -115,7 +126,8 @@ it was written, it cannot tell whether a right-KIND proof is right on the facts,
 and it cannot read a shell command its vocabulary does not cover. Those remain
 authorial judgement, which is what the acceptance record is for.
 
-**What it deliberately refuses to judge.** WHO accepted a binding and WHEN.
+**What it deliberately refuses to judge.** Creator acceptance and WHEN.
+Acceptance by the binding's own proposer is refused (OMN-17427).
 ``accepted_by`` equal to the ticket creator with ``accepted_at`` equal to the
 ticket's ``createdAt`` is OMN-18332 AC2's designed output and its AC2c positive
 control -- correct by construction, because at the creation revision the creator
@@ -126,7 +138,9 @@ AC2c fleet-wide.
 
 from __future__ import annotations
 
+import re
 from dataclasses import dataclass
+from string import punctuation
 from typing import TYPE_CHECKING
 
 from onex_change_control.validation.ac_criteria import (
@@ -362,6 +376,62 @@ def _retirement_findings(ticket_id: str, contract: object) -> list[AcBindingFind
     return findings
 
 
+def _actor_identities(actor: str) -> frozenset[str]:
+    """Normalised actor names, host-free names and embedded lane identities."""
+    actor = actor.casefold().strip()
+    if not actor:
+        return frozenset()
+    identities = {actor}
+    if "@" in actor:
+        identities.add(actor.rsplit("@", 1)[0].strip())
+    identities.update(
+        token.rstrip(punctuation) for token in re.findall(r"\blane=(\S+)", actor)
+    )
+    identities.discard("")
+    return frozenset(identities)
+
+
+def _self_accepted_findings(ticket_id: str, contract: object) -> list[AcBindingFinding]:
+    """OMN-17427 — refuse author acceptance unless retired or re-accepted.
+
+    Re-acceptance is contract-scoped: the append-only gate requires a verifier
+    to append a new record rather than edit the original item.
+    """
+    retired = _retired_pairs(contract)
+    re_accepted: set[str] = set()
+    self_accepted: list[tuple[str, str, str]] = []
+    for index, item in enumerate(_items(contract)):
+        item_id = _item_id(item, index)
+        for binding in _bindings(item):
+            label = canonical_ac_label(str(binding.get("label") or ""))
+            accepted_by = str(binding.get("accepted_by") or "")
+            accepter = _actor_identities(accepted_by)
+            if not accepter or (item_id, label) in retired:
+                continue
+            proposer = _actor_identities(str(binding.get("proposed_by") or ""))
+            if accepter & proposer:
+                self_accepted.append((item_id, label, accepted_by))
+            else:
+                re_accepted.add(label)
+
+    return [
+        AcBindingFinding(
+            rule="ac_binding_self_accepted",
+            subject=f"{ticket_id} {item_id}",
+            message=(
+                f"the binding for {label} was accepted by {accepted_by!r}, "
+                "the lane that proposed it. A binding is never accepted by "
+                "its author: leave it a draft (no accepted_by) and have a "
+                "second lane re-run the bound check and accept it, or append "
+                "a record accepted by that second lane"
+            ),
+            severity=BINDING_REFUSAL,
+        )
+        for item_id, label, accepted_by in self_accepted
+        if label not in re_accepted
+    ]
+
+
 def check_local_ac_bindings(ticket_id: str, contract: object) -> list[AcBindingFinding]:
     """The rules that need no ticket body. Safe to run at commit time."""
     findings: list[AcBindingFinding] = []
@@ -441,6 +511,7 @@ def check_contract_ac_bindings(
     on exactly the contracts nobody can check.
     """
     findings = check_local_ac_bindings(ticket_id, contract)
+    findings.extend(_self_accepted_findings(ticket_id, contract))
 
     if ticket_body is None:
         # Unreachable mirrors the strictest verdict the readable path could have
@@ -520,7 +591,15 @@ def check_contract_ac_bindings(
     for index, item in enumerate(_items(contract)):
         item_id = _item_id(item, index)
         subject = f"{ticket_id} {item_id}"
-        findings.extend(_unknown_criteria(ticket_id, subject, item, known))
+        findings.extend(
+            _unknown_criteria(
+                ticket_id,
+                subject,
+                item,
+                known,
+                {label for target, label in retired if target == item_id},
+            )
+        )
         findings.extend(
             _stale_pins(
                 subject, item, known, re_accepted, retired=retired, item_id=item_id
@@ -583,13 +662,22 @@ def _labels_pinned_to_current_text(
 
 
 def _unknown_criteria(
-    ticket_id: str, subject: str, item: dict[str, object], known: dict[str, str]
+    ticket_id: str,
+    subject: str,
+    item: dict[str, object],
+    known: dict[str, str],
+    retired_labels: set[str],
 ) -> list[AcBindingFinding]:
-    """Claims naming a criterion the ticket does not have."""
+    """Claims naming a criterion the ticket does not have.
+
+    A retired ``(item, label)`` pair is not a claim: a criterion the ticket has
+    since dropped can only be withdrawn by a ``supersedes_ac_binding`` item,
+    because the merged item cannot be edited.
+    """
     findings: list[AcBindingFinding] = []
     for entry in _claims(item):
         label = canonical_ac_label(entry)
-        if not label or label in known:
+        if not label or label in known or label in retired_labels:
             continue
         findings.append(
             AcBindingFinding(
@@ -686,8 +774,9 @@ def _static_evidence_on_live_criteria(
     the autobinder stops emitting these the held population reaches zero on its
     own, and a test asserts this function's body reads none of those things.
 
-    **What it deliberately does NOT do.** It never judges WHO accepted a binding
-    or WHEN. ``accepted_by`` equal to the ticket creator with ``accepted_at``
+    **What it deliberately does NOT do.** It does not judge creator acceptance
+    or WHEN; acceptance by the binding's own proposer is refused (OMN-17427).
+    ``accepted_by`` equal to the ticket creator with ``accepted_at``
     equal to the ticket's creation time is OMN-18332 AC2's designed output and
     its AC2c positive control -- correct by construction, because at the
     creation revision the creator is the actor who wrote the text. Refusing that

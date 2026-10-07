@@ -1,0 +1,110 @@
+---
+schema_version: 1.0.0
+ticket_id: OMN-19965
+evidence_item_id: dod-omn19965-closeout-2a21-ac2-accepted
+check_type: command
+check_value: |-
+  d="$(mktemp -d)" || exit 2
+  trap 'rm -rf "$d"' EXIT
+  for f in ac2-with-rule-default.jsonl ac2-no-rule-default.jsonl profile-with-rule.settings.json profile-no-rule.settings.json; do
+    gh api -H 'Accept: application/vnd.github.raw' "repos/OmniNode-ai/knowledge-base-internal/contents/beta/tracking/2026-10-02-omn-19965-ac2-scratch-profile-evidence/$f?ref=640cb1f763befcd47fe24a8f64b0eefa05ee6c92" > "$d/$f" || exit 2
+  done
+  cat > "$d/ac2.py" <<'PY'
+  import json, sys
+  def load(p):
+      return [json.loads(l) for l in open(p)]
+  def delegates(ev):
+      calls = {}
+      for d in ev:
+          if d["type"] == "assistant":
+              for c in d["message"]["content"]:
+                  if c["type"] == "tool_use" and c["name"] == "Bash" and c["input"].get("command", "").startswith("onex delegate"):
+                      calls[c["id"]] = {"cmd": c["input"]["command"], "ok": None}
+      for d in ev:
+          if d["type"] == "user":
+              for c in d["message"]["content"]:
+                  if isinstance(c, dict) and c.get("type") == "tool_result" and c.get("tool_use_id") in calls:
+                      calls[c["tool_use_id"]]["ok"] = not c.get("is_error") and "requires approval" not in str(c["content"])
+      return list(calls.values())
+  def init(ev):
+      return next(d for d in ev if d["type"] == "system" and d.get("subtype") == "init")
+  def result(ev):
+      return next(d for d in ev if d["type"] == "result")
+  w, n = load(sys.argv[1]), load(sys.argv[2])
+  rule = sys.argv[3]
+  skill_md = open(sys.argv[6]).read()
+  allow_w = json.load(open(sys.argv[4]))["permissions"]["allow"]
+  allow_n = json.load(open(sys.argv[5])).get("permissions", {}).get("allow", [])
+  dw, dn = delegates(w), delegates(n)
+  rw, rn = result(w), result(n)
+  checks = {
+      "rule_documented_in_skill_md_is_the_rule_in_the_with_rule_profile": rule in skill_md and rule in allow_w and rule not in allow_n,
+      "both_arms_ran_in_default_permission_mode": init(w)["permissionMode"] == "default" and init(n)["permissionMode"] == "default",
+      "with_rule_arm_ran_two_onex_delegate_calls_and_both_returned": len(dw) == 2 and all(c["ok"] for c in dw),
+      "with_rule_arm_result_is_success_with_no_permission_denials": rw["subtype"] == "success" and rw["permission_denials"] == [],
+      "control_without_the_rule_the_same_harness_denies_onex_delegate": rn["permission_denials"] != [] and any(str(x.get("tool_input")).find("onex delegate") >= 0 for x in rn["permission_denials"]),
+  }
+  print(json.dumps({"with_rule_delegate_calls": len(dw), "with_rule_denials": len(rw["permission_denials"]), "no_rule_denials": len(rn["permission_denials"]), "checks": checks}, sort_keys=True))
+  sys.exit(0 if all(checks.values()) else 1)
+  PY
+  python3 "$d/ac2.py" "$d/ac2-with-rule-default.jsonl" "$d/ac2-no-rule-default.jsonl" 'Bash(onex delegate:*)' "$d/profile-with-rule.settings.json" "$d/profile-no-rule.settings.json" plugins/onex-delegate/skills/delegate/SKILL.md || exit 1
+contract_entry_sha256: sha256:b15dfadea2d7ac9ab106122527dffdc5a13d9a824b188ef2e7ec98bddd84b679
+status: PASS
+commit_sha: 640cb1f763befcd47fe24a8f64b0eefa05ee6c92
+runner: closeout-local-gate-2a21@mac
+probe_command: |-
+  d="$(mktemp -d)" || exit 2
+  trap 'rm -rf "$d"' EXIT
+  for f in ac2-with-rule-default.jsonl ac2-no-rule-default.jsonl profile-with-rule.settings.json profile-no-rule.settings.json; do
+    gh api -H 'Accept: application/vnd.github.raw' "repos/OmniNode-ai/knowledge-base-internal/contents/beta/tracking/2026-10-02-omn-19965-ac2-scratch-profile-evidence/$f?ref=640cb1f763befcd47fe24a8f64b0eefa05ee6c92" > "$d/$f" || exit 2
+  done
+  cat > "$d/ac2.py" <<'PY'
+  import json, sys
+  def load(p):
+      return [json.loads(l) for l in open(p)]
+  def delegates(ev):
+      calls = {}
+      for d in ev:
+          if d["type"] == "assistant":
+              for c in d["message"]["content"]:
+                  if c["type"] == "tool_use" and c["name"] == "Bash" and c["input"].get("command", "").startswith("onex delegate"):
+                      calls[c["id"]] = {"cmd": c["input"]["command"], "ok": None}
+      for d in ev:
+          if d["type"] == "user":
+              for c in d["message"]["content"]:
+                  if isinstance(c, dict) and c.get("type") == "tool_result" and c.get("tool_use_id") in calls:
+                      calls[c["tool_use_id"]]["ok"] = not c.get("is_error") and "requires approval" not in str(c["content"])
+      return list(calls.values())
+  def init(ev):
+      return next(d for d in ev if d["type"] == "system" and d.get("subtype") == "init")
+  def result(ev):
+      return next(d for d in ev if d["type"] == "result")
+  w, n = load(sys.argv[1]), load(sys.argv[2])
+  rule = sys.argv[3]
+  skill_md = open(sys.argv[6]).read()
+  allow_w = json.load(open(sys.argv[4]))["permissions"]["allow"]
+  allow_n = json.load(open(sys.argv[5])).get("permissions", {}).get("allow", [])
+  dw, dn = delegates(w), delegates(n)
+  rw, rn = result(w), result(n)
+  checks = {
+      "rule_documented_in_skill_md_is_the_rule_in_the_with_rule_profile": rule in skill_md and rule in allow_w and rule not in allow_n,
+      "both_arms_ran_in_default_permission_mode": init(w)["permissionMode"] == "default" and init(n)["permissionMode"] == "default",
+      "with_rule_arm_ran_two_onex_delegate_calls_and_both_returned": len(dw) == 2 and all(c["ok"] for c in dw),
+      "with_rule_arm_result_is_success_with_no_permission_denials": rw["subtype"] == "success" and rw["permission_denials"] == [],
+      "control_without_the_rule_the_same_harness_denies_onex_delegate": rn["permission_denials"] != [] and any(str(x.get("tool_input")).find("onex delegate") >= 0 for x in rn["permission_denials"]),
+  }
+  print(json.dumps({"with_rule_delegate_calls": len(dw), "with_rule_denials": len(rw["permission_denials"]), "no_rule_denials": len(rn["permission_denials"]), "checks": checks}, sort_keys=True))
+  sys.exit(0 if all(checks.values()) else 1)
+  PY
+  python3 "$d/ac2.py" "$d/ac2-with-rule-default.jsonl" "$d/ac2-no-rule-default.jsonl" 'Bash(onex delegate:*)' "$d/profile-with-rule.settings.json" "$d/profile-no-rule.settings.json" plugins/onex-delegate/skills/delegate/SKILL.md || exit 1
+probe_stdout: '{"checks": {"both_arms_ran_in_default_permission_mode": true, "control_without_the_rule_the_same_harness_denies_onex_delegate":
+  true, "rule_documented_in_skill_md_is_the_rule_in_the_with_rule_profile": true, "with_rule_arm_ran_two_onex_delegate_calls_and_both_returned":
+  true, "with_rule_arm_result_is_success_with_no_permission_denials": true}, "no_rule_denials": 4, "with_rule_delegate_calls":
+  2, "with_rule_denials": 0}'
+exit_code: 0
+run_timestamp: '2026-10-04T13:51:35Z'
+duration_ms: 1501
+verifier: occ-probe-capture-v1
+artifact_sha256:
+  - sha256:c6a28424ed0b3a1a610715375a69054ba832761bd9b3fd1c94396c0e0e30d7e7
+  - sha256:29ae076904930671c208ea25d04f1a37945f6bac3d279417e9f9e12ce9571511

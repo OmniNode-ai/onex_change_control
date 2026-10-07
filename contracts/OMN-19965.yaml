@@ -120,3 +120,1208 @@ dod_evidence:
         check_value: |-
           uv run pytest plugins/onex-delegate/tests/test_customer_surface_no_internal_params.py plugins/onex-delegate/tests/test_delegate_only_surface.py plugins/onex-delegate/tests/test_install_works.py -q
         cwd: "${OMNI_HOME}/omniclaude"
+  - id: "dod-da-19965-ac1-delegate-only-surface"
+    description: |-
+      AC1 behavior proof (evid-B03-2a21, OMN-17427). (1) The delegate-only surface test module
+      passes at omniclaude dev: exactly one skill folder, `delegate`, and SKILL.md documents the
+      Bash(onex delegate:*) rule. (2) The criterion's own falsifier, run: in a scratch copy of the
+      plugin tree the unmodified module's two AC1 tests pass, and with a second skill folder planted
+      test_exactly_one_skill_directory fails.
+    source: "generated"
+    execution_scope: "local_done_gate"
+    checks:
+      - check_type: "test_passes"
+        check_value: |-
+          env -u PYTHONPATH uv run pytest "plugins/onex-delegate/tests/test_delegate_only_surface.py" -q
+        cwd: "${OMNI_HOME}/omniclaude"
+      - check_type: "command"
+        check_value: "root=\"$(mktemp -d)\" || exit 2\ntrap 'rm -rf \"$root\"' EXIT\ncp -a plugins .claude-plugin
+          \"$root/\" || exit 2\nt=plugins/onex-delegate/tests/test_delegate_only_surface.py\nrun() { env
+          -u PYTHONPATH uv run pytest \"$root/$t\" -q -p no:cacheprovider --rootdir=\"$root\" \"$@\" 2>&1
+          | tail -n 1; }\nclean_line=\"$(run -k 'test_exactly_one_skill_directory or test_skill_md_documents_the_one_time_permission_rule')\";
+          \nmkdir \"$root/plugins/onex-delegate/skills/planted\"\nplanted_line=\"$(run -k test_exactly_one_skill_directory)\"\necho
+          \"clean: $clean_line\"\necho \"planted: $planted_line\"\ncase \"$clean_line\" in *\"2 passed\"*)
+          ;; *) exit 1;; esac\ncase \"$planted_line\" in *\"1 failed\"*) ;; *) exit 1;; esac"
+        cwd: "${OMNI_HOME}/omniclaude"
+    binds_ac:
+      - "AC1"
+    ac_bindings:
+      - label: "AC1"
+        criterion_hash: "b9bca7ccb72e081d34b94165752a468d125aac4f7e94b7f29d01a129c24bac4f"
+        proposed_by: "evid-B03-2a21"
+        accepted_by: "evid-B03-2a21"
+        accepted_at: "2026-10-02T21:00:00Z"
+    supersedes_ac_binding:
+      - item: "dod-OmniNode-ai-omniclaude-pr-2408"
+        label: "AC1"
+        reason: |-
+          dod-OmniNode-ai-omniclaude-pr-2408 binds AC1 only to a source grep or PR file-list read,
+          which proves the code was written and not that AC1 holds. Re-bound by
+          dod-da-19965-ac1-delegate-only-surface, which executes the behavior (done-audit-0c2f, OMN-17427).
+      - item: "dod-OmniNode-ai-omniclaude-pr-2432"
+        label: "AC1"
+        reason: |-
+          dod-OmniNode-ai-omniclaude-pr-2432 binds AC1 only to a source grep or PR file-list read,
+          which proves the code was written and not that AC1 holds. Re-bound by
+          dod-da-19965-ac1-delegate-only-surface, which executes the behavior (done-audit-0c2f, OMN-17427).
+  - id: "dod-da-19965-ac2-second-call-no-permission"
+    description: |-
+      AC2 behavior proof (evid-B03-2a21, OMN-17427). Reads the scratch-profile walk transcripts
+      merged at OmniNode-ai/knowledge-base-internal@640cb1f7 (beta/tracking/2026-10-02-omn-19965-ac2-scratch-profile-evidence) and
+      checks them: both arms ran in default permission mode; in the arm with the documented
+      Bash(onex delegate:*) rule two `onex delegate` calls ran and both returned, and the session
+      result is success with permission_denials []; in the control arm without the rule the same
+      harness denies `onex delegate`, so the empty list is a measured result. The rule string is read
+      back from SKILL.md in the pinned omniclaude checkout. This is a readback of captured transcripts,
+      not a live replay of the walk.
+    source: "generated"
+    execution_scope: "local_done_gate"
+    checks:
+      - check_type: "command"
+        check_value: |-
+          d="$(mktemp -d)" || exit 2
+          trap 'rm -rf "$d"' EXIT
+          for f in ac2-with-rule-default.jsonl ac2-no-rule-default.jsonl profile-with-rule.settings.json profile-no-rule.settings.json; do
+            gh api -H 'Accept: application/vnd.github.raw' "repos/OmniNode-ai/knowledge-base-internal/contents/beta/tracking/2026-10-02-omn-19965-ac2-scratch-profile-evidence/$f?ref=640cb1f763befcd47fe24a8f64b0eefa05ee6c92" > "$d/$f" || exit 2
+          done
+          cat > "$d/ac2.py" <<'PY'
+          import json, sys
+          def load(p):
+              return [json.loads(l) for l in open(p)]
+          def delegates(ev):
+              calls = {}
+              for d in ev:
+                  if d["type"] == "assistant":
+                      for c in d["message"]["content"]:
+                          if c["type"] == "tool_use" and c["name"] == "Bash" and c["input"].get("command", "").startswith("onex delegate"):
+                              calls[c["id"]] = {"cmd": c["input"]["command"], "ok": None}
+              for d in ev:
+                  if d["type"] == "user":
+                      for c in d["message"]["content"]:
+                          if isinstance(c, dict) and c.get("type") == "tool_result" and c.get("tool_use_id") in calls:
+                              calls[c["tool_use_id"]]["ok"] = not c.get("is_error") and "requires approval" not in str(c["content"])
+              return list(calls.values())
+          def init(ev):
+              return next(d for d in ev if d["type"] == "system" and d.get("subtype") == "init")
+          def result(ev):
+              return next(d for d in ev if d["type"] == "result")
+          w, n = load(sys.argv[1]), load(sys.argv[2])
+          rule = sys.argv[3]
+          allow_w = json.load(open(sys.argv[4]))["permissions"]["allow"]
+          allow_n = json.load(open(sys.argv[5])).get("permissions", {}).get("allow", [])
+          dw, dn = delegates(w), delegates(n)
+          rw, rn = result(w), result(n)
+          checks = {
+              "rule_documented_in_skill_md_is_the_rule_in_the_with_rule_profile": rule in allow_w and rule not in allow_n,
+              "both_arms_ran_in_default_permission_mode": init(w)["permissionMode"] == "default" and init(n)["permissionMode"] == "default",
+              "with_rule_arm_ran_two_onex_delegate_calls_and_both_returned": len(dw) == 2 and all(c["ok"] for c in dw),
+              "with_rule_arm_result_is_success_with_no_permission_denials": rw["subtype"] == "success" and rw["permission_denials"] == [],
+              "control_without_the_rule_the_same_harness_denies_onex_delegate": rn["permission_denials"] != [] and any(str(x.get("tool_input")).find("onex delegate") >= 0 for x in rn["permission_denials"]),
+          }
+          print(json.dumps({"with_rule_delegate_calls": len(dw), "with_rule_denials": len(rw["permission_denials"]), "no_rule_denials": len(rn["permission_denials"]), "checks": checks}, sort_keys=True))
+          sys.exit(0 if all(checks.values()) else 1)
+          PY
+          python3 "$d/ac2.py" "$d/ac2-with-rule-default.jsonl" "$d/ac2-no-rule-default.jsonl" 'Bash(onex delegate:*)' "$d/profile-with-rule.settings.json" "$d/profile-no-rule.settings.json" || exit 1
+          grep -c 'Bash(onex delegate:\*)' "${OMNI_HOME}/omniclaude/plugins/onex-delegate/skills/delegate/SKILL.md" || exit 1
+        cwd: "${OMNI_HOME}/omniclaude"
+    binds_ac:
+      - "AC2"
+    ac_bindings:
+      - label: "AC2"
+        criterion_hash: "df45e4abf2c37624984e7d1a04e36b25fee57a0c4e34ca818b272861c0febbfc"
+        proposed_by: "evid-B03-2a21"
+        accepted_by: "evid-B03-2a21"
+        accepted_at: "2026-10-02T21:00:00Z"
+    supersedes_ac_binding:
+      - item: "dod-OmniNode-ai-omniclaude-pr-2408"
+        label: "AC2"
+        reason: |-
+          dod-OmniNode-ai-omniclaude-pr-2408 binds AC2 only to a source grep or PR file-list read,
+          which proves the code was written and not that AC2 holds. Re-bound by
+          dod-da-19965-ac2-second-call-no-permission, which executes the behavior (done-audit-0c2f, OMN-17427).
+      - item: "dod-OmniNode-ai-omniclaude-pr-2432"
+        label: "AC2"
+        reason: |-
+          dod-OmniNode-ai-omniclaude-pr-2432 binds AC2 only to a source grep or PR file-list read,
+          which proves the code was written and not that AC2 holds. Re-bound by
+          dod-da-19965-ac2-second-call-no-permission, which executes the behavior (done-audit-0c2f, OMN-17427).
+  - id: "dod-accept-1245z-19965-ac1-delegate-only-surface"
+    description: |-
+      AC1 binding proposed by lane dod-closeout-bind-2026-10-03T1245Z-c0 and accepted by a different lane, dod-closeout-accept-2026-10-03T1245Z-c0, after an independent re-run at omniclaude origin/dev 38dd7f3b (clean: 2 passed; planted second skill folder: 1 failed). The same check at the parent of the implementing merge 415b6dea exits 1 (the tests do not exist there), so it discriminates the change. It re-accepts the AC1 binding that dod-da-19965-ac1-delegate-only-surface self-accepted.
+    source: "manual"
+    execution_scope: "local_done_gate"
+    checks:
+      - check_type: "command"
+        check_value: |-
+          root="$(mktemp -d)" || exit 2
+          trap 'rm -rf "$root"' EXIT
+          cp -a plugins .claude-plugin "$root/" || exit 2
+          t=plugins/onex-delegate/tests/test_delegate_only_surface.py
+          run() { env -u PYTHONPATH uv run pytest "$root/$t" -q -p no:cacheprovider --rootdir="$root" "$@" 2>&1 | tail -n 1; }
+          clean_line="$(run -k 'test_exactly_one_skill_directory or test_skill_md_documents_the_one_time_permission_rule')"
+          mkdir "$root/plugins/onex-delegate/skills/planted"
+          planted_line="$(run -k test_exactly_one_skill_directory)"
+          echo "clean: $clean_line"
+          echo "planted: $planted_line"
+          case "$clean_line" in *"2 passed"*) ;; *) exit 1;; esac
+          case "$planted_line" in *"1 failed"*) ;; *) exit 1;; esac
+        cwd: "${OMNI_HOME}/omniclaude"
+    binds_ac:
+      - "AC1"
+    ac_bindings:
+      - label: "AC1"
+        criterion_hash: "b9bca7ccb72e081d34b94165752a468d125aac4f7e94b7f29d01a129c24bac4f"
+        proposed_by: "lane=dod-closeout-bind-2026-10-03T1245Z-c0"
+        accepted_by: "lane=dod-closeout-accept-2026-10-03T1245Z-c0"
+        accepted_at: "2026-10-03T13:27:26Z"
+  - id: "dod-accept-1245z-19965-ac2-second-call-no-prompt"
+    description: |-
+      AC2 binding proposed by lane dod-closeout-bind-2026-10-03T1245Z-c0 and accepted by a different lane, dod-closeout-accept-2026-10-03T1245Z-c0, after an independent re-run. It reads back the scratch-profile walk transcripts pinned at OmniNode-ai/knowledge-base-internal@640cb1f7: with only the documented Bash(onex delegate:*) rule, two onex delegate calls ran in default permission mode and the session result has permission_denials []; the no-rule control arm in the same harness records 4 denials. A readback of captured transcripts, not a live replay. It re-accepts the AC2 binding that dod-da-19965-ac2-second-call-no-permission self-accepted.
+    source: "manual"
+    execution_scope: "local_done_gate"
+    checks:
+      - check_type: "command"
+        check_value: |-
+          d="$(mktemp -d)" || exit 2
+          trap 'rm -rf "$d"' EXIT
+          for f in ac2-with-rule-default.jsonl ac2-no-rule-default.jsonl profile-with-rule.settings.json profile-no-rule.settings.json; do
+            gh api -H 'Accept: application/vnd.github.raw' "repos/OmniNode-ai/knowledge-base-internal/contents/beta/tracking/2026-10-02-omn-19965-ac2-scratch-profile-evidence/$f?ref=640cb1f763befcd47fe24a8f64b0eefa05ee6c92" > "$d/$f" || exit 2
+          done
+          cat > "$d/ac2.py" <<'PY'
+          import json, sys
+          def load(p):
+              return [json.loads(l) for l in open(p)]
+          def delegates(ev):
+              calls = {}
+              for d in ev:
+                  if d["type"] == "assistant":
+                      for c in d["message"]["content"]:
+                          if c["type"] == "tool_use" and c["name"] == "Bash" and c["input"].get("command", "").startswith("onex delegate"):
+                              calls[c["id"]] = {"cmd": c["input"]["command"], "ok": None}
+              for d in ev:
+                  if d["type"] == "user":
+                      for c in d["message"]["content"]:
+                          if isinstance(c, dict) and c.get("type") == "tool_result" and c.get("tool_use_id") in calls:
+                              calls[c["tool_use_id"]]["ok"] = not c.get("is_error") and "requires approval" not in str(c["content"])
+              return list(calls.values())
+          def init(ev):
+              return next(d for d in ev if d["type"] == "system" and d.get("subtype") == "init")
+          def result(ev):
+              return next(d for d in ev if d["type"] == "result")
+          w, n = load(sys.argv[1]), load(sys.argv[2])
+          rule = sys.argv[3]
+          allow_w = json.load(open(sys.argv[4]))["permissions"]["allow"]
+          allow_n = json.load(open(sys.argv[5])).get("permissions", {}).get("allow", [])
+          dw, dn = delegates(w), delegates(n)
+          rw, rn = result(w), result(n)
+          checks = {
+              "rule_documented_in_skill_md_is_the_rule_in_the_with_rule_profile": rule in allow_w and rule not in allow_n,
+              "both_arms_ran_in_default_permission_mode": init(w)["permissionMode"] == "default" and init(n)["permissionMode"] == "default",
+              "with_rule_arm_ran_two_onex_delegate_calls_and_both_returned": len(dw) == 2 and all(c["ok"] for c in dw),
+              "with_rule_arm_result_is_success_with_no_permission_denials": rw["subtype"] == "success" and rw["permission_denials"] == [],
+              "control_without_the_rule_the_same_harness_denies_onex_delegate": rn["permission_denials"] != [] and any(str(x.get("tool_input")).find("onex delegate") >= 0 for x in rn["permission_denials"]),
+          }
+          print(json.dumps({"with_rule_delegate_calls": len(dw), "with_rule_denials": len(rw["permission_denials"]), "no_rule_denials": len(rn["permission_denials"]), "checks": checks}, sort_keys=True))
+          sys.exit(0 if all(checks.values()) else 1)
+          PY
+          python3 "$d/ac2.py" "$d/ac2-with-rule-default.jsonl" "$d/ac2-no-rule-default.jsonl" 'Bash(onex delegate:*)' "$d/profile-with-rule.settings.json" "$d/profile-no-rule.settings.json" || exit 1
+        cwd: "${OMNI_HOME}/omniclaude"
+    binds_ac:
+      - "AC2"
+    ac_bindings:
+      - label: "AC2"
+        criterion_hash: "df45e4abf2c37624984e7d1a04e36b25fee57a0c4e34ca818b272861c0febbfc"
+        proposed_by: "lane=dod-closeout-bind-2026-10-03T1245Z-c0"
+        accepted_by: "lane=dod-closeout-accept-2026-10-03T1245Z-c0"
+        accepted_at: "2026-10-03T13:27:26Z"
+  - id: "dod-accept-1645z-19965-ac1-delegate-only-surface"
+    description: |-
+      AC1 binding proposed by lane dod-closeout-bind-2026-10-03T1645Z-c0 and accepted by a different lane, dod-closeout-accept-2026-10-03T1645Z-c0, after an independent re-run at omniclaude origin/dev 8177ce811 (clean: 2 passed, 18 deselected; planted second skill folder: 1 failed, 19 deselected; exit 0). The same check at the parent of the implementing merge 415b6dea7 exits 1, because the parent tree ships two skill folders (cloud_delegate, delegate), its SKILL.md lacks the rule, and the selected tests do not exist there. The test reads the scratch copy (REPO_ROOT is four parents of the test file), so the planted folder is the folder the assertion lists.
+    source: "manual"
+    execution_scope: "local_done_gate"
+    checks:
+      - check_type: "command"
+        check_value: |-
+          root="$(mktemp -d)" || exit 2
+          trap 'rm -rf "$root"' EXIT
+          cp -a plugins .claude-plugin "$root/" || exit 2
+          t=plugins/onex-delegate/tests/test_delegate_only_surface.py
+          run() { env -u PYTHONPATH uv run pytest "$root/$t" -q -p no:cacheprovider --rootdir="$root" "$@" 2>&1 | tail -n 1; }
+          clean_line="$(run -k 'test_exactly_one_skill_directory or test_skill_md_documents_the_one_time_permission_rule')"
+          mkdir "$root/plugins/onex-delegate/skills/planted"
+          planted_line="$(run -k test_exactly_one_skill_directory)"
+          echo "clean: $clean_line"
+          echo "planted: $planted_line"
+          case "$clean_line" in *"2 passed"*) ;; *) exit 1;; esac
+          case "$planted_line" in *"1 failed"*) ;; *) exit 1;; esac
+        cwd: "${OMNI_HOME}/omniclaude"
+    binds_ac:
+      - "AC1"
+    ac_bindings:
+      - label: "AC1"
+        criterion_hash: "b9bca7ccb72e081d34b94165752a468d125aac4f7e94b7f29d01a129c24bac4f"
+        proposed_by: "lane=dod-closeout-bind-2026-10-03T1645Z-c0"
+        accepted_by: "lane=dod-closeout-accept-2026-10-03T1645Z-c0"
+        accepted_at: "2026-10-03T17:13:46Z"
+  - id: "dod-accept-1645z-19965-ac2-second-call-no-prompt"
+    description: |-
+      AC2 binding proposed by lane dod-closeout-bind-2026-10-03T1645Z-c0 and accepted by a different lane, dod-closeout-accept-2026-10-03T1645Z-c0, after an independent re-run (exit 0, with_rule_delegate_calls 2, with_rule_denials 0, no_rule_denials 4, all five checks true). It reads back the scratch-profile walk transcripts pinned at OmniNode-ai/knowledge-base-internal@640cb1f7, captured 2026-10-02 against published plugin onex 0.3.1 in default permission mode, with profiles that differ only in the Bash(onex delegate:*) allow entry. No commit touches plugins/onex-delegate or .claude-plugin on omniclaude dev after b295489f3 (2026-09-30), so the transcripts reflect the plugin at dev 8177ce811. A readback of captured transcripts, not a live replay; the criterion names that transcript as its falsifier.
+    source: "manual"
+    execution_scope: "local_done_gate"
+    checks:
+      - check_type: "command"
+        check_value: |-
+          d="$(mktemp -d)" || exit 2
+          trap 'rm -rf "$d"' EXIT
+          for f in ac2-with-rule-default.jsonl ac2-no-rule-default.jsonl profile-with-rule.settings.json profile-no-rule.settings.json; do
+            gh api -H 'Accept: application/vnd.github.raw' "repos/OmniNode-ai/knowledge-base-internal/contents/beta/tracking/2026-10-02-omn-19965-ac2-scratch-profile-evidence/$f?ref=640cb1f763befcd47fe24a8f64b0eefa05ee6c92" > "$d/$f" || exit 2
+          done
+          cat > "$d/ac2.py" <<'PY'
+          import json, sys
+          def load(p):
+              return [json.loads(l) for l in open(p)]
+          def delegates(ev):
+              calls = {}
+              for d in ev:
+                  if d["type"] == "assistant":
+                      for c in d["message"]["content"]:
+                          if c["type"] == "tool_use" and c["name"] == "Bash" and c["input"].get("command", "").startswith("onex delegate"):
+                              calls[c["id"]] = {"cmd": c["input"]["command"], "ok": None}
+              for d in ev:
+                  if d["type"] == "user":
+                      for c in d["message"]["content"]:
+                          if isinstance(c, dict) and c.get("type") == "tool_result" and c.get("tool_use_id") in calls:
+                              calls[c["tool_use_id"]]["ok"] = not c.get("is_error") and "requires approval" not in str(c["content"])
+              return list(calls.values())
+          def init(ev):
+              return next(d for d in ev if d["type"] == "system" and d.get("subtype") == "init")
+          def result(ev):
+              return next(d for d in ev if d["type"] == "result")
+          w, n = load(sys.argv[1]), load(sys.argv[2])
+          rule = sys.argv[3]
+          allow_w = json.load(open(sys.argv[4]))["permissions"]["allow"]
+          allow_n = json.load(open(sys.argv[5])).get("permissions", {}).get("allow", [])
+          dw, dn = delegates(w), delegates(n)
+          rw, rn = result(w), result(n)
+          checks = {
+              "rule_documented_in_skill_md_is_the_rule_in_the_with_rule_profile": rule in allow_w and rule not in allow_n,
+              "both_arms_ran_in_default_permission_mode": init(w)["permissionMode"] == "default" and init(n)["permissionMode"] == "default",
+              "with_rule_arm_ran_two_onex_delegate_calls_and_both_returned": len(dw) == 2 and all(c["ok"] for c in dw),
+              "with_rule_arm_result_is_success_with_no_permission_denials": rw["subtype"] == "success" and rw["permission_denials"] == [],
+              "control_without_the_rule_the_same_harness_denies_onex_delegate": rn["permission_denials"] != [] and any(str(x.get("tool_input")).find("onex delegate") >= 0 for x in rn["permission_denials"]),
+          }
+          print(json.dumps({"with_rule_delegate_calls": len(dw), "with_rule_denials": len(rw["permission_denials"]), "no_rule_denials": len(rn["permission_denials"]), "checks": checks}, sort_keys=True))
+          sys.exit(0 if all(checks.values()) else 1)
+          PY
+          python3 "$d/ac2.py" "$d/ac2-with-rule-default.jsonl" "$d/ac2-no-rule-default.jsonl" 'Bash(onex delegate:*)' "$d/profile-with-rule.settings.json" "$d/profile-no-rule.settings.json" || exit 1
+        cwd: "${OMNI_HOME}/omniclaude"
+    binds_ac:
+      - "AC2"
+    ac_bindings:
+      - label: "AC2"
+        criterion_hash: "df45e4abf2c37624984e7d1a04e36b25fee57a0c4e34ca818b272861c0febbfc"
+        proposed_by: "lane=dod-closeout-bind-2026-10-03T1645Z-c0"
+        accepted_by: "lane=dod-closeout-accept-2026-10-03T1645Z-c0"
+        accepted_at: "2026-10-03T17:13:46Z"
+  - id: "dod-accept-2045z-19965-ac1-delegate-only-surface"
+    description: |-
+      AC1 binding proposed by lane dod-closeout-bind-2026-10-03T2045Z-c0 and accepted by a different lane, dod-closeout-accept-2026-10-03T2045Z-c0, after an independent re-run in a fresh detached worktree at omniclaude origin/dev 2cf1c1392 (clean: 2 passed, 18 deselected; planted second skill folder: 1 failed, 19 deselected; exit 0). The same check at the parent of the implementing merge 415b6dea7 exits 1: that tree ships cloud_delegate and delegate, and the selected tests do not exist there (clean: 20 deselected; planted: 20 deselected). The test lists the skills folder of the scratch copy, so the planted folder is the folder the assertion reads.
+    source: "manual"
+    execution_scope: "local_done_gate"
+    checks:
+      - check_type: "command"
+        check_value: |-
+          root="$(mktemp -d)" || exit 2
+          trap 'rm -rf "$root"' EXIT
+          cp -a plugins .claude-plugin "$root/" || exit 2
+          t=plugins/onex-delegate/tests/test_delegate_only_surface.py
+          run() { env -u PYTHONPATH uv run pytest "$root/$t" -q -p no:cacheprovider --rootdir="$root" "$@" 2>&1 | tail -n 1; }
+          clean_line="$(run -k 'test_exactly_one_skill_directory or test_skill_md_documents_the_one_time_permission_rule')"
+          mkdir "$root/plugins/onex-delegate/skills/planted"
+          planted_line="$(run -k test_exactly_one_skill_directory)"
+          echo "clean: $clean_line"
+          echo "planted: $planted_line"
+          case "$clean_line" in *"2 passed"*) ;; *) exit 1;; esac
+          case "$planted_line" in *"1 failed"*) ;; *) exit 1;; esac
+        cwd: "${OMNI_HOME}/omniclaude"
+    binds_ac:
+      - "AC1"
+    ac_bindings:
+      - label: "AC1"
+        criterion_hash: "b9bca7ccb72e081d34b94165752a468d125aac4f7e94b7f29d01a129c24bac4f"
+        proposed_by: "lane=dod-closeout-bind-2026-10-03T2045Z-c0"
+        accepted_by: "lane=dod-closeout-accept-2026-10-03T2045Z-c0"
+        accepted_at: "2026-10-03T21:21:19Z"
+  - id: "dod-accept-2045z-19965-ac2-second-call-no-prompt"
+    description: |-
+      AC2 binding proposed by lane dod-closeout-bind-2026-10-03T2045Z-c0 and accepted by a different lane, dod-closeout-accept-2026-10-03T2045Z-c0, after an independent re-run (exit 0; with_rule_delegate_calls 2, with_rule_denials 0, no_rule_denials 4; all five checks true). The check_value is byte-identical to dod-accept-1645z-19965-ac2-second-call-no-prompt. It reads back the scratch-profile walk transcripts pinned at OmniNode-ai/knowledge-base-internal@640cb1f7 (captured 2026-10-02); the last commit touching plugins/onex-delegate or .claude-plugin on omniclaude dev is b295489f3 (2026-09-30), so the transcripts postdate every change to the plugin at dev 2cf1c1392. A readback of captured transcripts, not a live replay; the criterion names that transcript as its own falsifier.
+    source: "manual"
+    execution_scope: "local_done_gate"
+    checks:
+      - check_type: "command"
+        check_value: |-
+          d="$(mktemp -d)" || exit 2
+          trap 'rm -rf "$d"' EXIT
+          for f in ac2-with-rule-default.jsonl ac2-no-rule-default.jsonl profile-with-rule.settings.json profile-no-rule.settings.json; do
+            gh api -H 'Accept: application/vnd.github.raw' "repos/OmniNode-ai/knowledge-base-internal/contents/beta/tracking/2026-10-02-omn-19965-ac2-scratch-profile-evidence/$f?ref=640cb1f763befcd47fe24a8f64b0eefa05ee6c92" > "$d/$f" || exit 2
+          done
+          cat > "$d/ac2.py" <<'PY'
+          import json, sys
+          def load(p):
+              return [json.loads(l) for l in open(p)]
+          def delegates(ev):
+              calls = {}
+              for d in ev:
+                  if d["type"] == "assistant":
+                      for c in d["message"]["content"]:
+                          if c["type"] == "tool_use" and c["name"] == "Bash" and c["input"].get("command", "").startswith("onex delegate"):
+                              calls[c["id"]] = {"cmd": c["input"]["command"], "ok": None}
+              for d in ev:
+                  if d["type"] == "user":
+                      for c in d["message"]["content"]:
+                          if isinstance(c, dict) and c.get("type") == "tool_result" and c.get("tool_use_id") in calls:
+                              calls[c["tool_use_id"]]["ok"] = not c.get("is_error") and "requires approval" not in str(c["content"])
+              return list(calls.values())
+          def init(ev):
+              return next(d for d in ev if d["type"] == "system" and d.get("subtype") == "init")
+          def result(ev):
+              return next(d for d in ev if d["type"] == "result")
+          w, n = load(sys.argv[1]), load(sys.argv[2])
+          rule = sys.argv[3]
+          allow_w = json.load(open(sys.argv[4]))["permissions"]["allow"]
+          allow_n = json.load(open(sys.argv[5])).get("permissions", {}).get("allow", [])
+          dw, dn = delegates(w), delegates(n)
+          rw, rn = result(w), result(n)
+          checks = {
+              "rule_documented_in_skill_md_is_the_rule_in_the_with_rule_profile": rule in allow_w and rule not in allow_n,
+              "both_arms_ran_in_default_permission_mode": init(w)["permissionMode"] == "default" and init(n)["permissionMode"] == "default",
+              "with_rule_arm_ran_two_onex_delegate_calls_and_both_returned": len(dw) == 2 and all(c["ok"] for c in dw),
+              "with_rule_arm_result_is_success_with_no_permission_denials": rw["subtype"] == "success" and rw["permission_denials"] == [],
+              "control_without_the_rule_the_same_harness_denies_onex_delegate": rn["permission_denials"] != [] and any(str(x.get("tool_input")).find("onex delegate") >= 0 for x in rn["permission_denials"]),
+          }
+          print(json.dumps({"with_rule_delegate_calls": len(dw), "with_rule_denials": len(rw["permission_denials"]), "no_rule_denials": len(rn["permission_denials"]), "checks": checks}, sort_keys=True))
+          sys.exit(0 if all(checks.values()) else 1)
+          PY
+          python3 "$d/ac2.py" "$d/ac2-with-rule-default.jsonl" "$d/ac2-no-rule-default.jsonl" 'Bash(onex delegate:*)' "$d/profile-with-rule.settings.json" "$d/profile-no-rule.settings.json" || exit 1
+        cwd: "${OMNI_HOME}/omniclaude"
+    binds_ac:
+      - "AC2"
+    ac_bindings:
+      - label: "AC2"
+        criterion_hash: "df45e4abf2c37624984e7d1a04e36b25fee57a0c4e34ca818b272861c0febbfc"
+        proposed_by: "lane=dod-closeout-bind-2026-10-03T2045Z-c0"
+        accepted_by: "lane=dod-closeout-accept-2026-10-03T2045Z-c0"
+        accepted_at: "2026-10-03T21:21:19Z"
+  - id: "dod-accept-0245z-19965-ac1-delegate-only-surface"
+    description: |-
+      AC1 binding proposed by lane dod-closeout-bind-2026-10-04T0245Z-c0 and accepted by a different lane, dod-closeout-accept-2026-10-04T0245Z-c0, after an independent re-run in a fresh detached worktree at omniclaude origin/dev d8a7c75ec (clean: 3 passed, 17 deselected; planted second skill folder: 1 failed, 19 deselected; rule stripped from SKILL.md: 1 failed, 19 deselected; exit 0). The tests read the scratch copy of the shipped tree, so the planted folder and the stripped rule are what the assertions read. No commit has touched plugins/onex-delegate or .claude-plugin since b295489f3 (2026-09-30).
+    source: "manual"
+    execution_scope: "local_done_gate"
+    checks:
+      - check_type: "command"
+        check_value: |-
+          root="$(mktemp -d)" || exit 2
+          trap 'rm -rf "$root"' EXIT
+          cp -a plugins .claude-plugin "$root/" || exit 2
+          t=plugins/onex-delegate/tests/test_delegate_only_surface.py
+          s="$root/plugins/onex-delegate/skills/delegate/SKILL.md"
+          run() { env -u PYTHONPATH uv run pytest "$root/$t" -q -p no:cacheprovider --rootdir="$root" "$@" 2>&1 | tail -n 1; }
+          clean="$(run -k 'test_exactly_one_skill_directory or test_skill_md_documents_the_one_time_permission_rule or test_root_marketplace_sources_slim_plugin')"
+          mkdir "$root/plugins/onex-delegate/skills/planted"
+          planted="$(run -k test_exactly_one_skill_directory)"
+          rmdir "$root/plugins/onex-delegate/skills/planted"
+          python3 -c "import sys;p=sys.argv[1];open(p,'w').write(open(p).read().replace('Bash(onex delegate:*)','Bash(onex:*)'))" "$s"
+          stripped="$(run -k test_skill_md_documents_the_one_time_permission_rule)"
+          echo "clean: $clean"; echo "planted: $planted"; echo "rule-stripped: $stripped"
+          case "$clean" in *"3 passed"*) ;; *) exit 1;; esac
+          case "$planted" in *"1 failed"*) ;; *) exit 1;; esac
+          case "$stripped" in *"1 failed"*) ;; *) exit 1;; esac
+        cwd: "${OMNI_HOME}/omniclaude"
+    binds_ac:
+      - "AC1"
+    ac_bindings:
+      - label: "AC1"
+        criterion_hash: "b9bca7ccb72e081d34b94165752a468d125aac4f7e94b7f29d01a129c24bac4f"
+        proposed_by: "lane=dod-closeout-bind-2026-10-04T0245Z-c0"
+        accepted_by: "lane=dod-closeout-accept-2026-10-04T0245Z-c0"
+        accepted_at: "2026-10-04T03:38:18Z"
+  - id: "dod-accept-0245z-19965-ac2-second-call-no-prompt"
+    description: |-
+      AC2 binding proposed by lane dod-closeout-bind-2026-10-04T0245Z-c0 and accepted by a different lane, dod-closeout-accept-2026-10-04T0245Z-c0, after an independent re-run (exit 0; with_rule_delegate_calls 2, with_rule_denials 0, no_rule_denials 4; all five checks true). The check_value is byte-identical to dod-accept-2045z-19965-ac2-second-call-no-prompt. It reads back the scratch-profile walk transcripts pinned at OmniNode-ai/knowledge-base-internal@640cb1f7 (captured 2026-10-02), which postdate the last change to plugins/onex-delegate or .claude-plugin (b295489f3, 2026-09-30) at omniclaude dev d8a7c75ec. A readback of captured transcripts, not a live replay; the criterion names that transcript as its own falsifier.
+    source: "manual"
+    execution_scope: "local_done_gate"
+    checks:
+      - check_type: "command"
+        check_value: |-
+          d="$(mktemp -d)" || exit 2
+          trap 'rm -rf "$d"' EXIT
+          for f in ac2-with-rule-default.jsonl ac2-no-rule-default.jsonl profile-with-rule.settings.json profile-no-rule.settings.json; do
+            gh api -H 'Accept: application/vnd.github.raw' "repos/OmniNode-ai/knowledge-base-internal/contents/beta/tracking/2026-10-02-omn-19965-ac2-scratch-profile-evidence/$f?ref=640cb1f763befcd47fe24a8f64b0eefa05ee6c92" > "$d/$f" || exit 2
+          done
+          cat > "$d/ac2.py" <<'PY'
+          import json, sys
+          def load(p):
+              return [json.loads(l) for l in open(p)]
+          def delegates(ev):
+              calls = {}
+              for d in ev:
+                  if d["type"] == "assistant":
+                      for c in d["message"]["content"]:
+                          if c["type"] == "tool_use" and c["name"] == "Bash" and c["input"].get("command", "").startswith("onex delegate"):
+                              calls[c["id"]] = {"cmd": c["input"]["command"], "ok": None}
+              for d in ev:
+                  if d["type"] == "user":
+                      for c in d["message"]["content"]:
+                          if isinstance(c, dict) and c.get("type") == "tool_result" and c.get("tool_use_id") in calls:
+                              calls[c["tool_use_id"]]["ok"] = not c.get("is_error") and "requires approval" not in str(c["content"])
+              return list(calls.values())
+          def init(ev):
+              return next(d for d in ev if d["type"] == "system" and d.get("subtype") == "init")
+          def result(ev):
+              return next(d for d in ev if d["type"] == "result")
+          w, n = load(sys.argv[1]), load(sys.argv[2])
+          rule = sys.argv[3]
+          allow_w = json.load(open(sys.argv[4]))["permissions"]["allow"]
+          allow_n = json.load(open(sys.argv[5])).get("permissions", {}).get("allow", [])
+          dw, dn = delegates(w), delegates(n)
+          rw, rn = result(w), result(n)
+          checks = {
+              "rule_documented_in_skill_md_is_the_rule_in_the_with_rule_profile": rule in allow_w and rule not in allow_n,
+              "both_arms_ran_in_default_permission_mode": init(w)["permissionMode"] == "default" and init(n)["permissionMode"] == "default",
+              "with_rule_arm_ran_two_onex_delegate_calls_and_both_returned": len(dw) == 2 and all(c["ok"] for c in dw),
+              "with_rule_arm_result_is_success_with_no_permission_denials": rw["subtype"] == "success" and rw["permission_denials"] == [],
+              "control_without_the_rule_the_same_harness_denies_onex_delegate": rn["permission_denials"] != [] and any(str(x.get("tool_input")).find("onex delegate") >= 0 for x in rn["permission_denials"]),
+          }
+          print(json.dumps({"with_rule_delegate_calls": len(dw), "with_rule_denials": len(rw["permission_denials"]), "no_rule_denials": len(rn["permission_denials"]), "checks": checks}, sort_keys=True))
+          sys.exit(0 if all(checks.values()) else 1)
+          PY
+          python3 "$d/ac2.py" "$d/ac2-with-rule-default.jsonl" "$d/ac2-no-rule-default.jsonl" 'Bash(onex delegate:*)' "$d/profile-with-rule.settings.json" "$d/profile-no-rule.settings.json" || exit 1
+        cwd: "${OMNI_HOME}/omniclaude"
+    binds_ac:
+      - "AC2"
+    ac_bindings:
+      - label: "AC2"
+        criterion_hash: "df45e4abf2c37624984e7d1a04e36b25fee57a0c4e34ca818b272861c0febbfc"
+        proposed_by: "lane=dod-closeout-bind-2026-10-04T0245Z-c0"
+        accepted_by: "lane=dod-closeout-accept-2026-10-04T0245Z-c0"
+        accepted_at: "2026-10-04T03:38:18Z"
+  - id: "dod-accept-0445z-19965-ac1-delegate-only-surface"
+    description: |-
+      AC1 binding proposed by lane dod-closeout-bind-2026-10-04T0445Z-c0 and accepted by a different lane, dod-closeout-accept-2026-10-04T0445Z-c0, after an independent re-run at omniclaude origin/dev 0e1ba6dc4 in a fresh detached worktree: clean 3 passed, 17 deselected; planted second skill folder 1 failed, 19 deselected; Bash(onex delegate:*) stripped from SKILL.md 1 failed, 19 deselected; exit 0. The published plugin's skills directory lists exactly delegate, and the two mutations prove the tests detect a second skill and a missing permission rule. The last commit touching plugins/onex-delegate or .claude-plugin is b295489f3.
+    source: "manual"
+    execution_scope: "local_done_gate"
+    checks:
+      - check_type: "command"
+        check_value: |-
+          root="$(mktemp -d)" || exit 2
+          trap 'rm -rf "$root"' EXIT
+          cp -a plugins .claude-plugin "$root/" || exit 2
+          t=plugins/onex-delegate/tests/test_delegate_only_surface.py
+          s="$root/plugins/onex-delegate/skills/delegate/SKILL.md"
+          run() { env -u PYTHONPATH uv run pytest "$root/$t" -q -p no:cacheprovider --rootdir="$root" "$@" 2>&1 | tail -n 1; }
+          clean="$(run -k 'test_exactly_one_skill_directory or test_skill_md_documents_the_one_time_permission_rule or test_root_marketplace_sources_slim_plugin')"
+          mkdir "$root/plugins/onex-delegate/skills/planted"
+          planted="$(run -k test_exactly_one_skill_directory)"
+          rmdir "$root/plugins/onex-delegate/skills/planted"
+          python3 -c "import sys;p=sys.argv[1];open(p,'w').write(open(p).read().replace('Bash(onex delegate:*)','Bash(onex:*)'))" "$s"
+          stripped="$(run -k test_skill_md_documents_the_one_time_permission_rule)"
+          echo "clean: $clean"; echo "planted: $planted"; echo "rule-stripped: $stripped"
+          case "$clean" in *"3 passed"*) ;; *) exit 1;; esac
+          case "$planted" in *"1 failed"*) ;; *) exit 1;; esac
+          case "$stripped" in *"1 failed"*) ;; *) exit 1;; esac
+        cwd: "${OMNI_HOME}/omniclaude"
+    binds_ac:
+      - "AC1"
+    ac_bindings:
+      - label: "AC1"
+        criterion_hash: "b9bca7ccb72e081d34b94165752a468d125aac4f7e94b7f29d01a129c24bac4f"
+        proposed_by: "lane=dod-closeout-bind-2026-10-04T0445Z-c0"
+        accepted_by: "lane=dod-closeout-accept-2026-10-04T0445Z-c0"
+        accepted_at: "2026-10-04T05:43:10Z"
+  - id: "dod-accept-0445z-19965-ac2-second-call-no-prompt"
+    description: |-
+      AC2 binding proposed by lane dod-closeout-bind-2026-10-04T0445Z-c0 and accepted by a different lane, dod-closeout-accept-2026-10-04T0445Z-c0, after an independent re-run at omniclaude origin/dev 0e1ba6dc4: exit 0, all five checks true, with_rule_delegate_calls 2, with_rule_denials 0, no_rule_denials 4. Unlike the 0245Z item, the permission rule is read from plugins/onex-delegate/skills/delegate/SKILL.md at the checked-out ref and must equal the rule in the with-rule profile. Residuals: this reads back transcripts pinned at knowledge-base-internal 640cb1f7 (captured 2026-10-02, plugin onex 0.3.1) and is not a live replay; in the with-rule transcript the Skill onex:delegate was invoked once and issued two onex delegate Bash calls, so call two is the second onex delegate execution in the same profile, not a second Skill invocation.
+    source: "manual"
+    execution_scope: "local_done_gate"
+    checks:
+      - check_type: "command"
+        check_value: |-
+          d="$(mktemp -d)" || exit 2
+          trap 'rm -rf "$d"' EXIT
+          for f in ac2-with-rule-default.jsonl ac2-no-rule-default.jsonl profile-with-rule.settings.json profile-no-rule.settings.json; do
+            gh api -H 'Accept: application/vnd.github.raw' "repos/OmniNode-ai/knowledge-base-internal/contents/beta/tracking/2026-10-02-omn-19965-ac2-scratch-profile-evidence/$f?ref=640cb1f763befcd47fe24a8f64b0eefa05ee6c92" > "$d/$f" || exit 2
+          done
+          cat > "$d/ac2.py" <<'PY'
+          import json, sys
+          def load(p):
+              return [json.loads(l) for l in open(p)]
+          def delegates(ev):
+              calls = {}
+              for d in ev:
+                  if d["type"] == "assistant":
+                      for c in d["message"]["content"]:
+                          if c["type"] == "tool_use" and c["name"] == "Bash" and c["input"].get("command", "").startswith("onex delegate"):
+                              calls[c["id"]] = {"cmd": c["input"]["command"], "ok": None}
+              for d in ev:
+                  if d["type"] == "user":
+                      for c in d["message"]["content"]:
+                          if isinstance(c, dict) and c.get("type") == "tool_result" and c.get("tool_use_id") in calls:
+                              calls[c["tool_use_id"]]["ok"] = not c.get("is_error") and "requires approval" not in str(c["content"])
+              return list(calls.values())
+          def init(ev):
+              return next(d for d in ev if d["type"] == "system" and d.get("subtype") == "init")
+          def result(ev):
+              return next(d for d in ev if d["type"] == "result")
+          w, n = load(sys.argv[1]), load(sys.argv[2])
+          rule = sys.argv[3]
+          skill_md = open(sys.argv[6]).read()
+          allow_w = json.load(open(sys.argv[4]))["permissions"]["allow"]
+          allow_n = json.load(open(sys.argv[5])).get("permissions", {}).get("allow", [])
+          dw, dn = delegates(w), delegates(n)
+          rw, rn = result(w), result(n)
+          checks = {
+              "rule_documented_in_skill_md_is_the_rule_in_the_with_rule_profile": rule in skill_md and rule in allow_w and rule not in allow_n,
+              "both_arms_ran_in_default_permission_mode": init(w)["permissionMode"] == "default" and init(n)["permissionMode"] == "default",
+              "with_rule_arm_ran_two_onex_delegate_calls_and_both_returned": len(dw) == 2 and all(c["ok"] for c in dw),
+              "with_rule_arm_result_is_success_with_no_permission_denials": rw["subtype"] == "success" and rw["permission_denials"] == [],
+              "control_without_the_rule_the_same_harness_denies_onex_delegate": rn["permission_denials"] != [] and any(str(x.get("tool_input")).find("onex delegate") >= 0 for x in rn["permission_denials"]),
+          }
+          print(json.dumps({"with_rule_delegate_calls": len(dw), "with_rule_denials": len(rw["permission_denials"]), "no_rule_denials": len(rn["permission_denials"]), "checks": checks}, sort_keys=True))
+          sys.exit(0 if all(checks.values()) else 1)
+          PY
+          python3 "$d/ac2.py" "$d/ac2-with-rule-default.jsonl" "$d/ac2-no-rule-default.jsonl" 'Bash(onex delegate:*)' "$d/profile-with-rule.settings.json" "$d/profile-no-rule.settings.json" plugins/onex-delegate/skills/delegate/SKILL.md || exit 1
+        cwd: "${OMNI_HOME}/omniclaude"
+    binds_ac:
+      - "AC2"
+    ac_bindings:
+      - label: "AC2"
+        criterion_hash: "df45e4abf2c37624984e7d1a04e36b25fee57a0c4e34ca818b272861c0febbfc"
+        proposed_by: "lane=dod-closeout-bind-2026-10-04T0445Z-c0"
+        accepted_by: "lane=dod-closeout-accept-2026-10-04T0445Z-c0"
+        accepted_at: "2026-10-04T05:43:10Z"
+  - id: dod-omn19965-acc-ac1-surface
+    description: Independent AC1 re-acceptance of the 0445Z proposal. Executes the shipped surface test
+      in a scratch copy; the planted second skill and removed permission rule must each fail the corresponding
+      assertion. The rule mutation preserves the rest of SKILL.md.
+    source: manual
+    execution_scope: local_done_gate
+    checks:
+      - check_type: command
+        check_value: |-
+          bash -eu <<'CHECK'
+          root="$(mktemp -d)"
+          trap 'rm -rf "$root"' EXIT
+          gh api repos/OmniNode-ai/omniclaude/tarball/0e1ba6dc453128aeed7329846594574c40ee1814 > "$root/source.tar.gz"
+          tar -xzf "$root/source.tar.gz" -C "$root" --strip-components=1
+          t=plugins/onex-delegate/tests/test_delegate_only_surface.py
+          s="$root/plugins/onex-delegate/skills/delegate/SKILL.md"
+          run() {
+            env -u PYTHONPATH uv run --no-project --with pytest python -m pytest "$root/$t" -q -p no:cacheprovider --rootdir="$root" "$@" > "$root/result.log" 2>&1
+          }
+          run -k 'test_exactly_one_skill_directory or test_skill_md_documents_the_one_time_permission_rule or test_root_marketplace_sources_slim_plugin'
+          clean="$(tail -n 1 "$root/result.log")"
+          mkdir "$root/plugins/onex-delegate/skills/planted"
+          if run -k test_exactly_one_skill_directory; then cat "$root/result.log"; exit 1; else planted_exit=$?; fi
+          planted="$(tail -n 1 "$root/result.log")"
+          rmdir "$root/plugins/onex-delegate/skills/planted"
+          python3 - "$s" <<'PY'
+          from pathlib import Path
+          import sys
+          p = Path(sys.argv[1])
+          text = p.read_text()
+          assert 'Bash(onex delegate:*)' in text
+          p.write_text(text.replace('Bash(onex delegate:*)', 'Bash(onex:*)'))
+          PY
+          if run -k test_skill_md_documents_the_one_time_permission_rule; then cat "$root/result.log"; exit 1; else stripped_exit=$?; fi
+          stripped="$(tail -n 1 "$root/result.log")"
+          echo "clean: $clean"
+          echo "planted: exit=$planted_exit $planted"
+          echo "rule-stripped: exit=$stripped_exit $stripped"
+          case "$clean" in *"3 passed"*) ;; *) exit 1;; esac
+          case "$planted" in *"1 failed"*) ;; *) exit 1;; esac
+          case "$stripped" in *"1 failed"*) ;; *) exit 1;; esac
+          test "$planted_exit" = 1
+          test "$stripped_exit" = 1
+          CHECK
+        cwd: .
+    binds_ac:
+      - AC1
+    ac_bindings:
+      - label: AC1
+        criterion_hash: b9bca7ccb72e081d34b94165752a468d125aac4f7e94b7f29d01a129c24bac4f
+        proposed_by: lane=dod-closeout-bind-2026-10-04T0445Z-c0
+        accepted_by: lane=omn19965-acc
+        accepted_at: '2026-10-04T09:02:45Z'
+  - id: dod-omn19965-acc-ac2-live-permission
+    description: 'Executing AC2 replacement. Loads the pinned published plugin into two fresh Claude Code
+      profiles, invokes onex:delegate twice in one session in default permission mode, and executes the
+      real onex delegate command. A loopback model supplies tool requests only: Claude Code evaluates
+      permissions and supplies tool results. Removing the documented Bash rule must deny the same command.
+      The probe grades permission behavior independently of delegation service completion; dispatch refusals
+      are reported. This new binding is a draft, requiring another lane to re-run and accept it.'
+    source: manual
+    execution_scope: local_done_gate
+    checks:
+      - check_type: command
+        check_value: |-
+          python3 - <<'PY'
+          import io
+          import tarfile
+          import json
+          import os
+          import re
+          import shutil
+          import subprocess
+          import tempfile
+          import threading
+          import uuid
+          from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+          from pathlib import Path
+
+          omni = Path(os.environ.get('OMNI_HOME') or (Path.home() / 'Code/omni_home' if os.name == 'posix' and __import__('sys').platform == 'darwin' else '/data/omninode/omni_home'))
+          assert shutil.which('claude'), 'Claude Code unavailable'
+          onex = omni / 'omnibase_infra/scripts/onex'
+          assert onex.is_file(), 'onex entrypoint unavailable'
+          nonce = uuid.uuid4().hex
+          command = 'onex delegate "Reply with the single word ok. Permission probe ' + nonce + '" --task-type document --ticket OMN-19965 --timeout 15 --max-tokens 32'
+
+          class Handler(BaseHTTPRequestHandler):
+              def log_message(self, *args):
+                  pass
+              def do_POST(self):
+                  body = json.loads(self.rfile.read(int(self.headers['Content-Length'])))
+                  if 'count_tokens' in self.path:
+                      payload = json.dumps({'input_tokens': 100}).encode()
+                      self.send_response(200)
+                      self.send_header('Content-Type', 'application/json')
+                      self.send_header('Content-Length', str(len(payload)))
+                      self.end_headers()
+                      self.wfile.write(payload)
+                      return
+                  results = [b for m in body.get('messages', []) for b in m.get('content', []) if isinstance(b, dict) and b.get('type') == 'tool_result']
+                  turn = len(results)
+                  if turn < 4:
+                      block = {'type': 'tool_use', 'id': 'probe_' + str(turn), 'name': 'Skill' if turn % 2 == 0 else 'Bash', 'input': {'skill': 'onex:delegate', 'args': '--task-type document Reply with the single word ok. Permission probe ' + nonce} if turn % 2 == 0 else {'command': command, 'description': 'Execute the delegate skill command', 'timeout': 300000}}
+                      stop = 'tool_use'
+                  else:
+                      block = {'type': 'text', 'text': 'Permission probe complete.'}
+                      stop = 'end_turn'
+                  message = {'id': 'msg_' + uuid.uuid4().hex, 'type': 'message', 'role': 'assistant', 'model': 'claude-sonnet-4-6', 'content': [block], 'stop_reason': stop, 'stop_sequence': None, 'usage': {'input_tokens': 100, 'output_tokens': 50}}
+                  self.send_response(200)
+                  self.send_header('Content-Type', 'text/event-stream' if body.get('stream') else 'application/json')
+                  self.end_headers()
+                  if not body.get('stream'):
+                      self.wfile.write(json.dumps(message).encode())
+                      return
+                  start = dict(message, content=[], stop_reason=None, usage={'input_tokens': 100, 'output_tokens': 0})
+                  events = [('message_start', {'type': 'message_start', 'message': start}), ('content_block_start', {'type': 'content_block_start', 'index': 0, 'content_block': dict(block, input={}) if block['type'] == 'tool_use' else {'type': 'text', 'text': ''}}), ('content_block_delta', {'type': 'content_block_delta', 'index': 0, 'delta': {'type': 'input_json_delta', 'partial_json': json.dumps(block['input'])} if block['type'] == 'tool_use' else {'type': 'text_delta', 'text': block['text']}}), ('content_block_stop', {'type': 'content_block_stop', 'index': 0}), ('message_delta', {'type': 'message_delta', 'delta': {'stop_reason': stop, 'stop_sequence': None}, 'usage': {'output_tokens': 50}}), ('message_stop', {'type': 'message_stop'})]
+                  for kind, data in events:
+                      self.wfile.write(('event: ' + kind + '\ndata: ' + json.dumps(data) + '\n\n').encode())
+                  self.wfile.flush()
+
+          server = ThreadingHTTPServer(('127.0.0.1', 0), Handler)
+          thread = threading.Thread(target=server.serve_forever, daemon=True)
+          thread.start()
+          try:
+              with tempfile.TemporaryDirectory(prefix='omn19965-ac2-') as root:
+                  root = Path(root)
+                  pin = '0e1ba6dc453128aeed7329846594574c40ee1814'
+                  archive = subprocess.run(['gh', 'api', 'repos/OmniNode-ai/omniclaude/tarball/' + pin], check=True, capture_output=True).stdout
+                  with tarfile.open(fileobj=io.BytesIO(archive), mode='r:gz') as tar:
+                      top = tar.getnames()[0].split('/')[0]
+                      tar.extractall(root / 'source', filter='data')
+                  plugin = root / 'source' / top / 'plugins/onex-delegate'
+                  text = (plugin / 'skills/delegate/SKILL.md').read_text()
+                  rules = re.findall(r'`(Bash\(onex delegate:\*\))`', text)
+                  assert rules, 'documented permission rule missing'
+                  rule = rules[0]
+                  summaries = {}
+                  for arm in ('with_rule', 'without_rule'):
+                      work = root / arm / 'work'
+                      cfg = root / arm / 'config'
+                      work.mkdir(parents=True)
+                      cfg.mkdir()
+                      allow = ['Skill(onex:delegate)'] + ([rule] if arm == 'with_rule' else [])
+                      (cfg / 'settings.json').write_text(json.dumps({'permissions': {'allow': allow}}))
+                      env = {k: v for k, v in os.environ.items() if not k.startswith('ANTHROPIC')}
+                      env.update(ONEX_FLOOR_LOCK_WAIT_S='1', OMNI_HOME=str(omni), CLAUDE_CONFIG_DIR=str(cfg), ANTHROPIC_BASE_URL='http://127.0.0.1:' + str(server.server_port), ANTHROPIC_AUTH_TOKEN='permission-probe-loopback', CLAUDE_CODE_OAUTH_TOKEN='', CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC='1', PATH=str(onex.parent) + os.pathsep + env.get('PATH', ''))
+                      session = str(uuid.uuid4())
+                      proc = subprocess.run(['claude', '-p', '/onex:delegate --task-type document Reply with the single word ok. Permission probe ' + nonce, '--output-format', 'stream-json', '--verbose', '--permission-mode', 'default', '--setting-sources', 'user', '--strict-mcp-config', '--plugin-dir', str(plugin), '--session-id', session, '--max-turns', '8'], env=env, cwd=work, stdin=subprocess.DEVNULL, capture_output=True, text=True, timeout=900)
+                      events = [json.loads(line) for line in proc.stdout.splitlines() if line.startswith('{')]
+                      init = next((e for e in events if e.get('type') == 'system' and e.get('subtype') == 'init'), {})
+                      result = next((e for e in reversed(events) if e.get('type') == 'result'), {})
+                      uses = {}
+                      skills = {}
+                      for e in events:
+                          message = e.get('message')
+                          if not isinstance(message, dict) or not isinstance(message.get('content'), list):
+                              continue
+                          for b in message['content']:
+                              if e.get('type') == 'assistant' and b.get('type') == 'tool_use':
+                                  if b.get('name') == 'Bash' and b.get('input', {}).get('command') == command:
+                                      uses[b['id']] = None
+                                  if b.get('name') == 'Skill' and b.get('input', {}).get('skill') == 'onex:delegate':
+                                      skills[b['id']] = False
+                              if e.get('type') == 'user' and b.get('type') == 'tool_result' and b.get('tool_use_id') in skills:
+                                  skills[b['tool_use_id']] = not b.get('is_error')
+                              if e.get('type') == 'user' and b.get('type') == 'tool_result' and b.get('tool_use_id') in uses:
+                                  content = str(b.get('content', ''))
+                                  uses[b['tool_use_id']] = {'is_error': bool(b.get('is_error')), 'approval_denied': 'requires approval' in content.lower() or 'permission' in content.lower() and 'denied' in content.lower(), 'has_output': bool(content.strip()), 'onex_reported': 'delegate artifacts' in content.lower() or 'skill_name' in content, 'dispatch_refused': 'refused_before_dispatch' in content or 'venv is STALE' in content}
+                      summary = {'process_exit': proc.returncode, 'permission_mode': init.get('permissionMode'), 'session_id': init.get('session_id'), 'skill_calls': len(skills), 'skills_loaded': all(skills.values()), 'delegate_calls': len(uses), 'tool_results': list(uses.values()), 'permission_denials': len(result.get('permission_denials', [])), 'result_subtype': result.get('subtype')}
+                      summaries[arm] = summary
+                      print(json.dumps({'arm': arm, **summary}, sort_keys=True), flush=True)
+                  w, n = summaries['with_rule'], summaries['without_rule']
+                  checks = {'default_mode': w['permission_mode'] == n['permission_mode'] == 'default', 'two_skill_invocations': w['skill_calls'] == 2 and w['skills_loaded'], 'two_delegate_calls_in_same_profile': w['delegate_calls'] == 2 and bool(w['session_id']), 'both_commands_executed_without_approval': all(r and r['has_output'] and r['onex_reported'] and not r['approval_denied'] for r in w['tool_results']), 'no_permission_denials': w['permission_denials'] == 0 and w['result_subtype'] == 'success' and w['process_exit'] == 0, 'negative_control_denied': n['delegate_calls'] == n['permission_denials'] == 2 and all(r and r['approval_denied'] for r in n['tool_results'])}
+                  print(json.dumps({'checks': checks, 'delegation_successes': sum(r is not None and not r['is_error'] for r in w['tool_results'])}, sort_keys=True))
+                  assert all(checks.values()), 'live permission probe failed'
+          finally:
+              server.shutdown()
+              server.server_close()
+              thread.join(timeout=5)
+          PY
+        cwd: .
+    binds_ac:
+      - AC2
+    ac_bindings:
+      - label: AC2
+        criterion_hash: df45e4abf2c37624984e7d1a04e36b25fee57a0c4e34ca818b272861c0febbfc
+        proposed_by: lane=omn19965-acc
+    supersedes_ac_binding:
+      - item: dod-OmniNode-ai-omniclaude-pr-2408
+        label: AC2
+        reason: Source inspection or pinned transcript readback does not execute the current scratch-profile
+          permission behavior. Replaced by a live two-Skill/two-Bash probe with a rule-removal negative
+          control; the replacement binding remains a draft for independent acceptance.
+      - item: dod-OmniNode-ai-omniclaude-pr-2432
+        label: AC2
+        reason: Source inspection or pinned transcript readback does not execute the current scratch-profile
+          permission behavior. Replaced by a live two-Skill/two-Bash probe with a rule-removal negative
+          control; the replacement binding remains a draft for independent acceptance.
+      - item: dod-da-19965-ac2-second-call-no-permission
+        label: AC2
+        reason: Source inspection or pinned transcript readback does not execute the current scratch-profile
+          permission behavior. Replaced by a live two-Skill/two-Bash probe with a rule-removal negative
+          control; the replacement binding remains a draft for independent acceptance.
+      - item: dod-accept-1245z-19965-ac2-second-call-no-prompt
+        label: AC2
+        reason: Source inspection or pinned transcript readback does not execute the current scratch-profile
+          permission behavior. Replaced by a live two-Skill/two-Bash probe with a rule-removal negative
+          control; the replacement binding remains a draft for independent acceptance.
+      - item: dod-accept-1645z-19965-ac2-second-call-no-prompt
+        label: AC2
+        reason: Source inspection or pinned transcript readback does not execute the current scratch-profile
+          permission behavior. Replaced by a live two-Skill/two-Bash probe with a rule-removal negative
+          control; the replacement binding remains a draft for independent acceptance.
+      - item: dod-accept-2045z-19965-ac2-second-call-no-prompt
+        label: AC2
+        reason: Source inspection or pinned transcript readback does not execute the current scratch-profile
+          permission behavior. Replaced by a live two-Skill/two-Bash probe with a rule-removal negative
+          control; the replacement binding remains a draft for independent acceptance.
+      - item: dod-accept-0245z-19965-ac2-second-call-no-prompt
+        label: AC2
+        reason: Source inspection or pinned transcript readback does not execute the current scratch-profile
+          permission behavior. Replaced by a live two-Skill/two-Bash probe with a rule-removal negative
+          control; the replacement binding remains a draft for independent acceptance.
+      - item: dod-accept-0445z-19965-ac2-second-call-no-prompt
+        label: AC2
+        reason: Source inspection or pinned transcript readback does not execute the current scratch-profile
+          permission behavior. Replaced by a live two-Skill/two-Bash probe with a rule-removal negative
+          control; the replacement binding remains a draft for independent acceptance.
+  - id: dod-omn19965-d62d-ac2-live-permission
+    description: 'Independent AC2 acceptance by lane omn19965-d62d-2a21 of the exact live permission check
+      proposed by lane omn19965-acc. Re-executes the pinned published plugin in two fresh Claude Code
+      profiles: two Skill invocations and two real onex delegate Bash calls in one session, with the documented
+      permission rule present versus removed. Permission behavior is graded separately from delegation
+      service completion.'
+    source: manual
+    execution_scope: local_done_gate
+    checks:
+      - check_type: command
+        check_value: |-
+          python3 - <<'PY'
+          import io
+          import tarfile
+          import json
+          import os
+          import re
+          import shutil
+          import subprocess
+          import tempfile
+          import threading
+          import uuid
+          from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+          from pathlib import Path
+
+          omni = Path(os.environ.get('OMNI_HOME') or (Path.home() / 'Code/omni_home' if os.name == 'posix' and __import__('sys').platform == 'darwin' else '/data/omninode/omni_home'))
+          assert shutil.which('claude'), 'Claude Code unavailable'
+          onex = omni / 'omnibase_infra/scripts/onex'
+          assert onex.is_file(), 'onex entrypoint unavailable'
+          nonce = uuid.uuid4().hex
+          command = 'onex delegate "Reply with the single word ok. Permission probe ' + nonce + '" --task-type document --ticket OMN-19965 --timeout 15 --max-tokens 32'
+
+          class Handler(BaseHTTPRequestHandler):
+              def log_message(self, *args):
+                  pass
+              def do_POST(self):
+                  body = json.loads(self.rfile.read(int(self.headers['Content-Length'])))
+                  if 'count_tokens' in self.path:
+                      payload = json.dumps({'input_tokens': 100}).encode()
+                      self.send_response(200)
+                      self.send_header('Content-Type', 'application/json')
+                      self.send_header('Content-Length', str(len(payload)))
+                      self.end_headers()
+                      self.wfile.write(payload)
+                      return
+                  results = [b for m in body.get('messages', []) for b in m.get('content', []) if isinstance(b, dict) and b.get('type') == 'tool_result']
+                  turn = len(results)
+                  if turn < 4:
+                      block = {'type': 'tool_use', 'id': 'probe_' + str(turn), 'name': 'Skill' if turn % 2 == 0 else 'Bash', 'input': {'skill': 'onex:delegate', 'args': '--task-type document Reply with the single word ok. Permission probe ' + nonce} if turn % 2 == 0 else {'command': command, 'description': 'Execute the delegate skill command', 'timeout': 300000}}
+                      stop = 'tool_use'
+                  else:
+                      block = {'type': 'text', 'text': 'Permission probe complete.'}
+                      stop = 'end_turn'
+                  message = {'id': 'msg_' + uuid.uuid4().hex, 'type': 'message', 'role': 'assistant', 'model': 'claude-sonnet-4-6', 'content': [block], 'stop_reason': stop, 'stop_sequence': None, 'usage': {'input_tokens': 100, 'output_tokens': 50}}
+                  self.send_response(200)
+                  self.send_header('Content-Type', 'text/event-stream' if body.get('stream') else 'application/json')
+                  self.end_headers()
+                  if not body.get('stream'):
+                      self.wfile.write(json.dumps(message).encode())
+                      return
+                  start = dict(message, content=[], stop_reason=None, usage={'input_tokens': 100, 'output_tokens': 0})
+                  events = [('message_start', {'type': 'message_start', 'message': start}), ('content_block_start', {'type': 'content_block_start', 'index': 0, 'content_block': dict(block, input={}) if block['type'] == 'tool_use' else {'type': 'text', 'text': ''}}), ('content_block_delta', {'type': 'content_block_delta', 'index': 0, 'delta': {'type': 'input_json_delta', 'partial_json': json.dumps(block['input'])} if block['type'] == 'tool_use' else {'type': 'text_delta', 'text': block['text']}}), ('content_block_stop', {'type': 'content_block_stop', 'index': 0}), ('message_delta', {'type': 'message_delta', 'delta': {'stop_reason': stop, 'stop_sequence': None}, 'usage': {'output_tokens': 50}}), ('message_stop', {'type': 'message_stop'})]
+                  for kind, data in events:
+                      self.wfile.write(('event: ' + kind + '\ndata: ' + json.dumps(data) + '\n\n').encode())
+                  self.wfile.flush()
+
+          server = ThreadingHTTPServer(('127.0.0.1', 0), Handler)
+          thread = threading.Thread(target=server.serve_forever, daemon=True)
+          thread.start()
+          try:
+              with tempfile.TemporaryDirectory(prefix='omn19965-ac2-') as root:
+                  root = Path(root)
+                  pin = '0e1ba6dc453128aeed7329846594574c40ee1814'
+                  archive = subprocess.run(['gh', 'api', 'repos/OmniNode-ai/omniclaude/tarball/' + pin], check=True, capture_output=True).stdout
+                  with tarfile.open(fileobj=io.BytesIO(archive), mode='r:gz') as tar:
+                      top = tar.getnames()[0].split('/')[0]
+                      tar.extractall(root / 'source', filter='data')
+                  plugin = root / 'source' / top / 'plugins/onex-delegate'
+                  text = (plugin / 'skills/delegate/SKILL.md').read_text()
+                  rules = re.findall(r'`(Bash\(onex delegate:\*\))`', text)
+                  assert rules, 'documented permission rule missing'
+                  rule = rules[0]
+                  summaries = {}
+                  for arm in ('with_rule', 'without_rule'):
+                      work = root / arm / 'work'
+                      cfg = root / arm / 'config'
+                      work.mkdir(parents=True)
+                      cfg.mkdir()
+                      allow = ['Skill(onex:delegate)'] + ([rule] if arm == 'with_rule' else [])
+                      (cfg / 'settings.json').write_text(json.dumps({'permissions': {'allow': allow}}))
+                      env = {k: v for k, v in os.environ.items() if not k.startswith('ANTHROPIC')}
+                      env.update(ONEX_FLOOR_LOCK_WAIT_S='1', OMNI_HOME=str(omni), CLAUDE_CONFIG_DIR=str(cfg), ANTHROPIC_BASE_URL='http://127.0.0.1:' + str(server.server_port), ANTHROPIC_AUTH_TOKEN='permission-probe-loopback', CLAUDE_CODE_OAUTH_TOKEN='', CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC='1', PATH=str(onex.parent) + os.pathsep + env.get('PATH', ''))
+                      session = str(uuid.uuid4())
+                      proc = subprocess.run(['claude', '-p', '/onex:delegate --task-type document Reply with the single word ok. Permission probe ' + nonce, '--output-format', 'stream-json', '--verbose', '--permission-mode', 'default', '--setting-sources', 'user', '--strict-mcp-config', '--plugin-dir', str(plugin), '--session-id', session, '--max-turns', '8'], env=env, cwd=work, stdin=subprocess.DEVNULL, capture_output=True, text=True, timeout=900)
+                      events = [json.loads(line) for line in proc.stdout.splitlines() if line.startswith('{')]
+                      init = next((e for e in events if e.get('type') == 'system' and e.get('subtype') == 'init'), {})
+                      result = next((e for e in reversed(events) if e.get('type') == 'result'), {})
+                      uses = {}
+                      skills = {}
+                      for e in events:
+                          message = e.get('message')
+                          if not isinstance(message, dict) or not isinstance(message.get('content'), list):
+                              continue
+                          for b in message['content']:
+                              if e.get('type') == 'assistant' and b.get('type') == 'tool_use':
+                                  if b.get('name') == 'Bash' and b.get('input', {}).get('command') == command:
+                                      uses[b['id']] = None
+                                  if b.get('name') == 'Skill' and b.get('input', {}).get('skill') == 'onex:delegate':
+                                      skills[b['id']] = False
+                              if e.get('type') == 'user' and b.get('type') == 'tool_result' and b.get('tool_use_id') in skills:
+                                  skills[b['tool_use_id']] = not b.get('is_error')
+                              if e.get('type') == 'user' and b.get('type') == 'tool_result' and b.get('tool_use_id') in uses:
+                                  content = str(b.get('content', ''))
+                                  uses[b['tool_use_id']] = {'is_error': bool(b.get('is_error')), 'approval_denied': 'requires approval' in content.lower() or 'permission' in content.lower() and 'denied' in content.lower(), 'has_output': bool(content.strip()), 'onex_reported': 'delegate artifacts' in content.lower() or 'skill_name' in content, 'dispatch_refused': 'refused_before_dispatch' in content or 'venv is STALE' in content}
+                      summary = {'process_exit': proc.returncode, 'permission_mode': init.get('permissionMode'), 'session_id': init.get('session_id'), 'skill_calls': len(skills), 'skills_loaded': all(skills.values()), 'delegate_calls': len(uses), 'tool_results': list(uses.values()), 'permission_denials': len(result.get('permission_denials', [])), 'result_subtype': result.get('subtype')}
+                      summaries[arm] = summary
+                      print(json.dumps({'arm': arm, **summary}, sort_keys=True), flush=True)
+                  w, n = summaries['with_rule'], summaries['without_rule']
+                  checks = {'default_mode': w['permission_mode'] == n['permission_mode'] == 'default', 'two_skill_invocations': w['skill_calls'] == 2 and w['skills_loaded'], 'two_delegate_calls_in_same_profile': w['delegate_calls'] == 2 and bool(w['session_id']), 'both_commands_executed_without_approval': all(r and r['has_output'] and r['onex_reported'] and not r['approval_denied'] for r in w['tool_results']), 'no_permission_denials': w['permission_denials'] == 0 and w['result_subtype'] == 'success' and w['process_exit'] == 0, 'negative_control_denied': n['delegate_calls'] == n['permission_denials'] == 2 and all(r and r['approval_denied'] for r in n['tool_results'])}
+                  print(json.dumps({'checks': checks, 'delegation_successes': sum(r is not None and not r['is_error'] for r in w['tool_results'])}, sort_keys=True))
+                  assert all(checks.values()), 'live permission probe failed'
+          finally:
+              server.shutdown()
+              server.server_close()
+              thread.join(timeout=5)
+          PY
+        cwd: .
+    binds_ac:
+      - AC2
+    ac_bindings:
+      - label: AC2
+        criterion_hash: df45e4abf2c37624984e7d1a04e36b25fee57a0c4e34ca818b272861c0febbfc
+        proposed_by: lane=omn19965-acc
+        accepted_by: lane=omn19965-d62d-2a21
+        accepted_at: '2026-10-04T11:01:18Z'
+  - id: "dod-acc-1004t1245z-19965-ac1-one-skill"
+    description: |-
+      AC1 binding proposed by lane dod-closeout-bind-2026-10-04T1245Z-c0 and accepted by a different lane, dod-closeout-accept-2026-10-04T1245Z-c0, after an independent re-run at omniclaude origin/dev 4358450cc (clean checkout, plugins tree unmodified): clean 3 passed, 17 deselected; planted second skill folder 1 failed, 19 deselected; Bash(onex delegate:*) stripped from SKILL.md 1 failed, 19 deselected; exit 0. The shipped skills directory lists exactly delegate, the root marketplace sources the slim plugin, and the two mutations prove the tests detect a second skill and a missing permission rule.
+    source: "manual"
+    execution_scope: "local_done_gate"
+    checks:
+      - check_type: "command"
+        check_value: |-
+          root="$(mktemp -d)" || exit 2
+          trap 'rm -rf "$root"' EXIT
+          cp -a plugins .claude-plugin "$root/" || exit 2
+          t=plugins/onex-delegate/tests/test_delegate_only_surface.py
+          s="$root/plugins/onex-delegate/skills/delegate/SKILL.md"
+          run() { env -u PYTHONPATH uv run pytest "$root/$t" -q -p no:cacheprovider --rootdir="$root" "$@" 2>&1 | tail -n 1; }
+          clean="$(run -k 'test_exactly_one_skill_directory or test_skill_md_documents_the_one_time_permission_rule or test_root_marketplace_sources_slim_plugin')"
+          mkdir "$root/plugins/onex-delegate/skills/planted"
+          planted="$(run -k test_exactly_one_skill_directory)"
+          rmdir "$root/plugins/onex-delegate/skills/planted"
+          python3 -c "import sys;p=sys.argv[1];open(p,'w').write(open(p).read().replace('Bash(onex delegate:*)','Bash(onex:*)'))" "$s"
+          stripped="$(run -k test_skill_md_documents_the_one_time_permission_rule)"
+          echo "clean: $clean"; echo "planted: $planted"; echo "rule-stripped: $stripped"
+          case "$clean" in *"3 passed"*) ;; *) exit 1;; esac
+          case "$planted" in *"1 failed"*) ;; *) exit 1;; esac
+          case "$stripped" in *"1 failed"*) ;; *) exit 1;; esac
+        cwd: "${OMNI_HOME}/omniclaude"
+    binds_ac:
+      - "AC1"
+    ac_bindings:
+      - label: "AC1"
+        criterion_hash: "b9bca7ccb72e081d34b94165752a468d125aac4f7e94b7f29d01a129c24bac4f"
+        proposed_by: "lane=dod-closeout-bind-2026-10-04T1245Z-c0"
+        accepted_by: "lane=dod-closeout-accept-2026-10-04T1245Z-c0"
+        accepted_at: "2026-10-04T13:21:49Z"
+  - id: "dod-acc-1004t1245z-19965-ac2-help-probe"
+    description: |-
+      AC2 binding proposed by lane dod-closeout-bind-2026-10-04T1245Z-c0 and accepted by a different lane, dod-closeout-accept-2026-10-04T1245Z-c0, after an independent re-run at omniclaude origin/dev 4358450ccbba0cee11e390208dd0b8b1728e94ab: exit 0, all six checks true. With the SKILL.md rule Bash(onex delegate:*) allowed in a fresh scratch Claude Code profile in default permission mode, two Skill onex:delegate invocations in one session each issued an onex delegate Bash call and both ran with zero permission denials; with the rule removed, both calls were denied (2 of 2), so the zero is measured. The plugin under test comes from git archive of origin/dev, and the command shape matches the skill's documented onex delegate "<prompt>" call. Residuals: a loopback model scripts the tool requests, so this proves Claude Code's permission evaluation of the documented rule against the skill's command shape, not that a real model emits exactly that command; the trailing --help means no delegation is dispatched and delegation completion is not exercised.
+    source: "manual"
+    execution_scope: "local_done_gate"
+    checks:
+      - check_type: "command"
+        check_value: |-
+          python3 - <<'PY'
+          import io, json, os, re, shutil, subprocess, tarfile, tempfile, threading, uuid
+          from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+          from pathlib import Path
+
+          omni = Path(os.environ["OMNI_HOME"])
+          assert shutil.which("claude"), "Claude Code unavailable"
+          onex = omni / "omnibase_infra/scripts/onex"
+          assert onex.is_file(), "onex entrypoint unavailable"
+          nonce = uuid.uuid4().hex
+          # Same command shape the skill runs, plus a trailing --help: click answers --help eagerly
+          # and exits 0 before any payload is built or dispatched, so the probe performs no delegation.
+          command = 'onex delegate "Reply with the single word ok. Permission probe ' + nonce + '" --task-type document --ticket OMN-19965 --timeout 15 --max-tokens 32 --help'
+
+          class Handler(BaseHTTPRequestHandler):
+              def log_message(self, *a):
+                  pass
+              def do_POST(self):
+                  body = json.loads(self.rfile.read(int(self.headers["Content-Length"])))
+                  if "count_tokens" in self.path:
+                      p = json.dumps({"input_tokens": 100}).encode()
+                      self.send_response(200); self.send_header("Content-Type", "application/json"); self.send_header("Content-Length", str(len(p))); self.end_headers(); self.wfile.write(p); return
+                  results = [b for m in body.get("messages", []) for b in (m.get("content") if isinstance(m.get("content"), list) else []) if isinstance(b, dict) and b.get("type") == "tool_result"]
+                  turn = len(results)
+                  if turn < 4:
+                      if turn % 2 == 0:
+                          block = {"type": "tool_use", "id": "probe_" + str(turn), "name": "Skill", "input": {"skill": "onex:delegate", "args": "--task-type document Reply with the single word ok. Permission probe " + nonce}}
+                      else:
+                          block = {"type": "tool_use", "id": "probe_" + str(turn), "name": "Bash", "input": {"command": command, "description": "Execute the delegate skill command", "timeout": 120000}}
+                      stop = "tool_use"
+                  else:
+                      block = {"type": "text", "text": "Permission probe complete."}; stop = "end_turn"
+                  msg = {"id": "msg_" + uuid.uuid4().hex, "type": "message", "role": "assistant", "model": "claude-sonnet-4-6", "content": [block], "stop_reason": stop, "stop_sequence": None, "usage": {"input_tokens": 100, "output_tokens": 50}}
+                  self.send_response(200)
+                  self.send_header("Content-Type", "text/event-stream" if body.get("stream") else "application/json")
+                  self.end_headers()
+                  if not body.get("stream"):
+                      self.wfile.write(json.dumps(msg).encode()); return
+                  start = dict(msg, content=[], stop_reason=None, usage={"input_tokens": 100, "output_tokens": 0})
+                  cb = dict(block, input={}) if block["type"] == "tool_use" else {"type": "text", "text": ""}
+                  delta = {"type": "input_json_delta", "partial_json": json.dumps(block["input"])} if block["type"] == "tool_use" else {"type": "text_delta", "text": block["text"]}
+                  for kind, data in [("message_start", {"type": "message_start", "message": start}), ("content_block_start", {"type": "content_block_start", "index": 0, "content_block": cb}), ("content_block_delta", {"type": "content_block_delta", "index": 0, "delta": delta}), ("content_block_stop", {"type": "content_block_stop", "index": 0}), ("message_delta", {"type": "message_delta", "delta": {"stop_reason": stop, "stop_sequence": None}, "usage": {"output_tokens": 50}}), ("message_stop", {"type": "message_stop"})]:
+                      self.wfile.write(("event: " + kind + "\ndata: " + json.dumps(data) + "\n\n").encode())
+                  self.wfile.flush()
+
+          server = ThreadingHTTPServer(("127.0.0.1", 0), Handler)
+          th = threading.Thread(target=server.serve_forever, daemon=True); th.start()
+          try:
+              with tempfile.TemporaryDirectory(prefix="omn19965-ac2-") as root:
+                  root = Path(root)
+                  # The plugin as merged on omniclaude origin/dev (cwd is the omniclaude checkout).
+                  ref = subprocess.run(["git", "rev-parse", "origin/dev"], check=True, capture_output=True, text=True).stdout.strip()
+                  arc = subprocess.run(["git", "archive", "--format=tar", ref, "plugins/onex-delegate", ".claude-plugin"], check=True, capture_output=True).stdout
+                  with tarfile.open(fileobj=io.BytesIO(arc)) as t:
+                      t.extractall(root / "source", filter="data")
+                  plugin = root / "source/plugins/onex-delegate"
+                  rules = re.findall(r"`(Bash\(onex delegate:\*\))`", (plugin / "skills/delegate/SKILL.md").read_text())
+                  assert rules, "documented permission rule missing from SKILL.md"
+                  rule = rules[0]
+                  S = {}
+                  for arm in ("with_rule", "without_rule"):
+                      work = root / arm / "work"; cfg = root / arm / "config"; work.mkdir(parents=True); cfg.mkdir()
+                      allow = ["Skill(onex:delegate)"] + ([rule] if arm == "with_rule" else [])
+                      (cfg / "settings.json").write_text(json.dumps({"permissions": {"allow": allow}}))
+                      env = {k: v for k, v in os.environ.items() if not k.startswith("ANTHROPIC")}
+                      env.update(ONEX_FLOOR_LOCK_WAIT_S="1", CLAUDE_CONFIG_DIR=str(cfg), ANTHROPIC_BASE_URL="http://127.0.0.1:" + str(server.server_port), ANTHROPIC_AUTH_TOKEN="loopback-probe", CLAUDE_CODE_OAUTH_TOKEN="", CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC="1", PATH=str(onex.parent) + os.pathsep + env.get("PATH", ""))
+                      proc = subprocess.run(["claude", "-p", "/onex:delegate --task-type document Reply with the single word ok. Permission probe " + nonce, "--output-format", "stream-json", "--verbose", "--permission-mode", "default", "--setting-sources", "user", "--strict-mcp-config", "--plugin-dir", str(plugin), "--session-id", str(uuid.uuid4()), "--max-turns", "8"], env=env, cwd=work, stdin=subprocess.DEVNULL, capture_output=True, text=True, timeout=480)
+                      ev = [json.loads(l) for l in proc.stdout.splitlines() if l.startswith("{")]
+                      init = next((e for e in ev if e.get("type") == "system" and e.get("subtype") == "init"), {})
+                      res = next((e for e in reversed(ev) if e.get("type") == "result"), {})
+                      uses, skills = {}, {}
+                      for e in ev:
+                          m = e.get("message")
+                          if not isinstance(m, dict) or not isinstance(m.get("content"), list):
+                              continue
+                          for b in m["content"]:
+                              if e.get("type") == "assistant" and b.get("type") == "tool_use":
+                                  if b.get("name") == "Bash" and b.get("input", {}).get("command") == command:
+                                      uses[b["id"]] = None
+                                  if b.get("name") == "Skill" and b.get("input", {}).get("skill") == "onex:delegate":
+                                      skills[b["id"]] = False
+                              if e.get("type") == "user" and b.get("type") == "tool_result":
+                                  if b.get("tool_use_id") in skills:
+                                      skills[b["tool_use_id"]] = not b.get("is_error")
+                                  if b.get("tool_use_id") in uses:
+                                      c = str(b.get("content", ""))
+                                      uses[b["tool_use_id"]] = {"is_error": bool(b.get("is_error")), "approval_denied": "requires approval" in c.lower() or ("permission" in c.lower() and "denied" in c.lower()), "onex_delegate_answered": "Usage:" in c and "delegate" in c}
+                      S[arm] = {"process_exit": proc.returncode, "permission_mode": init.get("permissionMode"), "plugin_skills": sorted(s for s in init.get("skills", []) if str(s).startswith("onex:")), "skill_calls": len(skills), "skills_loaded": bool(skills) and all(skills.values()), "delegate_calls": len(uses), "tool_results": list(uses.values()), "permission_denials": len(res.get("permission_denials", [])), "result_subtype": res.get("subtype")}
+                      print(json.dumps({"arm": arm, **S[arm]}, sort_keys=True), flush=True)
+                  w, n = S["with_rule"], S["without_rule"]
+                  checks = {
+                      "default_mode_both_arms": w["permission_mode"] == n["permission_mode"] == "default",
+                      "two_skill_invocations_same_session": w["skill_calls"] == 2 and w["skills_loaded"],
+                      "two_onex_delegate_calls": w["delegate_calls"] == 2,
+                      "both_calls_ran_without_approval": all(r and not r["is_error"] and r["onex_delegate_answered"] and not r["approval_denied"] for r in w["tool_results"]),
+                      "no_permission_denials": w["permission_denials"] == 0 and w["result_subtype"] == "success" and w["process_exit"] == 0,
+                      "negative_control_rule_removed_is_denied": n["delegate_calls"] == 2 and n["permission_denials"] == 2 and all(r and r["approval_denied"] for r in n["tool_results"]),
+                  }
+                  print(json.dumps({"ref": ref, "rule": rule, "checks": checks}, sort_keys=True))
+                  raise SystemExit(0 if all(checks.values()) else 1)
+          finally:
+              server.shutdown(); server.server_close(); th.join(timeout=5)
+          PY
+        cwd: "${OMNI_HOME}/omniclaude"
+    binds_ac:
+      - "AC2"
+    ac_bindings:
+      - label: "AC2"
+        criterion_hash: "df45e4abf2c37624984e7d1a04e36b25fee57a0c4e34ca818b272861c0febbfc"
+        proposed_by: "lane=dod-closeout-bind-2026-10-04T1245Z-c0"
+        accepted_by: "lane=dod-closeout-accept-2026-10-04T1245Z-c0"
+        accepted_at: "2026-10-04T13:21:49Z"
+  - id: dod-omn19965-closeout-2a21-ac1-accepted
+    description: 'AC1 acceptance of the binding dod-da-19965-ac1-delegate-only-surface, proposed by lane
+      evid-B03-2a21, by lane closeout-local-gate-2a21, a lane other than its author. It re-runs the delegate-only
+      surface tests at the omniclaude clone head, then plants a second skill folder and strips the Bash(onex
+      delegate:*) rule from a scratch copy and requires each mutation to turn its test red. Cause: dod_verify
+      local_done_gate reports AC_BINDING_SELF_ACCEPTED for the binding proposed by evid-B03-2a21 and accepted
+      by its own author; the dod-accept items already on dev carry a different proposer (a rotating dod-closeout-bind
+      lane), and the verifier matches an acceptance to a binding by proposer, label and criterion hash,
+      so none of them re-accepts it. The binding''s proposer is kept and the earlier items stay unchanged.'
+    source: generated
+    execution_scope: local_done_gate
+    checks:
+      - check_type: command
+        check_value: |-
+          gh api repos/OmniNode-ai/omniclaude/commits/0e8a7f9b2f990abc7c9585f113c1e744f2ca6b8f --jq .sha || exit 2
+          root="$(mktemp -d)" || exit 2
+          trap 'rm -rf "$root"' EXIT
+          cp -a plugins .claude-plugin "$root/" || exit 2
+          t=plugins/onex-delegate/tests/test_delegate_only_surface.py
+          s="$root/plugins/onex-delegate/skills/delegate/SKILL.md"
+          run() { env -u PYTHONPATH uv run pytest "$root/$t" -q -p no:cacheprovider --rootdir="$root" "$@" 2>&1 | tail -n 1; }
+          clean="$(run -k 'test_exactly_one_skill_directory or test_skill_md_documents_the_one_time_permission_rule or test_root_marketplace_sources_slim_plugin')"
+          mkdir "$root/plugins/onex-delegate/skills/planted"
+          planted="$(run -k test_exactly_one_skill_directory)"
+          rmdir "$root/plugins/onex-delegate/skills/planted"
+          python3 -c "import sys;p=sys.argv[1];open(p,'w').write(open(p).read().replace('Bash(onex delegate:*)','Bash(onex:*)'))" "$s"
+          stripped="$(run -k test_skill_md_documents_the_one_time_permission_rule)"
+          echo "clean: $clean"; echo "planted: $planted"; echo "rule-stripped: $stripped"
+          case "$clean" in *"3 passed"*) ;; *) exit 1;; esac
+          case "$planted" in *"1 failed"*) ;; *) exit 1;; esac
+          case "$stripped" in *"1 failed"*) ;; *) exit 1;; esac
+        cwd: ${OMNI_HOME}/omniclaude
+    binds_ac:
+      - AC1
+    ac_bindings:
+      - label: AC1
+        criterion_hash: b9bca7ccb72e081d34b94165752a468d125aac4f7e94b7f29d01a129c24bac4f
+        proposed_by: evid-B03-2a21
+        accepted_by: closeout-local-gate-2a21
+        accepted_at: '2026-10-04T13:51:30Z'
+  - id: dod-omn19965-closeout-2a21-ac2-accepted
+    description: 'AC2 acceptance of the binding dod-da-19965-ac2-second-call-no-permission, proposed by
+      lane evid-B03-2a21, by lane closeout-local-gate-2a21, a lane other than its author. It re-reads
+      the scratch-profile transcripts pinned at knowledge-base-internal 640cb1f7 and requires: both arms
+      in default permission mode, two onex delegate calls returned in the arm with the rule, permission_denials
+      empty there, and the control arm without the rule denied. The permission rule is read from SKILL.md
+      at the omniclaude clone head. Residual: a readback of captured transcripts (plugin onex 0.3.1),
+      not a live replay; the live replay is dod-omn19965-d62d-ac2-live-permission. Cause: dod_verify local_done_gate
+      reports AC_BINDING_SELF_ACCEPTED for the binding proposed by evid-B03-2a21 and accepted by its own
+      author; the dod-accept items already on dev carry a different proposer (a rotating dod-closeout-bind
+      lane), and the verifier matches an acceptance to a binding by proposer, label and criterion hash,
+      so none of them re-accepts it. The binding''s proposer is kept and the earlier items stay unchanged.'
+    source: generated
+    execution_scope: local_done_gate
+    checks:
+      - check_type: command
+        check_value: |-
+          d="$(mktemp -d)" || exit 2
+          trap 'rm -rf "$d"' EXIT
+          for f in ac2-with-rule-default.jsonl ac2-no-rule-default.jsonl profile-with-rule.settings.json profile-no-rule.settings.json; do
+            gh api -H 'Accept: application/vnd.github.raw' "repos/OmniNode-ai/knowledge-base-internal/contents/beta/tracking/2026-10-02-omn-19965-ac2-scratch-profile-evidence/$f?ref=640cb1f763befcd47fe24a8f64b0eefa05ee6c92" > "$d/$f" || exit 2
+          done
+          cat > "$d/ac2.py" <<'PY'
+          import json, sys
+          def load(p):
+              return [json.loads(l) for l in open(p)]
+          def delegates(ev):
+              calls = {}
+              for d in ev:
+                  if d["type"] == "assistant":
+                      for c in d["message"]["content"]:
+                          if c["type"] == "tool_use" and c["name"] == "Bash" and c["input"].get("command", "").startswith("onex delegate"):
+                              calls[c["id"]] = {"cmd": c["input"]["command"], "ok": None}
+              for d in ev:
+                  if d["type"] == "user":
+                      for c in d["message"]["content"]:
+                          if isinstance(c, dict) and c.get("type") == "tool_result" and c.get("tool_use_id") in calls:
+                              calls[c["tool_use_id"]]["ok"] = not c.get("is_error") and "requires approval" not in str(c["content"])
+              return list(calls.values())
+          def init(ev):
+              return next(d for d in ev if d["type"] == "system" and d.get("subtype") == "init")
+          def result(ev):
+              return next(d for d in ev if d["type"] == "result")
+          w, n = load(sys.argv[1]), load(sys.argv[2])
+          rule = sys.argv[3]
+          skill_md = open(sys.argv[6]).read()
+          allow_w = json.load(open(sys.argv[4]))["permissions"]["allow"]
+          allow_n = json.load(open(sys.argv[5])).get("permissions", {}).get("allow", [])
+          dw, dn = delegates(w), delegates(n)
+          rw, rn = result(w), result(n)
+          checks = {
+              "rule_documented_in_skill_md_is_the_rule_in_the_with_rule_profile": rule in skill_md and rule in allow_w and rule not in allow_n,
+              "both_arms_ran_in_default_permission_mode": init(w)["permissionMode"] == "default" and init(n)["permissionMode"] == "default",
+              "with_rule_arm_ran_two_onex_delegate_calls_and_both_returned": len(dw) == 2 and all(c["ok"] for c in dw),
+              "with_rule_arm_result_is_success_with_no_permission_denials": rw["subtype"] == "success" and rw["permission_denials"] == [],
+              "control_without_the_rule_the_same_harness_denies_onex_delegate": rn["permission_denials"] != [] and any(str(x.get("tool_input")).find("onex delegate") >= 0 for x in rn["permission_denials"]),
+          }
+          print(json.dumps({"with_rule_delegate_calls": len(dw), "with_rule_denials": len(rw["permission_denials"]), "no_rule_denials": len(rn["permission_denials"]), "checks": checks}, sort_keys=True))
+          sys.exit(0 if all(checks.values()) else 1)
+          PY
+          python3 "$d/ac2.py" "$d/ac2-with-rule-default.jsonl" "$d/ac2-no-rule-default.jsonl" 'Bash(onex delegate:*)' "$d/profile-with-rule.settings.json" "$d/profile-no-rule.settings.json" plugins/onex-delegate/skills/delegate/SKILL.md || exit 1
+        cwd: ${OMNI_HOME}/omniclaude
+    binds_ac:
+      - AC2
+    ac_bindings:
+      - label: AC2
+        criterion_hash: df45e4abf2c37624984e7d1a04e36b25fee57a0c4e34ca818b272861c0febbfc
+        proposed_by: evid-B03-2a21
+        accepted_by: closeout-local-gate-2a21
+        accepted_at: '2026-10-04T13:51:30Z'

@@ -54,6 +54,9 @@ from dataclasses import field as dc_field
 from pathlib import Path
 from typing import Any
 
+from omnibase_core.validators.no_unguarded_git_subprocess import (
+    scrub_git_location_env,
+)
 from pydantic import ValidationError
 
 from onex_change_control.models.model_dod_check import ModelDodEvidenceItem
@@ -631,6 +634,200 @@ def _load_legacy_allowlist(path: Path | None) -> dict[str, str]:
     return entries
 
 
+_PRIMARY_LIMIT_MESSAGE_RE = re.compile(r"\brate limit exceeded\b", re.IGNORECASE)
+_SECONDARY_LIMIT_MESSAGE_RE = re.compile(r"secondary rate limit", re.IGNORECASE)
+_QUOTA_EXHAUSTED_PREFIX = "QUOTA_EXHAUSTED"
+
+
+@dataclass
+class _QuotaBreaker:
+    """Per-run memory of a spent GitHub quota (OMN-20503).
+
+    Run 37171017353 kept calling ``gh`` for 952 checks after the installation's
+    primary limit was spent; every call was a 403. Trips on the PRIMARY
+    rate-limit message only -- a secondary limit clears in minutes and a scope
+    denial is not a quota, so neither halts the run (same split as
+    ``commit_sha_resolver``).
+    """
+
+    first_message: str = ""
+    skipped: int = 0
+
+    @property
+    def tripped(self) -> bool:
+        return bool(self.first_message)
+
+    def observe(self, output: str) -> None:
+        """Trip on the FULL command output, not the 200-char detail snippet."""
+        if self.tripped:
+            return
+        if _PRIMARY_LIMIT_MESSAGE_RE.search(
+            output
+        ) and not _SECONDARY_LIMIT_MESSAGE_RE.search(output):
+            self.first_message = output.strip()[:200]
+
+    def print_summary(self) -> None:
+        if self.skipped:
+            print(
+                f"[SUMMARY] {self.skipped} {_QUOTA_EXHAUSTED_PREFIX} check(s) not "
+                "executed: GitHub API quota spent.",
+                flush=True,
+            )
+
+
+# OMN-20504 -- same-repo commit existence is answered by the checkout, not GitHub.
+#
+# 2,689 of the 2,847 checks in contracts/OMN-14888.yaml are exactly this shape,
+# and each spent one App REST call asking whether a commit exists in the very
+# repository the runner has checked out. ONLY this exact shape is intercepted
+# (full match after stripping surrounding whitespace); every other command --
+# another repo, another --jq filter, an extra pipeline stage, an uppercase or
+# short sha -- still executes through ``gh`` unchanged.
+_LOCAL_COMMIT_CHECK_RE = re.compile(
+    r"gh api repos/OmniNode-ai/onex_change_control/commits/([0-9a-f]{40}) --jq \.sha"
+)
+_GIT_UNKNOWN_REF_RE = re.compile(r"not our ref|couldn't find remote ref", re.IGNORECASE)
+#: Shas per ``git fetch`` invocation, bounded by argv length, not by the remote.
+_LOCAL_FETCH_CHUNK = 200
+_LOCAL_FETCH_TIMEOUT_SECONDS = 300
+_LOCAL_GIT_TIMEOUT_SECONDS = 60
+
+
+@dataclass
+class _LocalCommitEvidence:
+    """Answers same-repo commit-existence checks from the checkout (OMN-20504).
+
+    ``repo_dir`` is ``contracts_dir.parent``: the OCC checkout (full clone in OCC
+    CI, ``--depth=1`` clone elsewhere). A sha the checkout lacks is fetched in
+    ONE batched ``git fetch`` (git protocol, no REST quota) -- commits of deleted
+    auto branches are unreachable from any ref yet still served by sha. A sha
+    git cannot answer for (not a work tree, no origin, network or auth failure)
+    is simply never recorded in ``known``, so its check falls through to ``gh``
+    exactly as before; only a CLEAN "missing" is recorded as absent.
+    """
+
+    repo_dir: Path | None = None
+    #: sha -> exists. A sha absent from this map is answered by ``gh``.
+    known: dict[str, bool] = dc_field(default_factory=dict)
+    resolved_locally: int = 0
+    fetched: int = 0
+    missing: int = 0
+    fetch_invocations: int = 0
+
+    @staticmethod
+    def sha_of(check_value: Any) -> str | None:
+        match = _LOCAL_COMMIT_CHECK_RE.fullmatch(str(check_value).strip())
+        return match.group(1) if match else None
+
+    def _git(
+        self,
+        args: list[str],
+        stdin: str = "",
+        timeout: int = _LOCAL_GIT_TIMEOUT_SECONDS,
+    ) -> tuple[int, str, str]:
+        assert self.repo_dir is not None
+        env = scrub_git_location_env(os.environ)
+        env["GIT_TERMINAL_PROMPT"] = "0"
+        return _run_process(
+            ["git", "-C", str(self.repo_dir), *args],
+            timeout=timeout,
+            env=env,
+            stdin=stdin,
+        )
+
+    def _commits_present(self, shas: list[str]) -> dict[str, bool] | None:
+        """sha -> is-a-commit via one ``cat-file --batch-check``; None on git error."""
+        rc, out, _ = self._git(
+            ["cat-file", "--batch-check"],
+            "".join(f"{sha}^{{commit}}\n" for sha in shas),
+        )
+        lines = out.splitlines()
+        if rc != 0 or len(lines) != len(shas):
+            return None
+        return {
+            sha: line.split()[1:2] == ["commit"]
+            for sha, line in zip(shas, lines, strict=True)
+        }
+
+    def _fetch_chunk(self, shas: list[str], unanswered: set[str]) -> None:
+        rc, _, err = self._git(
+            [
+                "fetch",
+                "--no-tags",
+                "--depth=1",
+                "--no-write-fetch-head",
+                "origin",
+                *shas,
+            ],
+            timeout=_LOCAL_FETCH_TIMEOUT_SECONDS,
+        )
+        self.fetch_invocations += 1
+        if rc == 0:
+            return
+        if not _GIT_UNKNOWN_REF_RE.search(err):
+            # Not a clean "no such commit" (no origin, network, auth): git cannot
+            # answer, so these shas stay with gh.
+            unanswered.update(shas)
+        elif len(shas) > 1:
+            # One unknown sha refuses the whole want-set; split to find which.
+            mid = len(shas) // 2
+            self._fetch_chunk(shas[:mid], unanswered)
+            self._fetch_chunk(shas[mid:], unanswered)
+
+    def prime(self, shas: set[str]) -> None:
+        """Resolve every sha of the run up front: one read, then one batched fetch."""
+        pending = sorted(shas - self.known.keys())
+        if self.repo_dir is None or not pending:
+            return
+        rc, out, _ = self._git(["rev-parse", "--is-inside-work-tree"])
+        if rc != 0 or out.strip() != "true":
+            return
+        present = self._commits_present(pending)
+        if present is None:
+            return
+        for sha in (s for s in pending if present[s]):
+            self.known[sha] = True
+            self.resolved_locally += 1
+        lacking = [s for s in pending if not present[s]]
+        unanswered: set[str] = set()
+        for start in range(0, len(lacking), _LOCAL_FETCH_CHUNK):
+            self._fetch_chunk(lacking[start : start + _LOCAL_FETCH_CHUNK], unanswered)
+        after = self._commits_present(lacking) if lacking else {}
+        for sha in lacking:
+            if after is None or sha in unanswered:
+                continue
+            self.known[sha] = after[sha]
+            if after[sha]:
+                self.fetched += 1
+            else:
+                self.missing += 1
+
+    def verdict(self, check_value: Any) -> tuple[str, str] | None:
+        """(result, detail) for a same-repo commit check git answered, else None."""
+        sha = self.sha_of(check_value)
+        if sha is None or sha not in self.known:
+            return None
+        command = str(check_value)[:80]
+        if self.known[sha]:
+            return (
+                _RESULT_PASS,
+                f"Command succeeded: {command} (commit resolved from local git)",
+            )
+        return (
+            _RESULT_BLOCK,
+            f"Command failed (exit 1): {command}\n  commit {sha} not found in the "
+            "checkout or on origin (resolved from local git)",
+        )
+
+    def print_summary(self) -> None:
+        if self.resolved_locally or self.fetched or self.missing:
+            print(
+                f"[SUMMARY] local-git commit evidence: {self.resolved_locally} "
+                f"resolved locally, {self.fetched} fetched, {self.missing} missing",
+                flush=True,
+            )
+
+
 @dataclass(frozen=True)
 class _CheckContext:
     pr_number: int
@@ -642,6 +839,10 @@ class _CheckContext:
     #: OUTSIDE-ITS-OWN-DIFF rule. Empty means "not resolved" -- the rule is then
     #: reported as NOT EVALUATED rather than silently passing.
     changed_paths: frozenset[str] = dc_field(default_factory=frozenset)
+    #: Mutable on purpose: one breaker per run, shared by every check of it.
+    quota: _QuotaBreaker = dc_field(default_factory=_QuotaBreaker)
+    #: Mutable on purpose: primed once per run. Disabled (no repo_dir) by default.
+    local_commits: _LocalCommitEvidence = dc_field(default_factory=_LocalCommitEvidence)
 
 
 # ---------------------------------------------------------------------------
@@ -649,16 +850,18 @@ class _CheckContext:
 # ---------------------------------------------------------------------------
 
 
-def _run(
+def _run_process(
     cmd: list[str],
     timeout: int = 30,
     cwd: Path | None = None,
     env: dict[str, str] | None = None,
+    stdin: str | None = None,
 ) -> tuple[int, str, str]:
     """Run a subprocess and return (returncode, stdout, stderr)."""
     try:
         result = subprocess.run(  # noqa: S603
             cmd,
+            input=stdin,
             capture_output=True,
             text=True,
             timeout=timeout,
@@ -671,6 +874,16 @@ def _run(
         return 1, "", f"Command timed out after {timeout}s: {' '.join(cmd)}"
     except FileNotFoundError as exc:
         return 1, "", f"Command not found: {exc}"
+
+
+def _run(
+    cmd: list[str],
+    timeout: int = 30,
+    cwd: Path | None = None,
+    env: dict[str, str] | None = None,
+) -> tuple[int, str, str]:
+    """Run a contract check's subprocess (the seam the tests replace)."""
+    return _run_process(cmd, timeout, cwd, env)
 
 
 def _pr_changed_paths(pr_number: int, repo: str) -> frozenset[str]:
@@ -1030,6 +1243,7 @@ def _check_command(  # noqa: PLR0913 -- one parameter per contract-check field
     ticket_id: str = "",
     contracts_dir: Path | None = None,
     cwd: Any = None,
+    quota: _QuotaBreaker | None = None,
 ) -> tuple[str, str]:
     """check_type=command: check_value is a shell command; exit 0 = pass.
 
@@ -1094,6 +1308,8 @@ def _check_command(  # noqa: PLR0913 -- one parameter per contract-check field
     )
     if rc == 0:
         return _RESULT_PASS, f"Command succeeded: {cmd_str[:80]}"
+    if quota is not None:
+        quota.observe(out + err)
     # OMN-18118: a token that is PRESENT but whose SCOPE is refused is invisible
     # to the preflight above -- only the failure output shows it. Classify that
     # as NOT_EVALUATED naming the scope; every other red stays a BLOCK.
@@ -1115,6 +1331,7 @@ def _check_test_passes(  # noqa: PLR0913 -- signature is _check_command's, exact
     ticket_id: str = "",
     contracts_dir: Path | None = None,
     cwd: Any = None,
+    quota: _QuotaBreaker | None = None,
 ) -> tuple[str, str]:
     """check_type=test_passes: an EXECUTED alias of ``check_type: command``.
 
@@ -1142,6 +1359,7 @@ def _check_test_passes(  # noqa: PLR0913 -- signature is _check_command's, exact
         ticket_id,
         contracts_dir,
         cwd,
+        quota,
     )
 
 
@@ -1232,6 +1450,20 @@ def _run_single_check(
         # OMN-16824: ONE dispatch for both, because they are one semantic --
         # execute check_value, honour the check's cwd. Two branches here is
         # exactly how the two readings drifted apart.
+        if check_type == "command" and check.get("cwd") is None:
+            # OMN-20504: answered by the checkout; never touches the quota breaker.
+            local = context.local_commits.verdict(check_value)
+            if local is not None:
+                return check_type, local[0], local[1]
+        if context.quota.tripped and "gh" in _command_binaries(str(check_value)):
+            context.quota.skipped += 1
+            return (
+                check_type,
+                _RESULT_BLOCK,
+                f"{_QUOTA_EXHAUSTED_PREFIX} -- GitHub API quota for this token is "
+                "spent; gh check not executed. First: "
+                f"{context.quota.first_message}",
+            )
         result, detail = runner(
             check_value,
             workspace,
@@ -1240,6 +1472,7 @@ def _run_single_check(
             context.ticket_id,
             context.contracts_dir,
             check.get("cwd"),
+            context.quota,
         )
     else:
         result, detail = runner(check_value, workspace)
@@ -1283,6 +1516,28 @@ def _demote(
     return result, detail, ""
 
 
+def _local_commit_shas(dod_evidence: list[Any], superseded: set[str]) -> set[str]:
+    """Every same-repo commit sha an executed item of this run will ask about."""
+    shas: set[str] = set()
+    for item in dod_evidence:
+        if (
+            not isinstance(item, dict)
+            or item.get("id") in superseded
+            or item.get("execution_scope") == _EXECUTION_SCOPE_LOCAL_DONE_GATE
+        ):
+            continue
+        checks = item.get("checks")
+        for check in checks if isinstance(checks, list) else []:
+            if (
+                isinstance(check, dict)
+                and check.get("check_type") == "command"
+                and check.get("cwd") is None
+                and (sha := _LocalCommitEvidence.sha_of(check.get("check_value")))
+            ):
+                shas.add(sha)
+    return shas
+
+
 def _run_dod_checks(
     dod_evidence: list[Any],
     workspace: Path,
@@ -1292,6 +1547,7 @@ def _run_dod_checks(
     results: list[tuple[str, str, str, str]] = []
     superseded = _superseded_dod_ids(dod_evidence)
     disclosed_skips = _disclosed_skip_supersession_ids(dod_evidence)
+    context.local_commits.prime(_local_commit_shas(dod_evidence, superseded))
     for dod_item in dod_evidence:
         item_id = dod_item.get("id", "?") if isinstance(dod_item, dict) else "?"
         item_desc = (
@@ -1599,13 +1855,16 @@ def run_compliance_check(
         flush=True,
     )
 
-    results = _run_dod_checks(
-        dod_evidence,
-        workspace,
-        _CheckContext(
-            pr_number, repo, ticket_id, contracts_dir, is_legacy, changed_paths
-        ),
+    context = _CheckContext(
+        pr_number,
+        repo,
+        ticket_id,
+        contracts_dir,
+        is_legacy,
+        changed_paths,
+        local_commits=_LocalCommitEvidence(contracts_dir.parent),
     )
+    results = _run_dod_checks(dod_evidence, workspace, context)
 
     total = len(results)
     passes = sum(1 for _, _, r, _ in results if r == _RESULT_PASS)
@@ -1619,6 +1878,8 @@ def run_compliance_check(
         f"{not_evaluated_summary}, {warns} WARN, {blocks} BLOCK",
         flush=True,
     )
+    context.quota.print_summary()
+    context.local_commits.print_summary()
 
     # A contract with no check that can observe the product proves nothing about
     # it. The legacy corpus is grandfathered (it was authored against a runner

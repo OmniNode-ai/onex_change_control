@@ -1,0 +1,114 @@
+---
+schema_version: 1.0.0
+ticket_id: OMN-19965
+evidence_item_id: dod-accept-0245z-19965-ac2-second-call-no-prompt
+check_type: command
+check_value: |-
+  d="$(mktemp -d)" || exit 2
+  trap 'rm -rf "$d"' EXIT
+  for f in ac2-with-rule-default.jsonl ac2-no-rule-default.jsonl profile-with-rule.settings.json profile-no-rule.settings.json; do
+    gh api -H 'Accept: application/vnd.github.raw' "repos/OmniNode-ai/knowledge-base-internal/contents/beta/tracking/2026-10-02-omn-19965-ac2-scratch-profile-evidence/$f?ref=640cb1f763befcd47fe24a8f64b0eefa05ee6c92" > "$d/$f" || exit 2
+  done
+  cat > "$d/ac2.py" <<'PY'
+  import json, sys
+  def load(p):
+      return [json.loads(l) for l in open(p)]
+  def delegates(ev):
+      calls = {}
+      for d in ev:
+          if d["type"] == "assistant":
+              for c in d["message"]["content"]:
+                  if c["type"] == "tool_use" and c["name"] == "Bash" and c["input"].get("command", "").startswith("onex delegate"):
+                      calls[c["id"]] = {"cmd": c["input"]["command"], "ok": None}
+      for d in ev:
+          if d["type"] == "user":
+              for c in d["message"]["content"]:
+                  if isinstance(c, dict) and c.get("type") == "tool_result" and c.get("tool_use_id") in calls:
+                      calls[c["tool_use_id"]]["ok"] = not c.get("is_error") and "requires approval" not in str(c["content"])
+      return list(calls.values())
+  def init(ev):
+      return next(d for d in ev if d["type"] == "system" and d.get("subtype") == "init")
+  def result(ev):
+      return next(d for d in ev if d["type"] == "result")
+  w, n = load(sys.argv[1]), load(sys.argv[2])
+  rule = sys.argv[3]
+  allow_w = json.load(open(sys.argv[4]))["permissions"]["allow"]
+  allow_n = json.load(open(sys.argv[5])).get("permissions", {}).get("allow", [])
+  dw, dn = delegates(w), delegates(n)
+  rw, rn = result(w), result(n)
+  checks = {
+      "rule_documented_in_skill_md_is_the_rule_in_the_with_rule_profile": rule in allow_w and rule not in allow_n,
+      "both_arms_ran_in_default_permission_mode": init(w)["permissionMode"] == "default" and init(n)["permissionMode"] == "default",
+      "with_rule_arm_ran_two_onex_delegate_calls_and_both_returned": len(dw) == 2 and all(c["ok"] for c in dw),
+      "with_rule_arm_result_is_success_with_no_permission_denials": rw["subtype"] == "success" and rw["permission_denials"] == [],
+      "control_without_the_rule_the_same_harness_denies_onex_delegate": rn["permission_denials"] != [] and any(str(x.get("tool_input")).find("onex delegate") >= 0 for x in rn["permission_denials"]),
+  }
+  print(json.dumps({"with_rule_delegate_calls": len(dw), "with_rule_denials": len(rw["permission_denials"]), "no_rule_denials": len(rn["permission_denials"]), "checks": checks}, sort_keys=True))
+  sys.exit(0 if all(checks.values()) else 1)
+  PY
+  python3 "$d/ac2.py" "$d/ac2-with-rule-default.jsonl" "$d/ac2-no-rule-default.jsonl" 'Bash(onex delegate:*)' "$d/profile-with-rule.settings.json" "$d/profile-no-rule.settings.json" || exit 1
+contract_sha256: 0800968c1633f3628d47026c219acd7018f2e4c398c9243d895dff9fd4ef4477
+contract_entry_sha256: sha256:9e26796e31f72a0897a37c15c0aafceec0620da7e92df43e1f5d656a5c35d335
+status: PASS
+run_timestamp: '2026-10-04T04:06:00Z'
+commit_sha: d8a7c75ecf9dae07eb85a83673ec2e2e210b8c70
+runner: landing-L2450-b333f9@h101
+verifier: occ-probe-capture-v1
+probe_command: |-
+  cd "${OMNI_HOME}/omniclaude" || exit 2
+  d="$(mktemp -d)" || exit 2
+  trap 'rm -rf "$d"' EXIT
+  for f in ac2-with-rule-default.jsonl ac2-no-rule-default.jsonl profile-with-rule.settings.json profile-no-rule.settings.json; do
+    gh api -H 'Accept: application/vnd.github.raw' "repos/OmniNode-ai/knowledge-base-internal/contents/beta/tracking/2026-10-02-omn-19965-ac2-scratch-profile-evidence/$f?ref=640cb1f763befcd47fe24a8f64b0eefa05ee6c92" > "$d/$f" || exit 2
+  done
+  cat > "$d/ac2.py" <<'PY'
+  import json, sys
+  def load(p):
+      return [json.loads(l) for l in open(p)]
+  def delegates(ev):
+      calls = {}
+      for d in ev:
+          if d["type"] == "assistant":
+              for c in d["message"]["content"]:
+                  if c["type"] == "tool_use" and c["name"] == "Bash" and c["input"].get("command", "").startswith("onex delegate"):
+                      calls[c["id"]] = {"cmd": c["input"]["command"], "ok": None}
+      for d in ev:
+          if d["type"] == "user":
+              for c in d["message"]["content"]:
+                  if isinstance(c, dict) and c.get("type") == "tool_result" and c.get("tool_use_id") in calls:
+                      calls[c["tool_use_id"]]["ok"] = not c.get("is_error") and "requires approval" not in str(c["content"])
+      return list(calls.values())
+  def init(ev):
+      return next(d for d in ev if d["type"] == "system" and d.get("subtype") == "init")
+  def result(ev):
+      return next(d for d in ev if d["type"] == "result")
+  w, n = load(sys.argv[1]), load(sys.argv[2])
+  rule = sys.argv[3]
+  allow_w = json.load(open(sys.argv[4]))["permissions"]["allow"]
+  allow_n = json.load(open(sys.argv[5])).get("permissions", {}).get("allow", [])
+  dw, dn = delegates(w), delegates(n)
+  rw, rn = result(w), result(n)
+  checks = {
+      "rule_documented_in_skill_md_is_the_rule_in_the_with_rule_profile": rule in allow_w and rule not in allow_n,
+      "both_arms_ran_in_default_permission_mode": init(w)["permissionMode"] == "default" and init(n)["permissionMode"] == "default",
+      "with_rule_arm_ran_two_onex_delegate_calls_and_both_returned": len(dw) == 2 and all(c["ok"] for c in dw),
+      "with_rule_arm_result_is_success_with_no_permission_denials": rw["subtype"] == "success" and rw["permission_denials"] == [],
+      "control_without_the_rule_the_same_harness_denies_onex_delegate": rn["permission_denials"] != [] and any(str(x.get("tool_input")).find("onex delegate") >= 0 for x in rn["permission_denials"]),
+  }
+  print(json.dumps({"with_rule_delegate_calls": len(dw), "with_rule_denials": len(rw["permission_denials"]), "no_rule_denials": len(rn["permission_denials"]), "checks": checks}, sort_keys=True))
+  sys.exit(0 if all(checks.values()) else 1)
+  PY
+  python3 "$d/ac2.py" "$d/ac2-with-rule-default.jsonl" "$d/ac2-no-rule-default.jsonl" 'Bash(onex delegate:*)' "$d/profile-with-rule.settings.json" "$d/profile-no-rule.settings.json" || exit 1
+  gh api repos/OmniNode-ai/omniclaude/commits/d8a7c75ecf9dae07eb85a83673ec2e2e210b8c70 --jq .sha
+probe_stdout: |-
+  {"checks": {"both_arms_ran_in_default_permission_mode": true, "control_without_the_rule_the_same_harness_denies_onex_delegate": true, "rule_documented_in_skill_md_is_the_rule_in_the_with_rule_profile": true, "with_rule_arm_ran_two_onex_delegate_calls_and_both_returned": true, "with_rule_arm_result_is_success_with_no_permission_denials": true}, "no_rule_denials": 4, "with_rule_delegate_calls": 2, "with_rule_denials": 0}
+  d8a7c75ecf9dae07eb85a83673ec2e2e210b8c70
+actual_output: 'PASS: probe captured on lab host h101 at omniclaude dev d8a7c75ecf9d; exit 0. Hand-authored
+  by landing lane 2450 for OCC#12728 from the contract''s own check_value.'
+exit_code: 0
+pr_number: 12728
+branch: dev
+duration_ms: 2390
+artifact_sha256:
+  - sha256:6bf11f4c0fb137feaf1ce8025d0c2a8bfab6865930ca9ce39626e98739c1afe8
+  - sha256:09daa854f91452d2903093383bbe18634a9063a6c5c8d3446e0e8bb116b68f7a

@@ -78,3 +78,152 @@ dod_evidence:
     checks:
       - check_type: "command"
         check_value: "gh pr view 11620 --repo OmniNode-ai/onex_change_control --json number,state"
+  - id: "dod-b14-19851-ac1-no-skip-worker-thread"
+    description: |-
+      AC1 behavior proof (evid-B14-2a21, OMN-17427). The test file runs with -rs: exactly one test passes and no SKIPPED line is printed, so the real unpatched discovery ran on a worker thread on this runner and the test never skipped.
+    source: "generated"
+    execution_scope: "local_done_gate"
+    checks:
+      - check_type: "test_passes"
+        check_value: |-
+          out="$(env -u PYTHONPATH uv run pytest tests/integration/test_runtime_health_discovery_off_loop_omn19373.py -rs -q 2>&1)"; printf '%s\n' "$out"
+          printf '%s\n' "$out" | grep -qE '(^|[^0-9])1 passed' && ! printf '%s\n' "$out" | grep -q 'SKIPPED'
+        cwd: "${OMNI_HOME}/omnibase_infra"
+    binds_ac:
+      - "AC1"
+    ac_bindings:
+      - label: "AC1"
+        criterion_hash: "242f958cba320a23ccf489dbef8d234d4971b11a9c9cf258256fd6c67be19334"
+        proposed_by: "evid-B14-2a21"
+        accepted_by: "evid-B14-2a21"
+        accepted_at: "2026-10-02T22:07:40Z"
+    supersedes_ac_binding:
+      - item: "dod-OmniNode-ai-omnibase_infra-pr-4205"
+        label: "AC1"
+        reason: |-
+          dod-OmniNode-ai-omnibase_infra-pr-4205 binds AC1 only to a source grep or PR file-list read, which proves the code was written and not that AC1 holds. Re-bound by dod-b14-19851-ac1-no-skip-worker-thread, which executes the behavior (evid-B14-2a21, OMN-17427).
+  - id: "dod-b14-19851-ac2-inline-discovery-fails-red"
+    description: |-
+      AC2 behavior proof (evid-B14-2a21, OMN-17427). Mutation proof on a copy of HEAD (git archive, never the shared clone): the unmutated copy passes the test, then the to_thread call in ServiceRuntimeHealthMonitor.run_once is replaced by a direct call and the same test must report 1 failed with an AssertionError.
+    source: "generated"
+    execution_scope: "local_done_gate"
+    checks:
+      - check_type: "command"
+        check_value: |-
+          root="$PWD"; tmp="$(mktemp -d)"; trap 'rm -rf "$tmp"' EXIT
+          git archive HEAD | tar -x -C "$tmp" && cd "$tmp" || exit 1
+          control="$("$root/.venv/bin/python" -m pytest tests/integration/test_runtime_health_discovery_off_loop_omn19373.py -q -p no:cacheprovider 2>&1)"
+          echo "control (unmutated copy of HEAD): $(printf '%s\n' "$control" | tail -1)"
+          printf '%s\n' "$control" | grep -qE '(^|[^0-9])1 passed' || exit 1
+          f=src/omnibase_infra/services/service_runtime_health_monitor.py
+          cp "$f" "$f.orig"
+          sed -i 's/await asyncio.to_thread(_discover_contracts_for_runtime_profile)/_discover_contracts_for_runtime_profile()/' "$f"
+          cmp -s "$f" "$f.orig" && { echo "mutation did not apply"; exit 1; }
+          rm "$f.orig"
+          mutant="$("$root/.venv/bin/python" -m pytest tests/integration/test_runtime_health_discovery_off_loop_omn19373.py -q -p no:cacheprovider 2>&1)"
+          echo "mutant (to_thread replaced by a direct call): $(printf '%s\n' "$mutant" | tail -1)"
+          printf '%s\n' "$mutant" | grep -q 'AssertionError' && printf '%s\n' "$mutant" | grep -qE '(^|[^0-9])1 failed'
+        cwd: "${OMNI_HOME}/omnibase_infra"
+    binds_ac:
+      - "AC2"
+    ac_bindings:
+      - label: "AC2"
+        criterion_hash: "a3c7270f9f8dd4a01741717007333909b9cb52c676a64c3804e835c5c2037c4b"
+        proposed_by: "evid-B14-2a21"
+        accepted_by: "evid-B14-2a21"
+        accepted_at: "2026-10-02T22:07:40Z"
+    supersedes_ac_binding:
+      - item: "dod-OmniNode-ai-omnibase_infra-pr-4205"
+        label: "AC2"
+        reason: |-
+          dod-OmniNode-ai-omnibase_infra-pr-4205 binds AC2 only to a source grep or PR file-list read, which proves the code was written and not that AC2 holds. Re-bound by dod-b14-19851-ac2-inline-discovery-fails-red, which executes the behavior (evid-B14-2a21, OMN-17427).
+  - id: "dod-b14-19851-ac3-baseline-unchanged-timing-runs"
+    description: |-
+      AC3 behavior proof (evid-B14-2a21, OMN-17427). config/skip_count_baseline.yaml has no diff across the omnibase_infra#4205 squash merge (parent 06aa3e37744d, merge 0c5ce1c89af1), and the test passes with ONEX_AUTOWIRING_DISCOVERY_CACHE=0, the cold-scan configuration under which the loop-gap timing branch runs.
+    source: "generated"
+    execution_scope: "local_done_gate"
+    checks:
+      - check_type: "test_passes"
+        check_value: |-
+          test "$(git rev-parse 0c5ce1c89af113303a752374df188723fe789970^)" = 06aa3e37744d1c65c98090ee415ed1bef98f1a6d && git diff --exit-code --stat 06aa3e37744d1c65c98090ee415ed1bef98f1a6d 0c5ce1c89af113303a752374df188723fe789970 -- config/skip_count_baseline.yaml && echo "config/skip_count_baseline.yaml: no diff across omnibase_infra#4205 (06aa3e37744d..0c5ce1c89af1)" && ONEX_AUTOWIRING_DISCOVERY_CACHE=0 env -u PYTHONPATH uv run pytest tests/integration/test_runtime_health_discovery_off_loop_omn19373.py -q
+        cwd: "${OMNI_HOME}/omnibase_infra"
+    binds_ac:
+      - "AC3"
+    ac_bindings:
+      - label: "AC3"
+        criterion_hash: "90bf7211a37d64cbcb3fc9a5e20a7739762f089e22abec91143b118c0dc180c2"
+        proposed_by: "evid-B14-2a21"
+        accepted_by: "evid-B14-2a21"
+        accepted_at: "2026-10-02T22:07:40Z"
+    supersedes_ac_binding:
+      - item: "dod-OmniNode-ai-omnibase_infra-pr-4205"
+        label: "AC3"
+        reason: |-
+          dod-OmniNode-ai-omnibase_infra-pr-4205 binds AC3 only to a source grep or PR file-list read, which proves the code was written and not that AC3 holds. Re-bound by dod-b14-19851-ac3-baseline-unchanged-timing-runs, which executes the behavior (evid-B14-2a21, OMN-17427).
+  - id: "dod-accept-b-19851-ac1"
+    description: |-
+      AC1 second-lane acceptance (bind-accept-b-2a21, OMN-17427, ruling 2026-10-03T00:40:00Z). evid-B14-2a21 authored the check of item dod-b14-19851-ac1-no-skip-worker-thread and accepted its own binding; this lane did not author it. This lane re-ran the same check on lab host .201 through the capture path, read the criterion and the assertions the check rests on, and accepts the binding because the check goes red if the criterion is false: the file's one test asserts the real, unpatched discovery ran on a worker thread (`loop_thread_id not in scan_thread_ids`) before its early return, and the check requires `1 passed` with no SKIPPED line.
+    source: "generated"
+    execution_scope: "local_done_gate"
+    checks:
+      - check_type: "test_passes"
+        check_value: |-
+          out="$(env -u PYTHONPATH uv run pytest tests/integration/test_runtime_health_discovery_off_loop_omn19373.py -rs -q 2>&1)"; printf '%s\n' "$out"
+          printf '%s\n' "$out" | grep -qE '(^|[^0-9])1 passed' && ! printf '%s\n' "$out" | grep -q 'SKIPPED'
+        cwd: "${OMNI_HOME}/omnibase_infra"
+    binds_ac:
+      - "AC1"
+    ac_bindings:
+      - label: "AC1"
+        criterion_hash: "242f958cba320a23ccf489dbef8d234d4971b11a9c9cf258256fd6c67be19334"
+        proposed_by: "evid-B14-2a21"
+        accepted_by: "bind-accept-b-2a21"
+        accepted_at: "2026-10-03T06:11:48Z"
+  - id: "dod-accept-b-19851-ac2"
+    description: |-
+      AC2 second-lane acceptance (bind-accept-b-2a21, OMN-17427, ruling 2026-10-03T00:40:00Z). evid-B14-2a21 authored the check of item dod-b14-19851-ac2-inline-discovery-fails-red and accepted its own binding; this lane did not author it. This lane re-ran the same check on lab host .201 through the capture path, read the criterion and the assertions the check rests on, and accepts the binding because the check goes red if the criterion is false: a mutation proof on a git archive copy of HEAD: the control copy passes, and with `await asyncio.to_thread(...)` replaced by a direct call the same test must report `1 failed` with an AssertionError; every leg (control, mutation applied, mutant red) can fail.
+    source: "generated"
+    execution_scope: "local_done_gate"
+    checks:
+      - check_type: "command"
+        check_value: |-
+          root="$PWD"; tmp="$(mktemp -d)"; trap 'rm -rf "$tmp"' EXIT
+          git archive HEAD | tar -x -C "$tmp" && cd "$tmp" || exit 1
+          control="$("$root/.venv/bin/python" -m pytest tests/integration/test_runtime_health_discovery_off_loop_omn19373.py -q -p no:cacheprovider 2>&1)"
+          echo "control (unmutated copy of HEAD): $(printf '%s\n' "$control" | tail -1)"
+          printf '%s\n' "$control" | grep -qE '(^|[^0-9])1 passed' || exit 1
+          f=src/omnibase_infra/services/service_runtime_health_monitor.py
+          cp "$f" "$f.orig"
+          sed -i 's/await asyncio.to_thread(_discover_contracts_for_runtime_profile)/_discover_contracts_for_runtime_profile()/' "$f"
+          cmp -s "$f" "$f.orig" && { echo "mutation did not apply"; exit 1; }
+          rm "$f.orig"
+          mutant="$("$root/.venv/bin/python" -m pytest tests/integration/test_runtime_health_discovery_off_loop_omn19373.py -q -p no:cacheprovider 2>&1)"
+          echo "mutant (to_thread replaced by a direct call): $(printf '%s\n' "$mutant" | tail -1)"
+          printf '%s\n' "$mutant" | grep -q 'AssertionError' && printf '%s\n' "$mutant" | grep -qE '(^|[^0-9])1 failed'
+        cwd: "${OMNI_HOME}/omnibase_infra"
+    binds_ac:
+      - "AC2"
+    ac_bindings:
+      - label: "AC2"
+        criterion_hash: "a3c7270f9f8dd4a01741717007333909b9cb52c676a64c3804e835c5c2037c4b"
+        proposed_by: "evid-B14-2a21"
+        accepted_by: "bind-accept-b-2a21"
+        accepted_at: "2026-10-03T06:11:48Z"
+  - id: "dod-accept-b-19851-ac3"
+    description: |-
+      AC3 second-lane acceptance (bind-accept-b-2a21, OMN-17427, ruling 2026-10-03T00:40:00Z). evid-B14-2a21 authored the check of item dod-b14-19851-ac3-baseline-unchanged-timing-runs and accepted its own binding; this lane did not author it. This lane re-ran the same check on lab host .201 through the capture path, read the criterion and the assertions the check rests on, and accepts the binding because the check goes red if the criterion is false: `config/skip_count_baseline.yaml` has no diff across the omnibase_infra#4205 squash merge (parent 06aa3e37744d, merge 0c5ce1c89af1) and the test passes with ONEX_AUTOWIRING_DISCOVERY_CACHE=0. Caveat, not disqualifying: a pass does not by itself show the timing branch ran on a given host (it runs only when the measured scan is at least MEANINGFUL_SCAN_SECONDS); the criterion's declared falsifier is what is executed.
+    source: "generated"
+    execution_scope: "local_done_gate"
+    checks:
+      - check_type: "test_passes"
+        check_value: |-
+          test "$(git rev-parse 0c5ce1c89af113303a752374df188723fe789970^)" = 06aa3e37744d1c65c98090ee415ed1bef98f1a6d && git diff --exit-code --stat 06aa3e37744d1c65c98090ee415ed1bef98f1a6d 0c5ce1c89af113303a752374df188723fe789970 -- config/skip_count_baseline.yaml && echo "config/skip_count_baseline.yaml: no diff across omnibase_infra#4205 (06aa3e37744d..0c5ce1c89af1)" && ONEX_AUTOWIRING_DISCOVERY_CACHE=0 env -u PYTHONPATH uv run pytest tests/integration/test_runtime_health_discovery_off_loop_omn19373.py -q
+        cwd: "${OMNI_HOME}/omnibase_infra"
+    binds_ac:
+      - "AC3"
+    ac_bindings:
+      - label: "AC3"
+        criterion_hash: "90bf7211a37d64cbcb3fc9a5e20a7739762f089e22abec91143b118c0dc180c2"
+        proposed_by: "evid-B14-2a21"
+        accepted_by: "bind-accept-b-2a21"
+        accepted_at: "2026-10-03T06:11:48Z"
