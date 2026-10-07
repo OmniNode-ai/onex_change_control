@@ -30,6 +30,13 @@ evidence_requirements:
     description: |-
       Behavior proof for PR #368 on OmniNode-ai/omnidash: the Overview page test and the page contract test it adds, executed at cwd `${OMNI_HOME}/omnidash`.
     command: "npm test -- --run src/pages/LocalDashboardPage.omn20226.test.tsx src/pages/local/omn20226.contracts.test.ts"
+  - kind: "tests"
+    description: |-
+      Behavior proof for PR #3508 on OmniNode-ai/omnimarket: the compression and cache-hit test it adds, the metering-summary node tests and the served-row render test, executed at cwd `${OMNI_HOME}/omnimarket`. None of them start a database.
+    command: "uv run pytest tests/nodes/node_projection_metering_summary/test_omn20226_compression_and_cache_hit.py
+      tests/nodes/node_projection_metering_summary/test_projection.py tests/nodes/node_projection_metering_summary/test_golden_chain_projection_metering_summary.py
+      tests/nodes/node_projection_metering_summary/test_omn20007_day_rows_sum_to_all_window.py tests/test_omn19977_metering_renders_the_row.py
+      -q -p no:randomly"
 emergency_bypass:
   enabled: false
   justification: ""
@@ -83,3 +90,67 @@ dod_evidence:
       - check_type: "command"
         check_value: |-
           deploy_probe=1; body=$(gh api 'repos/OmniNode-ai/omnibase_infra/contents/docker/migrations/forward/nodes/node_projection_metering_summary/0003_metering_summary_compression_and_cache_hit.sql?ref=dea192aafd28deba04b17aede915839668d62ed7' --jq '.content' | base64 -d) && grep -qF 'compression_ratio' <<< "$body" && grep -cF 'cache_hit_rate' <<< "$body"
+  - id: "dod-deploy-probe-omnidash-pr-368-posix"
+    description: >-
+      POSIX successor of dod-deploy-probe-omnidash-pr-368, whose bash-only here-strings (<<<) are a syntax
+      error under the /bin/sh (dash) that a pinned compliance runner executes check values with ("sh:
+      1: Syntax error: redirection unexpected", omnibase_infra Contract Compliance Check job 112844557099).
+      Same assertion, piped through printf into grep -c, which reads its whole input, so neither dash
+      nor bash -o pipefail can fail it on SIGPIPE: the omnidash#368 head 697098742722 binds both Overview
+      cards to their served metering-summary.v1 columns. With the ref swapped to omnidash dev 8db004873e30
+      the count is 0 and the probe exits 1 under dash.
+    source: "manual"
+    evidence_artifact: "supersedes_dod_evidence:dod-deploy-probe-omnidash-pr-368"
+    checks:
+      - check_type: "command"
+        check_value: |-
+          deploy_probe=1; body=$(gh api 'repos/OmniNode-ai/omnidash/contents/src/pages/local/overview.contracts.yaml?ref=697098742722597a344912c57914cc1e6e703d3a' --jq '.content' | base64 -d) && printf '%s\n' "$body" | grep -cF '"compression_ratio"' >/dev/null && printf '%s\n' "$body" | grep -cF '"cache_hit_rate"'
+  - id: "dod-deploy-probe-omnibase-infra-pr-4657-posix"
+    description: >-
+      POSIX successor of dod-deploy-probe-omnibase-infra-pr-4657, whose bash-only here-strings (<<<) made
+      omnibase_infra's Contract Compliance Check BLOCK with "sh: 1: Syntax error: redirection unexpected"
+      (job 112844557099). Same assertion, piped through printf into grep -c so it runs under dash and
+      under bash -o pipefail alike: the omnibase_infra#4657 head 3b2056f051c8 vendors migration 0003 with
+      both columns. With the ref swapped to omnibase_infra dev ed01b6ddb3d0 the file is absent (404) and
+      the probe exits 1 under dash.
+    source: "manual"
+    evidence_artifact: "supersedes_dod_evidence:dod-deploy-probe-omnibase-infra-pr-4657"
+    checks:
+      - check_type: "command"
+        check_value: |-
+          deploy_probe=1; body=$(gh api 'repos/OmniNode-ai/omnibase_infra/contents/docker/migrations/forward/nodes/node_projection_metering_summary/0003_metering_summary_compression_and_cache_hit.sql?ref=3b2056f051c8e71357a597e7ea2ce33d475df0da' --jq '.content' | base64 -d) && printf '%s\n' "$body" | grep -cF 'compression_ratio' >/dev/null && printf '%s\n' "$body" | grep -cF 'cache_hit_rate'
+  - id: "dod-OmniNode-ai-omnimarket-pr-3508"
+    description: >-
+      PR #3508 on OmniNode-ai/omnimarket, hand-authored companion (OMN-15247). #3508 makes metering-summary.v1
+      serve compression_ratio, cache_hit_rate and runs_cache_answered, which the fold writes as null because
+      no metering record carries a raw or compressed input-token count or a semantic-cache answer. The
+      check reads the node contract at the PR head 0fa7f85eff3b and counts the three served columns of
+      the exposure: 3 there, 0 at dev 0b950290f878, where the probe exits 1.
+    source: "manual"
+    checks:
+      - check_type: "command"
+        check_value: |-
+          gh api 'repos/OmniNode-ai/omnimarket/contents/src/omnimarket/nodes/node_projection_metering_summary/contract.yaml?ref=0fa7f85eff3b8c06c7ac2cc69a8c9ed5c1d4e5a3' --jq '.content' | base64 -d | grep -cE '^ +- (compression_ratio|cache_hit_rate|runs_cache_answered)$'
+  - id: "dod-OmniNode-ai-omnimarket-pr-3508-tests"
+    description: >-
+      Behavior proof for PR #3508 on OmniNode-ai/omnimarket: the compression and cache-hit test it adds
+      (failure modes C1-C8: measured runs still null, no column default, every window, replay, stored
+      and served as null keys, exposure columns, migration shape), the metering-summary node tests and
+      the served-row render test, none of which start a database. 38 passed at the PR head 0fa7f85eff3b;
+      the same five files against dev 0b950290f878's code failed 7 of 38, so the check can go red. It
+      is the served half of AC1 (each figure reads a served exposure field) and of AC2 (no measurement
+      serves null, never 0 or a blank); the omnidash#368 item proves the rendered half.
+    source: "manual"
+    checks:
+      - check_type: "test_passes"
+        check_value: |-
+          uv run pytest tests/nodes/node_projection_metering_summary/test_omn20226_compression_and_cache_hit.py tests/nodes/node_projection_metering_summary/test_projection.py tests/nodes/node_projection_metering_summary/test_golden_chain_projection_metering_summary.py tests/nodes/node_projection_metering_summary/test_omn20007_day_rows_sum_to_all_window.py tests/test_omn19977_metering_renders_the_row.py -q -p no:randomly
+        cwd: "${OMNI_HOME}/omnimarket"
+    binds_ac:
+      - "AC1"
+      - "AC2"
+    ac_bindings:
+      - label: "AC1"
+        criterion_hash: "02631234e9b97ca3626d3b1e63d652fad29a0d7ab3b811eb09753caddc937645"
+      - label: "AC2"
+        criterion_hash: "e60174bae4499c4a9a5b74a9381ce9c598e6f69f703697d0fd4ef47c7cd45118"
