@@ -245,3 +245,48 @@ dod_evidence:
       - item: dod-fill-19400-ac3-local-readback
         label: AC3
         reason: Replace source or historical receipt inspection with a fresh executable dev-lane AC3 falsifier.
+  - id: dod-deleg1615-19400-ac3-independent-acceptance
+    description: >-
+      AC3 independent acceptance. Lane deleg-review-batch-1615 did not propose the live dev-lane binding
+      in dod-dev201-1006-omn-19400-ac3-live (proposed by readback-dev201-1903). It re-ran the same probe
+      against the dev lane through dod_verify and accepts it. The proposed item stays untouched, because
+      editing it would move its entry hash. This record also retires dod-fill-19400-ac3-local-readback,
+      whose probe reads a receipt.json that exists only on the host that ran it. (OMN-19432.)
+    source: generated
+    execution_scope: local_done_gate
+    evidence_artifact: supersedes_dod_evidence:dod-fill-19400-ac3-local-readback
+    checks:
+      - check_type: command
+        check_value: |-
+          python3 -c 'import json, os, pathlib, subprocess, sys
+          env = dict(os.environ, ONEX_TENANT_ID='"'"'820272f9-4aaf-5add-a2df-0af942852ab2'"'"')
+          argv = [str(pathlib.Path(env["OMNI_HOME"]) / "omnibase_infra/scripts/onex"), "delegate", '"'"'Analyze the tradeoffs between strong and eventual consistency for a distributed inventory service, explain failure modes, and recommend a design with justification.'"'"', "--task-type", '"'"'complex_reasoning'"'"', "--bus", "kafka", "--lane", "dev", "--ticket", '"'"'OMN-19400'"'"', "--source", "codex", "--json"]
+          r = subprocess.run(argv, env=env, text=True, capture_output=True, timeout=360)
+          sys.stderr.write(r.stderr)
+          if r.returncode:
+              sys.stdout.write(r.stdout)
+              raise SystemExit(r.returncode)
+          receipt = json.loads(r.stdout)
+          result = receipt["result"]
+          p = result["terminal_payload"]["payload"]
+          attempts = p["attempts"]
+          assert result["handler_locus"] == "dispatched", result
+          assert p["tenant_id"] == '"'"'820272f9-4aaf-5add-a2df-0af942852ab2'"'"', p
+          assert p["task_type"] == '"'"'complex_reasoning'"'"' and p["prompt_text"] == '"'"'Analyze the tradeoffs between strong and eventual consistency for a distributed inventory service, explain failure modes, and recommend a design with justification.'"'"', p
+          assert p["status"] == "completed" and p["quality_gate_passed"] is True, p
+          assert p["attempts_count"] == len(attempts) and len(attempts) >= 1, attempts
+          assert all(a["tier"] == "local" for a in attempts), attempts
+          assert attempts[-1]["quality_gate_passed"] is True, attempts
+          if '"'"'complex_reasoning'"'"' == "reasoning":
+              assert len(attempts) == 1 and p["quality_gates_failed"] == [] and p["escalation_count"] == 0, p
+          assert sum(a["cost_usd"] for a in attempts) == 0, attempts
+          print(json.dumps({"ticket": '"'"'OMN-19400'"'"', "run_id": receipt["run_id"], "correlation_id": receipt["correlation_id"], "terminal_timestamp": result["terminal_payload"]["envelope_timestamp"], "handler_locus": result["handler_locus"], "quality_gate_passed": p["quality_gate_passed"], "quality_score": p["quality_score"], "attempts_count": len(attempts), "accepted_tier": attempts[-1]["tier"], "answering_backend": attempts[-1]["backend_id"], "model": attempts[-1]["model_id"], "non_local_attempts": sum(a["tier"] != "local" for a in attempts), "cost_usd": sum(a["cost_usd"] for a in attempts), "escalation_count": p["escalation_count"], "quality_gates_failed": p["quality_gates_failed"]}, sort_keys=True))
+          '
+    binds_ac:
+      - AC3
+    ac_bindings:
+      - label: AC3
+        criterion_hash: 11dd0e9bd64022c57ec528a7625821bf7d21e54c87fe46dfb549bcc8f646dafa
+        proposed_by: readback-dev201-1903
+        accepted_by: deleg-review-batch-1615
+        accepted_at: '2026-10-07T16:25:39Z'
