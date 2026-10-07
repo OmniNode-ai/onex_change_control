@@ -1,0 +1,72 @@
+---
+topic: "onex.evt.occ.nightly-promotion.v1"
+schema_version: "1.0.0"
+ticket: "OMN-11717"
+description: >
+  Canonical OCC wire contract for nightly dev-to-main promotion evidence. The event is publishable only
+  after the intended manifest, per-repository promotion results, runtime topology proof, and cross-repository
+  integration result have all been produced for the same promotion batch.
+topic_authority: "onex_change_control"
+freshness_sla: "24h"
+
+producer:
+  repo: "onex_change_control"
+  file: "src/onex_change_control/kafka/topics.py"
+  function: "GovernanceTopic"
+
+consumer:
+  repo: "onex_change_control"
+  file: "src/onex_change_control/wire_schemas/occ_nightly_promotion_v1.yaml"
+  model: "PromotionReceipt"
+
+required_fields:
+  - name: "promotion_batch_id"
+    type: "string"
+    description: "Stable batch identifier shared by every promotion proof artifact."
+  - name: "intended_manifest"
+    type: "object"
+    description: "Manifest of repositories, source refs, target refs, and expected promotion SHAs."
+  - name: "per_repo_results"
+    type: "array"
+    description: "Per-repository promotion eligibility and merge result records."
+  - name: "runtime_topology_proof"
+    type: "object"
+    description: "Runtime topology proof collected before the promotion PR is opened."
+  - name: "cross_repo_integration_result"
+    type: "object"
+    description: "Cross-repository integration result for the exact intended manifest."
+
+optional_fields:
+  - name: "promotion_started_at"
+    type: "datetime"
+    nullable: true
+    description: "Timestamp for the start of promotion evidence collection."
+  - name: "promotion_completed_at"
+    type: "datetime"
+    nullable: true
+    description: "Timestamp for completed promotion verification."
+
+output:
+  promotion_receipt:
+    type: "object"
+    description: "Durable verifier output proving the promotion batch is acceptable."
+    required_fields:
+      - "promotion_batch_id"
+      - "verifier_identity"
+      - "verified_at"
+      - "verdict"
+      - "intended_manifest_digest"
+      - "per_repo_results_digest"
+      - "runtime_topology_proof_digest"
+      - "cross_repo_integration_result_digest"
+  promotion_merge_shas:
+    type: "object"
+    key: "repo"
+    value: "sha"
+    description: "Repository-to-main merge SHA map produced by the promotion."
+
+doctrine:
+  - clause_id: "DT-001"
+    binding: "onex_change_control owns the topic and wire contract."
+  - clause_id: "DT-003"
+    binding: "Promotion evidence older than 24h is stale and must not be promoted."

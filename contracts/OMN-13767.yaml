@@ -1,0 +1,82 @@
+---
+schema_version: '1.0.0'
+ticket_id: OMN-13767
+title: "fix(OMN-13767): remove stale omnidash Dockerfile paths breaking ECR build"
+summary: >
+  docker/omnidash/Dockerfile (omninode_infra) still built/copied scripts/run-migrations.ts, migrations/,
+  and demo/recordings — none of which exist on OmniNode-ai/omnidash main anymore (dropped in the composable-widget
+  Vite/React rewrite). This broke every push/main build-and-push-omnidash.yml run. The originally-reported
+  one-line fix (leading "./" on the esbuild entry point) was confirmed insufficient — the entry point
+  file itself is gone, not just its specifier form. Fix removes the stale build/copy steps from the Dockerfile
+  and the corresponding stale run-migrations initContainer from k8s/onex-dev/omnidash/deployment.yaml
+  (which pulls the floating omnidash:dev tag and would otherwise crash-loop on the next pod restart once
+  the fixed image ships). k8s/onex-prod/omnidash/deployment.yaml is digest-pinned to a pre-rewrite image
+  and is intentionally left untouched; k8s/dev/omnidash/migrate-job.yaml (OMN-2727, drizzle-kit) is also
+  stale but not wired into any Deployment rollout — both flagged as follow-up in the ticket rather than
+  fixed in this PR.
+is_seam_ticket: false
+interface_change: false
+interfaces_touched: []
+evidence_requirements:
+  - kind: ci
+    description: >
+      docker/omnidash/Dockerfile no longer builds scripts/run-migrations.ts or copies demo/recordings
+      or migrations/ — all three 404 on omnidash main.
+    command: >
+      grep -c "entryPoints:\['scripts/run-migrations.ts'\]\|COPY --from=builder --chown=appuser:appgroup
+      /app/demo/recordings\|COPY --from=builder --chown=appuser:appgroup /app/migrations " docker/omnidash/Dockerfile
+  - kind: ci
+    description: >
+      k8s/onex-dev/omnidash/deployment.yaml no longer wires the run-migrations initContainer.
+    command: >
+      grep -c '^\s*command: \["node", "dist/run-migrations.js"\]\|^\s*- name: run-migrations$' k8s/onex-dev/omnidash/deployment.yaml
+emergency_bypass:
+  enabled: false
+  justification: ''
+  follow_up_ticket_id: ''
+dod_evidence:
+  - id: dod-001
+    description: >
+      docker/omnidash/Dockerfile no longer contains the scripts/run-migrations.ts esbuild build step or
+      the demo/recordings / migrations/ COPY instructions (confirmed 0 matches).
+    source: generated
+    checks:
+      - check_type: command
+        check_value: >
+          grep -q '^status: PASS$' "$CONTRACT_REPO_DIR/drift/dod_receipts/OMN-13767/dod-001/command.yaml"
+  - id: dod-002
+    description: >
+      k8s/onex-dev/omnidash/deployment.yaml no longer wires the stale run-migrations initContainer (confirmed
+      0 matches on the functional command/name lines).
+    source: generated
+    checks:
+      - check_type: command
+        check_value: >
+          grep -q '^status: PASS$' "$CONTRACT_REPO_DIR/drift/dod_receipts/OMN-13767/dod-002/command.yaml"
+  - id: dod-003
+    description: >
+      Full local test suite (uv run pytest tests/ -v, no -k filter) passes on the omninode_infra worktree
+      carrying this fix.
+    source: generated
+    checks:
+      - check_type: command
+        check_value: >
+          grep -q '^status: PASS$' "$CONTRACT_REPO_DIR/drift/dod_receipts/OMN-13767/dod-003/command.yaml"
+  - id: dod-004
+    description: >
+      Feature commit SHA: 378cb7c1f1a40384fd8bb5f4368d04bdb814c3b2 Branch: jonah/omn-13767-fix-omnidash-image-build-dockerfile
+      Repo: OmniNode-ai/omninode_infra PR: 537
+    source: generated
+    checks:
+      - check_type: command
+        check_value: >
+          grep -q '^status: PASS$' "$CONTRACT_REPO_DIR/drift/dod_receipts/OMN-13767/dod-004/command.yaml"
+  - id: dod-occ-self
+    description: >
+      This onex_change_control PR carries the central OMN-13767 contract and PASS receipts required by
+      the downstream omninode_infra PR #537 Receipt Gate.
+    source: generated
+    checks:
+      - check_type: command
+        check_value: >
+          grep -q '^status: PASS$' "$CONTRACT_REPO_DIR/drift/dod_receipts/OMN-13767/dod-occ-self/command.yaml"

@@ -1,0 +1,59 @@
+---
+schema_version: "1.0.0"
+ticket_id: "OMN-13534"
+title: "fix(OMN-13534): data_flow_sweep dispatch crash on forbidden collect key + shared flow resolution"
+summary: >
+  The onex skill data_flow_sweep (RuntimeLocal dispatch) path crashed: the skill_mapping injects collect:
+  false into the dispatch payload, but DataFlowSweepRequest declared only flows + dry_run with extra="forbid",
+  so the default payload was rejected with extra_forbidden and the prescribed skill invocation could not
+  run at all. collect lived only as a __main__ argparse flag, and _DEFAULT_FLOW_STUBS + live collection
+  lived only in __main__.py (which the dispatch path never executes) — so even past the crash a no-arg
+  dispatch classified zero flows and false-cleaned. The fix (mirroring the merged OMN-13514 compliance_sweep
+  reconciliation) adds collect: bool to DataFlowSweepRequest and moves the built-in critical-chain descriptors
+  + _collect_live + a shared resolve_flows() into the handler module, so both the CLI and the dispatch
+  path resolve flows identically and collect=True runs the live rpk/psql collector on the dispatch path.
+  The gap python3.12 default-scope defect was already fixed under OMN-13538 (PR #1363, which credits OMN-13534);
+  node_gap_compute's live probes are by-design out of the deterministic compute path (lane targeting tracked
+  in OMN-13552). The OMN-13514 .201 venv redeploy is a runtime action tracked separately, not folded into
+  this code PR.
+is_seam_ticket: false
+interface_change: false
+interfaces_touched: []
+evidence_requirements:
+  - kind: "tests"
+    description: "data_flow_sweep dispatch no longer crashes on the forbidden collect key and returns
+      a real result"
+    command: "cd omnimarket && uv run pytest tests/test_data_flow_sweep_dispatch_resolution.py -q"
+  - kind: "tests"
+    description: "data_flow_sweep golden-chain + collect suites stay green with corrected non-false-clean
+      semantics"
+    command: "cd omnimarket && uv run pytest tests/test_golden_chain_data_flow_sweep.py tests/test_golden_chain_data_flow_sweep_collect.py
+      -q"
+emergency_bypass:
+  enabled: false
+  justification: ""
+  follow_up_ticket_id: ""
+dod_evidence:
+  - id: "dod-001"
+    description: >
+      omnimarket PR #1380 adds collect: bool to DataFlowSweepRequest and shares flow resolution into the
+      handler so the onex skill data_flow_sweep dispatch path no longer crashes on the forbidden collect
+      key and resolves the built-in critical-chain descriptors instead of false-cleaning. Local proof:
+      uv run pytest tests/test_data_flow_sweep_dispatch_resolution.py -q -> 8 passed (default skill payload
+      constructs, no-arg dispatch returns flows_checked=3 status=issues_found, collect=True runs the live
+      collector on the dispatch path, per-flow probe failure falls back, contract/model collect field
+      reconciled). Ruff + mypy --strict clean on the changed modules; all pre-commit hooks pass.
+    source: "manual"
+    checks:
+      - check_type: "command"
+        check_value: "grep -q '^status: PASS$' drift/dod_receipts/OMN-13534/dod-001/command.yaml && grep
+          -q '^ticket_id: \"OMN-13534\"$' drift/dod_receipts/OMN-13534/dod-001/command.yaml && grep -q
+          '^pr_number: 1380$' drift/dod_receipts/OMN-13534/dod-001/command.yaml"
+  - id: "dod-occ-pr"
+    description: "OCC PR carrying this OMN-13534 contract and downstream receipt."
+    source: "manual"
+    checks:
+      - check_type: "command"
+        check_value: "grep -q '^status: PASS$' drift/dod_receipts/OMN-13534/dod-occ-pr/command.yaml &&
+          grep -q '^ticket_id: \"OMN-13534\"$' drift/dod_receipts/OMN-13534/dod-occ-pr/command.yaml &&
+          grep -q '^pr_number: 3024$' drift/dod_receipts/OMN-13534/dod-occ-pr/command.yaml"

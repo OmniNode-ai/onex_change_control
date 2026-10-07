@@ -1,0 +1,105 @@
+---
+schema_version: "1.0.0"
+ticket_id: "OMN-15581"
+title: "Staging FORCE unfence — release node_projection_registration 0000/0001/0002"
+summary: >
+  Manual OCC companion for OmniNode-ai/omninode_infra PR #783 at exact head 5f0e9e570f9b59fff00590f74c30131d4c56e719.
+  The product PR removes exactly the three node_projection_registration ids (0000_create_node_service_registry,
+  0001_add_heartbeat_columns, 0002_node_service_registry_tenant_rls) from FENCED_NODE_MIGRATION_IDS in
+  k8s/migrations/omnibase-infra-migrate.yaml under ruling 21 (OMN-15332 comment 37fb06b9) and the 2026-07-31T14:05Z
+  GO judgment (OMN-15332 comment 1a067542). This evidence binds AC1 (fence 7 -> 4 with the node_projection_delegation
+  quartet 0023-0026 byte-unchanged and in order) and AC4 (rollback documented, not executed) ONLY. It
+  deliberately does NOT claim AC2 (migrations applied on the RDS path) or AC3 (live readback of relforcerowsecurity
+  from the runtime pod's own connection): neither is observable before the deploy-onex-dev run that merging
+  this PR triggers, and both are owed as follow-on evidence on OMN-15581. The companion author is not
+  the product-PR author (no self-authored evidence).
+is_seam_ticket: false
+interface_change: false
+interfaces_touched: []
+evidence_requirements:
+  - kind: "ci"
+    description: "PR #783 CI checks and the still-owed post-deploy readback"
+    command: "gh pr checks 783 --repo OmniNode-ai/omninode_infra"
+emergency_bypass:
+  enabled: false
+  justification: ""
+  follow_up_ticket_id: ""
+dod_evidence:
+  - id: "dod-infra783-fence-unfence-source"
+    description: >-
+      Binds the locally executed receipt artifact for omninode_infra PR #783 at exact head 5f0e9e570f9b59fff00590f74c30131d4c56e719,
+      covering AC1. The receipt records that FENCED_NODE_MIGRATION_IDS goes from 7 ids at the PR base
+      to 4 ids at the PR head, that the 4 remaining ids are exactly the node_projection_delegation quartet
+      0023/0024/0025/0026 in the same order they held at base, and that zero node_projection_registration
+      ids survive at head while 3 were present at base. omninode_infra is a private repository and hosted
+      OCC compliance runs with a repo-scoped GITHUB_TOKEN that cannot read it, so this check binds the
+      immutable PASS receipt and its recorded product facts rather than re-fetching them.
+    source: "manual"
+    status: "verified"
+    checks:
+      - check_type: "command"
+        check_value: >-
+          receipt="drift/dod_receipts/OMN-15581/dod-infra783-fence-unfence-source/command.yaml" && grep
+          -q '^status: PASS$' "$receipt" && grep -q '5f0e9e570f9b59fff00590f74c30131d4c56e719' "$receipt"
+          && grep -q '6992e23f6f90ae57859632c1e52fcce7f5c67fec' "$receipt" && grep -q 'k8s/migrations/omnibase-infra-migrate.yaml'
+          "$receipt" && grep -q 'node:node_projection_delegation:0026_delegation_judge_verdict_events_rls_tenant_isolation.sql'
+          "$receipt" && grep -q 'infra783 fence 7->4 unfence binding PASS' "$receipt"
+  - id: "dod-infra783-rollback-documented"
+    description: >-
+      Binds the locally executed receipt artifact for AC4: the product PR body carries a ROLLBACK section
+      that is documented and explicitly not executed, containing (a) the exact three fence id lines to
+      restore into FENCED_NODE_MIGRATION_IDS and (b) the exact SQL to reverse 0002 (ALTER TABLE ... NO
+      FORCE ROW LEVEL SECURITY, DROP POLICY tenant_isolation, and the node_schema_migrations DELETE needed
+      only for a later re-apply). The receipt also records the PR body's own statement that neither rollback
+      leg has been executed.
+    source: "manual"
+    status: "verified"
+    checks:
+      - check_type: "command"
+        check_value: >-
+          receipt="drift/dod_receipts/OMN-15581/dod-infra783-rollback-documented/command.yaml" && grep
+          -q '^status: PASS$' "$receipt" && grep -q 'ALTER TABLE node_service_registry NO FORCE ROW LEVEL
+          SECURITY;' "$receipt" && grep -q 'DROP POLICY IF EXISTS tenant_isolation ON node_service_registry;'
+          "$receipt" && grep -q 'DELETE FROM node_schema_migrations WHERE version IN' "$receipt" && grep
+          -q 'Neither leg has been executed' "$receipt" && grep -q 'infra783 rollback-documented-not-executed
+          binding PASS' "$receipt"
+  - id: "dod-infra783-bounded-scope-compose-fence-intact"
+    description: >-
+      Hosted, falsifiable, outside-its-own-diff proof of this ticket's stated scope boundary. Ruling 21
+      scopes the unfence to the staging/onex-dev k8s runner only; the compose-side runner (omnibase_infra
+      scripts/run-forward-migrations.sh, a public repo the OCC-scoped GITHUB_TOKEN can read) must therefore
+      be untouched. Reads that file's content at pinned ref 44177d973e6e9346edfdc46e17cda8dade8bd32d (blob
+      df7b6edf4b865a8c4cf795cf4bc9a7392c3994a7) and asserts FENCED_NODE_MIGRATION_IDS there still carries
+      all seven ids — the four node_projection_delegation entries plus the three node_projection_registration
+      entries — and that the delegation quartet appears nowhere else in the file, i.e. it is released
+      on no lane. Goes RED if anyone widens the unfence to the compose runner or lane-releases a delegation
+      migration. This is the one hosted check that is EXECUTED, FALSIFIABLE and OUTSIDE ITS OWN DIFF;
+      the two receipt bindings above are WARN-class by construction because omninode_infra is private
+      and hosted OCC compliance runs with a repo-scoped GITHUB_TOKEN that cannot read it.
+    source: "manual"
+    status: "verified"
+    checks:
+      - check_type: "command"
+        check_value: >-
+          sha="44177d973e6e9346edfdc46e17cda8dade8bd32d" && test "$(gh api "repos/OmniNode-ai/omnibase_infra/contents/scripts/run-forward-migrations.sh?ref=${sha}"
+          --jq .sha)" = "df7b6edf4b865a8c4cf795cf4bc9a7392c3994a7" && src="$(gh api "repos/OmniNode-ai/omnibase_infra/contents/scripts/run-forward-migrations.sh?ref=${sha}"
+          --jq .content | base64 -d)" && fence="$(printf '%s\n' "$src" | awk '/^FENCED_NODE_MIGRATION_IDS="/{f=1;next}
+          f{print; if (/"$/) exit}')" && test "$(printf '%s\n' "$fence" | grep -c '^node:')" = "7" &&
+          test "$(printf '%s\n' "$fence" | grep -c '^node:node_projection_registration:')" = "3" && test
+          "$(printf '%s\n' "$fence" | grep -c '^node:node_projection_delegation:')" = "4" && test "$(printf
+          '%s\n' "$src" | grep -c '^node:node_projection_delegation:')" = "4" && printf '%s\n' "$src"
+          | grep 'Delegation 0023-0026 are NOT releasable on ANY lane' >/dev/null && printf 'infra783
+          bounded-scope compose-fence-intact PASS\n'
+  - id: "occ-self-bind-pr-5746"
+    description: >-
+      Binds OMN-15581 central evidence to OCC companion PR #5746 so OCC preflight can prove this evidence
+      change is itself associated with the ticket it satisfies. Asserted against the live onex_change_control
+      API rather than a receipt grep, because hosted OCC compliance can read its own repository.
+    source: "manual"
+    status: "verified"
+    checks:
+      - check_type: "command"
+        check_value: >-
+          meta="$(gh api repos/OmniNode-ai/onex_change_control/pulls/5746 --jq '[.number,.head.ref,.base.ref]
+          | map(tostring) | join(",")')" && test "$meta" = "5746,jonah/omn-15581-staging-force-unfence-occ,dev"
+          && printf 'OCC 5746 self-bind PASS\n'

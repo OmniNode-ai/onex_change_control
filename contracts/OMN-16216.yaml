@@ -1,0 +1,96 @@
+---
+schema_version: "1.0.0"
+ticket_id: "OMN-16216"
+title: "feat(CI): gate expensive workflows behind non-draft PR state — omnibase_infra"
+summary: >
+  Central OCC evidence for OmniNode-ai/omnibase_infra PR #2792, which migrates this repo's four expensive/heavy
+  CI surfaces (ci.yml's `test-parallel`, deploy-gate.yml's `deploy-gate` caller, security-scan.yml's `codeql`,
+  hostile-reviewer.yml's `hostile-review`) to a native PR draft-state admission gate, mirroring the design
+  proven on onex_change_control#6686 / OMN-15731. Native draft state (`!github.event.pull_request.draft`)
+  is the primary admission signal; the `ci:ready` label is retained as a transition-window dual-accept
+  fallback and is NOT removed here. Child of OMN-16214 (org-wide fan-out). The critical repo-specific
+  constraint is that omnibase_infra's `CI Summary` poller (scripts/ci/ci_summary_gate.py) asserts a fail-closed
+  EXPECTED_EXTERNAL_CONTEXTS tuple against the PR head's cross-workflow check-runs — a different mechanism
+  shape from OCC's in-run STRICT_GATE_JOBS classification — so each gated job had to be verified as caught
+  by one of those two paths rather than silently outside both. `test-parallel` feeds `CI Tests Gate`,
+  whose pre-existing docs-only skip exemption would have accepted an admission-skip as a pass; the fix
+  splits DOCS_ONLY (still a pass) from ADMITTED != true (exit 1). `deploy-gate / deploy-gate` and `CodeQL`
+  are EXPECTED_EXTERNAL_CONTEXTS members whose absence resolves PENDING -> FAILURE with no poller change.
+  Evidence below is content-bound to the PR head SHA 80fdad33a3580afd4764dd587d906386465a8080 (an immutable
+  commit ref, not a deletable branch ref, and not a re-runnable workflow conclusion — OMN-15540 Rule F).
+is_seam_ticket: false
+interface_change: false
+interfaces_touched: []
+evidence_requirements:
+  - kind: "ci"
+    description: "PR #2792 CI and receipt gates green"
+    command: "gh pr checks 2792 --repo OmniNode-ai/omnibase_infra"
+emergency_bypass:
+  enabled: false
+  justification: ""
+  follow_up_ticket_id: ""
+dod_evidence:
+  - id: "dod-OmniNode-ai-omnibase_infra-pr-2792"
+    description: "PR #2792 on OmniNode-ai/omnibase_infra is open on dev, carrying the draft-state CI admission
+      gate on branch jonah/omn-16216-draft-state-ci-admission-gate."
+    source: "manual"
+    status: "verified"
+    checks:
+      - check_type: "command"
+        check_value: "gh pr view 2792 --repo OmniNode-ai/omnibase_infra --json number,state,headRefName"
+  - id: "dod-OmniNode-ai-omnibase_infra-pr-2792-ci"
+    description: "PR #2792 on OmniNode-ai/omnibase_infra — product diff scope check (OMN-14425): touches
+      only CI admission surfaces (.github/required-checks.yaml plus the four gated workflow files) and
+      their pinning test, no runtime/src code."
+    source: "manual"
+    status: "verified"
+    checks:
+      - check_type: "command"
+        check_value: "gh pr view 2792 --repo OmniNode-ai/omnibase_infra --json files"
+  - id: "dod-omnibase_infra-2792-admission-arms-present"
+    description: "The dual-arm admission condition (`!github.event.pull_request.draft || contains(github.event.pull_request.labels.*.name,
+      'ci:ready')`) is present five times across the four gated workflow files at PR #2792's head — twice
+      in ci.yml (the `test-parallel` job `if:` and the `tests-gate` ADMITTED env expression) and once
+      each in deploy-gate.yml, security-scan.yml and hostile-reviewer.yml — proving the gate is actually
+      wired on every declared surface, not merely described in the PR body."
+    source: "manual"
+    status: "verified"
+    checks:
+      - check_type: "command"
+        check_value: |-
+          for f in ci deploy-gate security-scan hostile-reviewer; do gh api "repos/OmniNode-ai/omnibase_infra/contents/.github/workflows/$f.yml?ref=80fdad33a3580afd4764dd587d906386465a8080" --jq '.content' | base64 -d; done | grep -c "!github.event.pull_request.draft || contains(github.event.pull_request.labels.\*.name, 'ci:ready')"
+  - id: "dod-omnibase_infra-2792-tests-gate-admission-split"
+    description: "AC(b) fail-closed mechanism: ci.yml's `tests-gate` \"Check test matrix results\" step
+      distinguishes an admission skip from the pre-existing docs-only exemption via an `ADMITTED != true`
+      branch that exits 1, so a draft PR reports `CI Tests Gate` = failure rather than being accepted
+      as green-by-skip. Present at PR #2792's head."
+    source: "manual"
+    status: "verified"
+    checks:
+      - check_type: "command"
+        check_value: |-
+          gh api "repos/OmniNode-ai/omnibase_infra/contents/.github/workflows/ci.yml?ref=80fdad33a3580afd4764dd587d906386465a8080" --jq '.content' | base64 -d | grep -c 'ADMITTED" != "true"'
+  - id: "dod-omnibase_infra-2792-deploy-gate-skip-semantics"
+    description: "`.github/required-checks.yaml`'s `deploy-gate / deploy-gate` entry is flipped from `skip_semantics:
+      never` to `neutral_ok` at PR #2792's head, matching the new caller-job `if:`. This is the declared-policy
+      half of the gate: the context is an EXPECTED_EXTERNAL_CONTEXTS member, so a skipped caller leaves
+      it ABSENT from check-runs, which the poller resolves PENDING -> FAILURE at its deadline — never
+      SUCCESS."
+    source: "manual"
+    status: "verified"
+    checks:
+      - check_type: "command"
+        check_value: |-
+          gh api "repos/OmniNode-ai/omnibase_infra/contents/.github/required-checks.yaml?ref=80fdad33a3580afd4764dd587d906386465a8080" --jq '.content' | base64 -d | awk '/name: "deploy-gate \/ deploy-gate"/{f=1} f&&/skip_semantics:/{print; exit}'
+  - id: "dod-omnibase_infra-2792-ready-for-review-trigger"
+    description: "AC(c) mechanism: all four gated workflows declare `ready_for_review` in their `pull_request`
+      trigger `types:` at PR #2792's head (exactly four types-list entries, comments and echo strings
+      excluded by the anchored pattern). Without it a draft->ready flip would not re-evaluate the current
+      head and the gated jobs' last published `skipped` conclusion would stand, which branch protection
+      counts as passing."
+    source: "manual"
+    status: "verified"
+    checks:
+      - check_type: "command"
+        check_value: |-
+          for f in ci deploy-gate security-scan hostile-reviewer; do gh api "repos/OmniNode-ai/omnibase_infra/contents/.github/workflows/$f.yml?ref=80fdad33a3580afd4764dd587d906386465a8080" --jq '.content' | base64 -d; done | grep -cE '^[[:space:]]*ready_for_review,?$|^[[:space:]]*types:[[:space:]]*\[.*ready_for_review'

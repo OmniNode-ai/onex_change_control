@@ -1,0 +1,42 @@
+---
+schema_version: "1.0.0"
+ticket_id: "OMN-13118"
+evidence_item_id: "dod-omnibase-infra-correlator-pr"
+check_type: "command"
+check_value: "gh pr view 1975 --repo OmniNode-ai/omnibase_infra --json state,baseRefName,headRefName,headRefOid"
+status: PASS
+run_timestamp: "2026-06-14T00:35:43Z"
+commit_sha: "fdc5f35b15d907817837898a7d7b7b16465d0393"
+runner: "worktree-agent-omn-13118-fix"
+verifier: "receipt-gate-local"
+probe_command: "uv run ruff check service_terminal_event_consumer.py test_terminal_correlator_resolve_before_await.py
+  && uv run mypy service_terminal_event_consumer.py --strict && uv run pytest test_terminal_correlator_resolve_before_await.py
+  test_terminal_consumer_longlived_correlator.py test_event_consumer_injection.py -q"
+probe_stdout: |
+  $ uv run ruff check src/omnibase_infra/runtime/service_terminal_event_consumer.py tests/unit/runtime/test_terminal_correlator_resolve_before_await.py
+  All checks passed!
+
+  $ uv run mypy src/omnibase_infra/runtime/service_terminal_event_consumer.py --strict
+  Success: no issues found in 1 source file
+
+  $ uv run pytest tests/unit/runtime/test_terminal_correlator_resolve_before_await.py tests/integration/test_terminal_consumer_longlived_correlator.py tests/unit/runtime/auto_wiring/test_event_consumer_injection.py -q
+  .......                                                                  [100%]
+  7 passed in 32.50s
+actual_output: >-
+  PASS: omnibase_infra PR #1975 (branch jonah/omn-13118-correlator-handoff-fix, base=dev, head fdc5f35b15d907817837898a7d7b7b16465d0393)
+  is the correlator half of the consume-leg closing pair. LongLivedTerminalCorrelator._deliver now resolves
+  the matched future IN PLACE (self._pending.get(cid) + future.set_result(body), no pop-on-match) and
+  _wait owns removal (pops cid in a finally on BOTH success and timeout), closing the P_RESOLVE_BEFORE_AWAIT
+  race where the always-on poll loop matched the terminal before the runner's wait() attached (~28s publish->generation->wait
+  latency observed live) and the old pop-on-match discarded the resolved future before the awaiter could
+  read it. Two-line load-bearing change in service_terminal_event_consumer.py; NO DIAG13118 instrumentation
+  in this PR (clean fix only). New regression test test_terminal_correlator_resolve_before_await.py pins
+  the ordering and was verified RED->GREEN. ruff clean; mypy --strict Success (no issues in 1 source file);
+  correlator + longlived + injection suite 7 passed. PROVES: the correlator-side resolve-in-place fix
+  and its guard test are correct and green locally. SCOPE: this receipt covers only the implementation
+  and local verification of the correlator half; ACCEPTANCE is the live K>=10 gate recorded in dod-live-gate,
+  not this unit test. Live deployment to the dev lane is recorded honestly in dod-deploy-assessment.
+exit_code: 0
+contract_sha256: "sha256:45d5d12d6961e2a45377c312e3bbe65e2a47dbac287a29cd3152cecf3e6728a3"
+pr_number: 1975
+branch: "jonah/omn-13118-correlator-handoff-fix"

@@ -1,0 +1,120 @@
+---
+schema_version: "1.0.0"
+ticket_id: "OMN-15539"
+title: "Carry completion-shaping fields across deployed cloud delegation"
+summary: >-
+  Establish append-only central evidence for the cross-repository cloud delegation seam. This initial
+  slice binds omnibase_core PR #1532 to the canonical request, inference-attempt, quality, quota, and
+  terminal-truth wire contracts. Downstream OmniMarket and omnibase_infra behavior evidence will append
+  separately; this package does not claim a live deployment.
+is_seam_ticket: true
+interface_change: true
+interfaces_touched:
+  - events
+  - public_api
+contract_completeness: "ENRICHED"
+evidence_requirements:
+  - kind: tests
+    description: >-
+      The focused delegation wire model suite proves optional-field compatibility, strict validation,
+      attempt identity, and terminal-truth invariants.
+    command: >-
+      uv run pytest tests/unit/models/delegation/wire/test_delegation_wire_models.py -q
+  - kind: tests
+    description: >-
+      The complete omnibase_core suite and governed pre-push gates pass at the exact product head before
+      publication.
+    command: "uv run pytest tests/ -q"
+  - kind: manual
+    description: >-
+      Immutable GitHub content probes bind each claimed wire surface to omnibase_core PR #1532 head 4243c0dfd3cc166963d3d49b7e1f78e3bab29005.
+    command: "See drift/dod_receipts/OMN-15539/dod-core1532-*/command.yaml"
+emergency_bypass:
+  enabled: false
+  justification: ""
+  follow_up_ticket_id: ""
+dod_evidence:
+  - id: "dod-core1532-cloud-request-wire"
+    description: >-
+      The canonical delegation request carries backend_id, response_contract, system_prompt, temperature,
+      and response_format as validated optional fields whose unset values are omitted from the serialized
+      wire.
+    source: "manual"
+    status: "verified"
+    checks:
+      - check_type: "command"
+        check_value: >-
+          request="$(gh api 'repos/OmniNode-ai/omnibase_core/contents/src/omnibase_core/models/delegation/wire/model_delegation_wire_request.py?ref=4243c0dfd3cc166963d3d49b7e1f78e3bab29005'
+          --jq .content | base64 -d)" && printf '%s' "$request" | grep -q '^    backend_id: str | None'
+          && printf '%s' "$request" | grep -q '^    response_contract: dict\[str, object\] | None' &&
+          printf '%s' "$request" | grep -q '^    system_prompt: str | None' && printf '%s' "$request"
+          | grep -q '^    temperature: float | None' && printf '%s' "$request" | grep -q '^    response_format:
+          dict\[str, object\] | None' && printf '%s' "$request" | grep -q 'exclude_if=lambda value: value
+          is None' && printf 'core1532 cloud request wire PASS\n'
+  - id: "dod-core1532-inference-attempt-wire"
+    description: >-
+      Inference intents carry typed response_format and per-attempt UUID identity, and inference responses
+      echo that identity so stale-attempt rejection can be implemented without overloading the workflow
+      correlation UUID.
+    source: "manual"
+    status: "verified"
+    checks:
+      - check_type: "command"
+        check_value: >-
+          intents="$(gh api 'repos/OmniNode-ai/omnibase_core/contents/src/omnibase_core/models/delegation/wire/model_orchestrator_intents.py?ref=4243c0dfd3cc166963d3d49b7e1f78e3bab29005'
+          --jq .content | base64 -d)" && test "$(printf '%s' "$intents" | grep -c '^    inference_attempt_id:
+          UUID | None')" = "2" && printf '%s' "$intents" | grep -q '^    response_format: dict\[str, object\]
+          | None' && printf '%s' "$intents" | grep -q 'return validate_response_format(response_format)'
+          && printf 'core1532 inference attempt wire PASS\n'
+  - id: "dod-core1532-terminal-truth-wire"
+    description: >-
+      Delegation results expose typed quality-bar comparison, failed acceptance criteria, and quota exhaustion
+      evidence, while completed and failed terminal subtypes reject contradictory payload truth.
+    source: "manual"
+    status: "verified"
+    checks:
+      - check_type: "command"
+        check_value: >-
+          result="$(gh api 'repos/OmniNode-ai/omnibase_core/contents/src/omnibase_core/models/delegation/wire/model_delegation_result.py?ref=4243c0dfd3cc166963d3d49b7e1f78e3bab29005'
+          --jq .content | base64 -d)" && completed="$(gh api 'repos/OmniNode-ai/omnibase_core/contents/src/omnibase_core/models/delegation/wire/model_delegation_completed.py?ref=4243c0dfd3cc166963d3d49b7e1f78e3bab29005'
+          --jq .content | base64 -d)" && failed="$(gh api 'repos/OmniNode-ai/omnibase_core/contents/src/omnibase_core/models/delegation/wire/model_delegation_failed.py?ref=4243c0dfd3cc166963d3d49b7e1f78e3bab29005'
+          --jq .content | base64 -d)" && cause="$(gh api 'repos/OmniNode-ai/omnibase_core/contents/src/omnibase_core/enums/enum_delegation_terminal_failure_cause.py?ref=4243c0dfd3cc166963d3d49b7e1f78e3bab29005'
+          --jq .content | base64 -d)" && printf '%s' "$result" | grep -q '^    required_quality_bar: float
+          | None' && printf '%s' "$result" | grep -q '^    score_vs_required_bar: EnumQualityScoreComparison
+          | None' && printf '%s' "$result" | grep -q '^    failed_acceptance_criteria: tuple\[str, ...\]'
+          && printf '%s' "$result" | grep -q '^    terminal_failure_cause: EnumDelegationTerminalFailureCause
+          | None' && printf '%s' "$completed" | grep -q 'completed delegation requires quality_passed'
+          && printf '%s' "$failed" | grep -q 'failed delegation requires quality_passed=false' && printf
+          '%s' "$cause" | grep -q 'PROVIDER_QUOTA_EXHAUSTED = "provider_quota_exhausted"' && printf 'core1532
+          terminal truth wire PASS\n'
+  - id: "dod-core1532-wire-regression-tests"
+    description: >-
+      Exact-head regression tests cover optional defaults and round trips, request validation, typed provider
+      response format, attempt identity, structured terminal evidence, and contradictory terminal rejection.
+    source: "manual"
+    status: "verified"
+    checks:
+      - check_type: "command"
+        check_value: >-
+          tests="$(gh api 'repos/OmniNode-ai/omnibase_core/contents/tests/unit/models/delegation/wire/test_delegation_wire_models.py?ref=4243c0dfd3cc166963d3d49b7e1f78e3bab29005'
+          --jq .content | base64 -d)" && printf '%s' "$tests" | grep -q 'test_cloud_completion_shaping_defaults_are_backward_compatible'
+          && printf '%s' "$tests" | grep -q 'test_cloud_completion_shaping_round_trips_on_canonical_wire'
+          && printf '%s' "$tests" | grep -q 'test_response_format_is_typed_and_optional' && test "$(printf
+          '%s' "$tests" | grep -c 'test_inference_attempt_id_is_optional_and_round_trips_as_uuid')" =
+          "2" && printf '%s' "$tests" | grep -q 'test_structured_quality_evidence_round_trips_exact_live_case'
+          && printf '%s' "$tests" | grep -q 'test_completed_terminal_rejects_failure_state_fields' &&
+          printf '%s' "$tests" | grep -q 'test_failed_terminal_rejects_quality_passed_verdict' && printf
+          'core1532 wire regression tests PASS\n'
+  - id: "occ-self-bind-pr-5727"
+    description: "Binds OMN-15539 to OCC companion PR #5727 (self-bind)."
+    source: "manual"
+    status: "verified"
+    checks:
+      - check_type: "command"
+        check_value: "gh pr view 5727 --repo OmniNode-ai/onex_change_control --json number,state,headRefName"
+  - id: "occ-self-bind-pr-5812"
+    description: "Binds OMN-15539 to OCC companion PR #5812 (self-bind)."
+    source: "generated"
+    checks:
+      - check_type: "command"
+        check_value: "gh pr view 5812 --repo OmniNode-ai/onex_change_control --json number,state"

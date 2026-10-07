@@ -1,0 +1,94 @@
+---
+schema_version: "1.0.0"
+ticket_id: "OMN-15334"
+title: "Stop OCC autobind from companioning OCC evidence PRs"
+summary: "OCC companion evidence for onex_change_control PR #5363."
+is_seam_ticket: false
+interface_change: false
+interfaces_touched: []
+evidence_requirements:
+  - kind: "ci"
+    description: "PR #5363 product diff scope present"
+    command: "gh pr view 5363 --repo OmniNode-ai/onex_change_control --json files"
+emergency_bypass:
+  enabled: false
+  justification: ""
+  follow_up_ticket_id: ""
+dod_evidence:
+  - id: "dod-OmniNode-ai-onex_change_control-pr-5363"
+    description: "PR #5363 on OmniNode-ai/onex_change_control - OCC autobind self-exclusion fix."
+    source: "manual"
+    checks:
+      - check_type: "command"
+        check_value: "gh pr view 5363 --repo OmniNode-ai/onex_change_control --json files --jq '.files[].path'
+          | grep -q '^src/onex_change_control/scripts/check_occ_autobind_trigger.py$'"
+      - check_type: "command"
+        check_value: "grep -q '^status: PASS$' $CONTRACT_REPO_DIR/drift/dod_receipts/OMN-15334/dod-OmniNode-ai-onex_change_control-pr-5363/command.yaml"
+  - id: "occ-self-bind-pr-5365"
+    description: "OCC companion PR #5365 - self-bind for OMN-15334."
+    source: "manual"
+    checks:
+      - check_type: "command"
+        check_value: "grep -q '^status: PASS$' $CONTRACT_REPO_DIR/drift/dod_receipts/OMN-15334/occ-self-bind-pr-5365/command.yaml"
+  # --- Appended 2026-07-28: execution-derived, falsifiable evidence (OMN-14505 predicate).
+  # The two entries above resolve their PASS by grepping receipt files that ship inside
+  # their own companion's diff (PR #5365), so they cannot fail. Every entry below probes a
+  # target OUTSIDE this companion's changed-file set -- the predicate module, the two
+  # workflow YAMLs, the regression suite, and live GitHub Actions state -- and each was
+  # produced by executing the command, not by hand-attestation. Append-only: the entries
+  # above are byte-for-byte untouched, so their per-entry hashes are preserved.
+  - id: "exec-suite-187-omn15334"
+    description: "Regression suite tests/unit/test_occ_autobind_self_exclusion_omn15334.py executes green
+      (187 tests) at the fix head. Target is the suite file from PR #5363, outside this companion's diff."
+    source: "manual"
+    checks:
+      - check_type: "command"
+        check_value: 'cd $CONTRACT_REPO_DIR && env -u PYTHONPATH uv run pytest tests/unit/test_occ_autobind_self_exclusion_omn15334.py
+          -q 2>&1 | grep -qE "^187 passed"'
+  - id: "exec-predicate-cascade-skip-omn15334"
+    description: "Re-executes the self-companion-guard predicate module against the recorded cascade link
+      onex_change_control#5313 (head ref auto/omninode-ai-onex_change_control-pr-5312-occ-autobind) and
+      asserts it SKIPs. Pre-fix this PR minted #5314; post-fix it is suppressed."
+    source: "manual"
+    checks:
+      - check_type: "command"
+        check_value: 'cd $CONTRACT_REPO_DIR && env -u PYTHONPATH OCC_TRIGGER_EVENT_NAME=pull_request OCC_TRIGGER_ACTOR=jonahgabriel
+          OCC_TRIGGER_PR_TITLE="evidence(OMN-15332): OCC companion for OmniNode-ai/onex_change_control#5312"
+          OCC_TRIGGER_HEAD_REF="auto/omninode-ai-onex_change_control-pr-5312-occ-autobind" OCC_TRIGGER_LABELS_JSON="[]"
+          python3 src/onex_change_control/scripts/check_occ_autobind_trigger.py | grep -qF "OCC autobind
+          guard: SKIP [skip_machine_companion_branch]"'
+  - id: "exec-predicate-product-publish-omn15334"
+    description: "FALSIFIABILITY CONTROL. Same predicate module, same invocation shape, a real product
+      PR (omninode_infra#735, the PR that seeded the OMN-15332 cascade) -- asserts it still PUBLISHes.
+      Proves the guard discriminates rather than suppressing everything; without this a always-skip regression
+      would pass the entry above."
+    source: "manual"
+    checks:
+      - check_type: "command"
+        check_value: 'cd $CONTRACT_REPO_DIR && env -u PYTHONPATH OCC_TRIGGER_EVENT_NAME=pull_request OCC_TRIGGER_ACTOR=jonahgabriel
+          OCC_TRIGGER_PR_TITLE="fix(OMN-15332): harden runner bootstrap" OCC_TRIGGER_HEAD_REF="jonah/omn-15332-runner-bootstrap"
+          OCC_TRIGGER_LABELS_JSON="[]" python3 src/onex_change_control/scripts/check_occ_autobind_trigger.py
+          | grep -qF "OCC autobind guard: PUBLISH"'
+  - id: "exec-workflow-gate-redgreen-omn15334"
+    description: "Content-bound RED/GREEN on the two caller workflows across git refs: at the pre-fix
+      commit c05b7aa9 (recorded in the fixture provenance as the state that produced the cascades) neither
+      workflow mentions should_publish; at the #5363 merge commit 8489da54 both gate their publish job
+      on the guard output. Probes tracked blobs at two refs, not this companion's files."
+    source: "manual"
+    checks:
+      - check_type: "command"
+        check_value: 'cd $CONTRACT_REPO_DIR && ! git show c05b7aa9a630464181c09b34a38bfba4eb6b798d:.github/workflows/call-occ-autobind.yml
+          | grep -q should_publish && ! git show c05b7aa9a630464181c09b34a38bfba4eb6b798d:.github/workflows/call-occ-companion-effect.yml
+          | grep -q should_publish && git show 8489da5443541856fc251f4c3cca9b084394a93b:.github/workflows/call-occ-autobind.yml
+          | grep -qF "needs.self-companion-guard.outputs.should_publish == ''true''" && git show 8489da5443541856fc251f4c3cca9b084394a93b:.github/workflows/call-occ-companion-effect.yml
+          | grep -qF "needs.self-companion-guard.outputs.should_publish == ''true''"'
+  - id: "live-guard-fired-gha-run-30400589672"
+    description: "LIVE PRODUCTION READBACK. GitHub Actions run 30400589672 (OCC Autobind Publisher, 2026-07-28T21:25Z,
+      after #5363 merged and the workflows were re-enabled) fired on a real OCC companion PR head ref
+      and recorded verdict skip_machine_companion_branch with should_publish=false. No companion-of-companion
+      was minted. Target is live GitHub state, outside the repo entirely."
+    source: "manual"
+    checks:
+      - check_type: "command"
+        check_value: 'gh run view 30400589672 --repo OmniNode-ai/onex_change_control --log | grep -qF
+          "OCC autobind guard: SKIP [skip_machine_companion_branch]"'

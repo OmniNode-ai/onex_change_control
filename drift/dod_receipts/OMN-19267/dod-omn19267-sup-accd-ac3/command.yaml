@@ -1,0 +1,238 @@
+---
+schema_version: 1.0.0
+ticket_id: OMN-19267
+evidence_item_id: dod-omn19267-sup-accd-ac3
+check_type: command
+check_value: |-
+  gh api repos/OmniNode-ai/omninode_infra/pulls/1645 --jq '.merge_commit_sha' &&
+  python3 - <<'PY'
+  import hashlib, json, os, subprocess, tempfile
+  from pathlib import Path
+  with tempfile.TemporaryDirectory(prefix='omn19267-ac3-') as directory:
+      root = Path(directory)
+      endpoints = {
+          'omnibase_core': 'repos/OmniNode-ai/omnibase_core/',
+          'omnibase_infra': 'repos/OmniNode-ai/omnibase_infra/',
+          'omnimarket': 'repos/OmniNode-ai/omnimarket/',
+          'omninode_infra': 'repos/OmniNode-ai/omninode_infra/',
+      }
+      for repo, endpoint in endpoints.items():
+          tree = root / repo
+          tree.mkdir()
+          sha = subprocess.check_output(['gh', 'api', endpoint + 'commits/dev', '--jq', '.sha'], text=True).strip()
+          archive = subprocess.check_output(['gh', 'api', endpoint + 'tarball/' + sha])
+          subprocess.run(['tar', 'xz', '--strip-components=1', '-C', str(tree)], input=archive, check=True)
+          print(repo + ' dev=' + sha, flush=True)
+      env = dict(os.environ)
+      env.pop('PYTHONPATH', None)
+      env['OMN_15651_CANDIDATE_WORKSPACE'] = str(root)
+      env['UV_PROJECT_ENVIRONMENT'] = str(root / 'venv')
+      tree = root / 'omninode_infra'
+      test = ['uv', 'run', '--frozen', 'pytest', 'tests/architecture/test_omn_15651_task_class_authority.py', '-q', '-p', 'no:cacheprovider']
+      subprocess.run(test, cwd=tree, env=env, check=True)
+      config = root / 'omnimarket/src/omnimarket/configs/inference_protocols.v1.yaml'
+      payload = config.read_bytes()
+      print('inference_protocols.v1.yaml sha256=' + hashlib.sha256(payload).hexdigest(), flush=True)
+      config.write_bytes(payload + b'\n')
+      red = subprocess.run(test, cwd=tree, env=env, capture_output=True, text=True)
+      print(red.stdout, end='', flush=True)
+      assert red.returncode == 1, 'a changed whole-file hash must fail candidate admission'
+      assert 'OMN-15651 audited exclusion source identity drift' in red.stdout and 'inference_protocols.v1.yaml' in red.stdout, red.stdout
+      print(json.dumps({'changed_whole_file_hash_red_exit': red.returncode, 'candidate_workspace_supplied': True}, sort_keys=True))
+  PY
+contract_entry_sha256: sha256:3960159033385e9478ba8aa530d2056ebc708b04fbbaea38d49003facf990c86
+status: PASS
+commit_sha: 8771e5e9a18cad670d0aef2b681adb58adb7a8d5
+runner: orchestrator-2a21@launching-host
+probe_command: |-
+  gh api repos/OmniNode-ai/omninode_infra/pulls/1645 --jq '.merge_commit_sha' &&
+  python3 - <<'PY'
+  import hashlib, json, os, subprocess, tempfile
+  from pathlib import Path
+  with tempfile.TemporaryDirectory(prefix='omn19267-ac3-') as directory:
+      root = Path(directory)
+      endpoints = {
+          'omnibase_core': 'repos/OmniNode-ai/omnibase_core/',
+          'omnibase_infra': 'repos/OmniNode-ai/omnibase_infra/',
+          'omnimarket': 'repos/OmniNode-ai/omnimarket/',
+          'omninode_infra': 'repos/OmniNode-ai/omninode_infra/',
+      }
+      for repo, endpoint in endpoints.items():
+          tree = root / repo
+          tree.mkdir()
+          sha = subprocess.check_output(['gh', 'api', endpoint + 'commits/dev', '--jq', '.sha'], text=True).strip()
+          archive = subprocess.check_output(['gh', 'api', endpoint + 'tarball/' + sha])
+          subprocess.run(['tar', 'xz', '--strip-components=1', '-C', str(tree)], input=archive, check=True)
+          print(repo + ' dev=' + sha, flush=True)
+      env = dict(os.environ)
+      env.pop('PYTHONPATH', None)
+      env['OMN_15651_CANDIDATE_WORKSPACE'] = str(root)
+      env['UV_PROJECT_ENVIRONMENT'] = str(root / 'venv')
+      tree = root / 'omninode_infra'
+      test = ['uv', 'run', '--frozen', 'pytest', 'tests/architecture/test_omn_15651_task_class_authority.py', '-q', '-p', 'no:cacheprovider']
+      subprocess.run(test, cwd=tree, env=env, check=True)
+      config = root / 'omnimarket/src/omnimarket/configs/inference_protocols.v1.yaml'
+      payload = config.read_bytes()
+      print('inference_protocols.v1.yaml sha256=' + hashlib.sha256(payload).hexdigest(), flush=True)
+      config.write_bytes(payload + b'\n')
+      red = subprocess.run(test, cwd=tree, env=env, capture_output=True, text=True)
+      print(red.stdout, end='', flush=True)
+      assert red.returncode == 1, 'a changed whole-file hash must fail candidate admission'
+      assert 'OMN-15651 audited exclusion source identity drift' in red.stdout and 'inference_protocols.v1.yaml' in red.stdout, red.stdout
+      print(json.dumps({'changed_whole_file_hash_red_exit': red.returncode, 'candidate_workspace_supplied': True}, sort_keys=True))
+  PY
+pr_number: 1645
+branch: dev
+probe_stdout: |-
+  8771e5e9a18cad670d0aef2b681adb58adb7a8d5
+  omnibase_core dev=799c32abc13cf154beaec1a046215ba3155cfb1e
+  omnibase_infra dev=b893a6e4a789b8951829204e4003091408a2c8eb
+  omnimarket dev=7cb86dbe846c986b4affc3fcda0ea1fbbaf26991
+  omninode_infra dev=39d3d0f07bf9761c2e9624a0810e9bf501f75c05
+  .............................................                            [100%]
+  45 passed in 28.43s
+  inference_protocols.v1.yaml sha256=cfe73e932cdfcfc81d978adf13b9b3ea80e4b3f110af5bb7d655dd44c064361f
+  .......................................FF....                            [100%]
+  =================================== FAILURES ===================================
+  ___________ test_candidate_registry_exposure_and_gateway_public_set ____________
+
+  manifest = {'schema_version': '2.0.0', 'ticket': 'OMN-15651', 'fixture_id': 'OMN-15651.registry-owned-task-class-authority', 'frozen_at': '2026-08-02T00:00:00Z', ...}
+
+      def test_candidate_registry_exposure_and_gateway_public_set(
+          manifest: Manifest,
+      ) -> None:
+          """Gate the candidate workspace on registry-owned exposure and public set."""
+
+          assert_registry_exposure_and_gateway(
+  >           _candidate_workspace_source(manifest),
+              ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+              manifest,
+          )
+
+  tests/architecture/test_omn_15651_task_class_authority.py:584:
+  _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _
+  tests/architecture/test_omn_15651_task_class_authority.py:96: in _candidate_workspace_source
+      assert_workspace_discovery_registration(root, manifest)
+  _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _
+
+  workspace_root = PosixPath('/private/var/folders/fs/2g88nd297b7787lch6_stdl40000gn/T/omn19267-ac3-mkg6_br1')
+  manifest = {'schema_version': '2.0.0', 'ticket': 'OMN-15651', 'fixture_id': 'OMN-15651.registry-owned-task-class-authority', 'frozen_at': '2026-08-02T00:00:00Z', ...}
+  require_audited_exclusions = True
+
+      def assert_workspace_discovery_registration(
+          workspace_root: Path,
+          manifest: Mapping[str, Any],
+          *,
+          require_audited_exclusions: bool = True,
+      ) -> Mapping[str, tuple[str, ...]]:
+          discovered = discover_workspace_candidates(workspace_root, manifest)
+          registered = (
+              (
+                  f"{spec['repo']}/{spec['source_path']}",
+                  spec["discovery_locator"],
+              )
+              for spec in manifest["sources"].values()
+          )
+          audited_exclusions = _audited_exclusion_entries(manifest)
+          if require_audited_exclusions:
+              root = workspace_root.resolve()
+              observed_hashes: dict[tuple[str, str], str] = {}
+              for exclusion in audited_exclusions.values():
+                  relative_path = exclusion["path"]
+                  locator = exclusion["locator"]
+                  path = (root / relative_path).resolve()
+                  assert path.is_relative_to(root), (
+                      f"audited exclusion escapes workspace: {relative_path}"
+                  )
+                  assert path.is_file(), f"audited exclusion source is absent: {path}"
+                  hash_key = (relative_path, locator)
+                  observed_hashes.setdefault(
+                      hash_key, locator_scoped_hash(path.read_bytes(), locator)
+                  )
+  >               assert observed_hashes[hash_key] == exclusion["source_sha256"], (
+                         ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+                      "OMN-15651 audited exclusion source identity drift: "
+                      f"{relative_path} locator={locator} "
+                      f"observed={observed_hashes[hash_key]} "
+                      f"pinned={exclusion['source_sha256']}"
+                  )
+  E               AssertionError: OMN-15651 audited exclusion source identity drift: omnimarket/src/omnimarket/configs/inference_protocols.v1.yaml locator=yaml:profiles.0.task_types observed=5d4574ac05e86536153fd0ae9a42a3f853fbd6c965333cb78f6e069cd691526f pinned=cfe73e932cdfcfc81d978adf13b9b3ea80e4b3f110af5bb7d655dd44c064361f
+
+  tests/architecture/task_class_authority_oracle.py:1011: AssertionError
+  _______________ test_candidate_full_universe_consumers_are_total _______________
+
+  manifest = {'schema_version': '2.0.0', 'ticket': 'OMN-15651', 'fixture_id': 'OMN-15651.registry-owned-task-class-authority', 'frozen_at': '2026-08-02T00:00:00Z', ...}
+
+      def test_candidate_full_universe_consumers_are_total(
+          manifest: Manifest,
+      ) -> None:
+          """Gate the candidate workspace on every discovered full-universe copy."""
+
+          assert_full_consumer_coverage(
+  >           _candidate_workspace_source(manifest),
+              ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+              manifest,
+          )
+
+  tests/architecture/test_omn_15651_task_class_authority.py:595:
+  _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _
+  tests/architecture/test_omn_15651_task_class_authority.py:96: in _candidate_workspace_source
+      assert_workspace_discovery_registration(root, manifest)
+  _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _
+
+  workspace_root = PosixPath('/private/var/folders/fs/2g88nd297b7787lch6_stdl40000gn/T/omn19267-ac3-mkg6_br1')
+  manifest = {'schema_version': '2.0.0', 'ticket': 'OMN-15651', 'fixture_id': 'OMN-15651.registry-owned-task-class-authority', 'frozen_at': '2026-08-02T00:00:00Z', ...}
+  require_audited_exclusions = True
+
+      def assert_workspace_discovery_registration(
+          workspace_root: Path,
+          manifest: Mapping[str, Any],
+          *,
+          require_audited_exclusions: bool = True,
+      ) -> Mapping[str, tuple[str, ...]]:
+          discovered = discover_workspace_candidates(workspace_root, manifest)
+          registered = (
+              (
+                  f"{spec['repo']}/{spec['source_path']}",
+                  spec["discovery_locator"],
+              )
+              for spec in manifest["sources"].values()
+          )
+          audited_exclusions = _audited_exclusion_entries(manifest)
+          if require_audited_exclusions:
+              root = workspace_root.resolve()
+              observed_hashes: dict[tuple[str, str], str] = {}
+              for exclusion in audited_exclusions.values():
+                  relative_path = exclusion["path"]
+                  locator = exclusion["locator"]
+                  path = (root / relative_path).resolve()
+                  assert path.is_relative_to(root), (
+                      f"audited exclusion escapes workspace: {relative_path}"
+                  )
+                  assert path.is_file(), f"audited exclusion source is absent: {path}"
+                  hash_key = (relative_path, locator)
+                  observed_hashes.setdefault(
+                      hash_key, locator_scoped_hash(path.read_bytes(), locator)
+                  )
+  >               assert observed_hashes[hash_key] == exclusion["source_sha256"], (
+                         ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+                      "OMN-15651 audited exclusion source identity drift: "
+                      f"{relative_path} locator={locator} "
+                      f"observed={observed_hashes[hash_key]} "
+                      f"pinned={exclusion['source_sha256']}"
+                  )
+  E               AssertionError: OMN-15651 audited exclusion source identity drift: omnimarket/src/omnimarket/configs/inference_protocols.v1.yaml locator=yaml:profiles.0.task_types observed=5d4574ac05e86536153fd0ae9a42a3f853fbd6c965333cb78f6e069cd691526f pinned=cfe73e932cdfcfc81d978adf13b9b3ea80e4b3f110af5bb7d655dd44c064361f
+
+  tests/architecture/task_class_authority_oracle.py:1011: AssertionError
+  =========================== short test summary info ============================
+  FAILED tests/architecture/test_omn_15651_task_class_authority.py::test_candidate_registry_exposure_and_gateway_public_set
+  FAILED tests/architecture/test_omn_15651_task_class_authority.py::test_candidate_full_universe_consumers_are_total
+  2 failed, 43 passed in 29.22s
+  {"candidate_workspace_supplied": true, "changed_whole_file_hash_red_exit": 1}
+exit_code: 0
+run_timestamp: '2026-10-04T15:46:12Z'
+duration_ms: 81593
+verifier: occ-probe-capture-v1
+artifact_sha256:
+  - sha256:c0068a2e01e183c4814b41163973f79486e7ca10cab4c67f22769823fd9f6503
+  - sha256:874c07f488f635e9d85e97d39cd72c16ac6bfecc3d268d6a60fbf0db5dd05580

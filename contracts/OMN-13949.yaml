@@ -1,0 +1,52 @@
+---
+schema_version: "1.0.0"
+ticket_id: "OMN-13949"
+title: "Concurrency cancel-in-progress + job timeouts to kill superseded/zombie runs (SAT1)"
+summary: >-
+  Fleet-load reduction (Track 1, OMN-13932 §5.2 / SAT1). Superseded and zombie CI runs were occupying
+  saturated self-hosted runners. omnibase_infra PR #2209 adds top-level concurrency groups with cancel-in-progress:true
+  to PR-triggered check/test/gate workflows (killing superseded PR runs) and normalizes five workflows
+  that previously kept superseded PR runs alive. The concurrency group keys on PR number falling back
+  to github.ref; merge_group entries carry a unique github.ref so distinct queue entries never cross-cancel
+  and required contexts still report. Deploy/release/prod-mutation/tag workflows (release, release-python-reusable,
+  build-and-push-*, auto-tag-on-merge, runtime-rebuild-trigger, prod-promotion-lineage) are deliberately
+  excluded — they stay serialized (cancel:false) or untouched so an in-flight prod build/tag/deploy is
+  never cancelled. A safety-net timeout-minutes is added to every job that lacked one so a hung job cannot
+  hold a runner indefinitely. This is CI-configuration evidence only; no runtime deploy, restart, docker
+  exec, rpk topic produce, AWS mutation, or live cluster mutation was performed.
+is_seam_ticket: false
+interface_change: false
+interfaces_touched: []
+emergency_bypass:
+  enabled: false
+  justification: ""
+  follow_up_ticket_id: ""
+dod_evidence:
+  - id: "dod-omnibase-infra-pr-2209"
+    description: >-
+      Consuming-PR binding: omnibase_infra PR #2209 adds cancel-in-progress concurrency groups to 24 PR-triggered
+      workflows, normalizes 5 more from cancel:false / merge_group-only to true, and adds timeout-minutes
+      to 37 jobs across 21 workflows. tests/ci/test_ci_workflow_resilience.py + test_runner_disk_preflight.py
+      green (51 passed); actionlint + pre-commit clean on changed files.
+    source: "manual"
+    checks:
+      - check_type: "command"
+        check_value: "grep -q '^status: PASS$' drift/dod_receipts/OMN-13949/dod-omnibase-infra-pr-2209/command.yaml"
+  - id: "dod-no-runtime-deploy"
+    description: >-
+      Deploy-gate evidence: the change is CI-workflow YAML only (concurrency + timeout-minutes). No live
+      deploy, restart, docker exec, rpk topic produce, AWS mutation, or .201/cluster mutation performed.
+      deploy-gate reports deploy-neutral on the code PR.
+    source: "manual"
+    checks:
+      - check_type: "command"
+        check_value: "grep -q 'No runtime deploy, restart, docker exec, rpk topic produce, AWS mutation'
+          drift/dod_receipts/OMN-13949/dod-no-runtime-deploy/command.yaml"
+  - id: "dod-occ-self"
+    description: >-
+      OCC self-binding: this onex_change_control PR carries the OMN-13949 contract and receipts that omnibase_infra
+      PR #2209 cites via Evidence-Source. The receipt's pr_number binds to this OCC PR.
+    source: "generated"
+    checks:
+      - check_type: "command"
+        check_value: "grep -q '^status: PASS$' drift/dod_receipts/OMN-13949/dod-occ-self/command.yaml"

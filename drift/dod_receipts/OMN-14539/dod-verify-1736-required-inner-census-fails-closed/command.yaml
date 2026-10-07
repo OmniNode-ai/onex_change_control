@@ -1,0 +1,33 @@
+---
+schema_version: 1.0.0
+ticket_id: OMN-14539
+evidence_item_id: dod-verify-1736-required-inner-census-fails-closed
+check_type: command
+check_value: >-
+  f="$(mktemp)" && gh api "repos/OmniNode-ai/omnimarket/contents/src/omnimarket/nodes/node_coverage_sweep/handlers/handler_coverage_sweep.py?ref=ffdb64cee13c22e1ce56042cca4fe39c0a411493"
+  --jq .content | base64 -d > "$f" && grep -Fq -- 'coverage_missing: list[str] = Field(default_factory=list)'
+  "$f" && grep -Fq -- 'coverage_missing.append(f"{target_dir} (directory not found)")' "$f" && grep -Fq
+  -- 'coverage_missing.append(f"{repo_name} (coverage.json not found)")' "$f" && grep -Fq -- 'if coverage_missing:'
+  "$f" && grep -Fq -- 'elif total_modules == 0:' "$f" && grep -Fq -- 'status = "error"' "$f"
+contract_sha256: sha256:4b5004238760eb9bec3e5a4e12af642aa3cac9352159721baec827ca1d2e3c14
+contract_entry_sha256: sha256:ea615062fad2f0a6e72973a45b398a6a3f8b7cc67a77c4d04d15ecfc5b10795d
+status: PASS
+run_timestamp: '2026-07-13T05:16:23Z'
+commit_sha: ffdb64cee13c22e1ce56042cca4fe39c0a411493
+runner: claude-sonnet-5
+verifier: occ-interim-manual-verify
+pr_number: 1736
+probe_command: 'gh api .../handler_coverage_sweep.py?ref=ffdb64cee13c22e1ce56042cca4fe39c0a411493 -- read
+  PR head source directly'
+probe_stdout: |
+  Read handler_coverage_sweep.py from omnimarket PR#1736 head ffdb64cee13c22e1ce56042cca4fe39c0a411493.
+  Confirmed: CoverageSweepResult now declares `coverage_missing: list[str] = Field(default_factory=list)`;
+  a target dir that is not a directory or has no coverage.json appends a message to coverage_missing
+  instead of silently `continue`-ing to a clean verdict; an unparseable coverage.json is also recorded;
+  and the roll-up now branches `if coverage_missing: status = "error"` / `elif total_modules == 0:
+  status = "error"` before falling through to gaps_found/clean — closing the fail-open path where a
+  never-measured repo reported the same "clean" verdict as a fully-covered one.
+exit_code: 0
+actual_output: |
+  CHECK1_PASS -- all six substring assertions matched against the live PR head file.
+branch: jonah/omn-14539-occ-companion-coverage-sweep

@@ -1,0 +1,194 @@
+---
+schema_version: 1.0.0
+ticket_id: OMN-15235
+title: 'omnimemory: remove the non-dispatchable index -> HandlerQdrant route from node_memory_retrieval_effect
+  and port the boot-resolvability gate'
+summary: 'OCC evidence companion for OMN-15235. node_memory_retrieval_effect declared an `index` operation
+  routed to HandlerQdrant, a target that fails both boot-gate predicates (no handle/handle_async entrypoint;
+  a required default-less `config` ctor param outside the injectable set). The ticket offered three dispositions;
+  the code rules out the OMN-15227 repoint precedent, because HandlerMemoryRetrieval.execute() has no
+  `index` branch and closes with assert_never(request.operation), and because ModelMemoryRetrievalRequest.operation
+  -- the node''s declared input_model -- is Literal[''search'', ''search_text'', ''search_graph''], so
+  an `index` request is not constructible at all. Disposition taken is option 3: remove the route and
+  the `index` literal from validation_rules.constraint_definitions.operation. HandlerQdrant itself is
+  retained (it was never wired in production and is exercised directly by its own unit and golden-chain
+  tests); only the false ROUTE is removed. The omnimarket boot-resolvability gate (OMN-13551 / OMN-13603)
+  is ported into omnimemory, whose contracts the omnimarket scan root never covered -- the reason this
+  defect was latent rather than red. _UNWIRED_DEPENDENCY_ALLOWLIST stays empty; padding it was the explicitly
+  rejected fix.'
+is_seam_ticket: true
+interface_change: true
+interfaces_touched:
+  - public_api
+evidence_requirements:
+  - kind: ci
+    description: Product PR diff scope present on OmniNode-ai/omnimemory
+    command: gh pr view ${PR_NUMBER} --repo ${REPO} --json files
+emergency_bypass:
+  enabled: false
+  justification: ''
+  follow_up_ticket_id: ''
+dod_evidence:
+  - id: dod-omn-15235-red-to-green
+    description: 'RED-to-GREEN against the real gate predicate on the real tree. The ported boot-resolvability
+      gate fails on unmodified omnimemory dev 887dc679 with exactly one quarantine -- node_memory_retrieval_effect::index
+      -> HandlerQdrant, required-unresolvable=[''config''] -- and passes after the route is removed. The
+      RED is produced by the OMN-13551/OMN-13603 predicate itself (_required_non_injectable_params over
+      the contract-declared target), not by a surrogate assertion. The gate lives at tests/unit/nodes/
+      deliberately: omnimemory''s governed selector maps a src/omnimemory/nodes/** change to tests/unit/nodes/
+      only and contributes nothing for a changed test outside tests/unit/, so at tests/ root CI selected
+      the gate away and reported success without collecting it (run 30310898812). Selector defect filed
+      as OMN-15271.'
+    source: generated
+    checks:
+      - check_type: command
+        check_value: gh api 'repos/OmniNode-ai/omnimemory/contents/tests/unit/nodes/test_handler_routing_boot_resolvable.py?ref=43e501f6b1a01b3dcc12930d35797df1c10203bd'
+          --jq .content | base64 -d | grep -q '_required_non_injectable_params'
+  - id: dod-omn-15235-route-and-literal-removed
+    description: 'Seam readback on the merged-branch ref: node_memory_retrieval_effect/contract.yaml declares
+      no `index` routing entry AND no ''index'' token in validation_rules.constraint_definitions.operation,
+      so the contract''s operation set now matches ModelMemoryRetrievalRequest.operation field-by-field.
+      Both places, not one -- removing only the route would leave the literal advertising an operation
+      the DTO rejects.'
+    source: generated
+    checks:
+      - check_type: command
+        check_value: gh api 'repos/OmniNode-ai/omnimemory/contents/src/omnimemory/nodes/node_memory_retrieval_effect/contract.yaml?ref=43e501f6b1a01b3dcc12930d35797df1c10203bd'
+          --jq .content | base64 -d | python3 -c "import sys,yaml; d=yaml.safe_load(sys.stdin); ops={e.get('operation')
+          for e in d['handler_routing']['handlers']}; lit=str(d['validation_rules']['constraint_definitions']['operation']);
+          sys.exit(0 if 'index' not in ops and 'index' not in lit else 1)"
+  - id: dod-omn-15235-handler-qdrant-retained
+    description: 'No capability regression: HandlerQdrant and its `index` implementation are retained
+      in the tree and still exercised directly by tests/unit/nodes/test_handler_qdrant.py and tests/integration/test_golden_chain_qdrant_ingestion.py.
+      The route was never a live path -- HandlerMemoryRetrieval.initialize() still raises NotImplementedError
+      on the non-stub branch, so HandlerQdrant had no production wiring with or without the routing entry.'
+    source: generated
+    checks:
+      - check_type: command
+        check_value: gh api 'repos/OmniNode-ai/omnimemory/contents/src/omnimemory/nodes/node_memory_retrieval_effect/handlers/handler_qdrant.py?ref=43e501f6b1a01b3dcc12930d35797df1c10203bd'
+          --jq .content | base64 -d | grep -q '_OP_INDEX'
+  - id: dod-omn-15235-full-gates-200
+    description: 'Full local gates on .200 per rule 11a (patch-transfer with sha256 readback on every
+      changed file, so the gates ran on the edited copy and not an unmodified one): full pytest suite
+      2541 passed / 198 skipped, ruff format --check and ruff check clean over tests/ and src/, mypy --strict
+      clean on 310 source files, pre-commit clean on the changed files.'
+    source: generated
+    checks:
+      - check_type: command
+        check_value: gh api 'repos/OmniNode-ai/omnimemory/commits/43e501f6b1a01b3dcc12930d35797df1c10203bd'
+          --jq .sha
+  - id: dod-OmniNode-ai-omnimemory-pr-417
+    description: 'Product PR #417 on OmniNode-ai/omnimemory — OMN-15235 index-route disposition (remove
+      the route and the operation literal; port the boot-resolvability gate).'
+    source: generated
+    checks:
+      - check_type: command
+        check_value: gh pr view ${PR_NUMBER} --repo ${REPO} --json number,state
+  - id: occ-self-bind-pr-5187
+    description: 'OCC companion PR #5187 — self-bind for OMN-15235 (OMN-14650).'
+    source: generated
+    checks:
+      - check_type: command
+        check_value: gh pr view ${PR_NUMBER} --repo ${REPO} --json number,state
+  - id: dod-omn-15235-red-to-green-supersede-0001
+    description: 'Append-only rebind of dod-omn-15235-red-to-green onto a DURABLE ref. The original check
+      pinned 43e501f6b1a01b3dcc12930d35797df1c10203bd — the head of the now-DELETED feature branch jonah/omn-15235-index-route-disposition.
+      omnimemory#417 squash-merged, so that SHA is not an ancestor of dev (gh api compare/dev...43e501f6
+      reports "diverged"); it survives only as refs/pull/417/head and binds no shipped content. Rebound
+      to the squash-merge commit 25c829ed42135a286024deec8dbeb549084cb447, which IS an ancestor of dev.
+      Independently re-executed by a verifier lane (not the implementer) on .200 at dev head acf2f0d015da7ec9dfc40c456fc11303a3db14b0:
+      RED with contract.yaml restored from 25c829ed^ -> "node_memory_retrieval_effect::index :: ...handler_qdrant.HandlerQdrant
+      :: required-unresolvable=[''config'']", exactly one quarantine, 2 failed / 9 passed; GREEN after
+      restore, 11 passed.'
+    source: manual
+    status: verified
+    evidence_artifact: supersedes_dod_evidence:dod-omn-15235-red-to-green
+    checks:
+      - check_type: command
+        check_value: gh api 'repos/OmniNode-ai/omnimemory/contents/tests/unit/nodes/test_handler_routing_boot_resolvable.py?ref=25c829ed42135a286024deec8dbeb549084cb447'
+          --jq .content | base64 -d | grep -q '_required_non_injectable_params'
+  - id: dod-omn-15235-route-and-literal-removed-sup-0001
+    description: 'Append-only rebind of dod-omn-15235-route-and-literal-removed onto the squash-merge
+      commit 25c829ed42135a286024deec8dbeb549084cb447 (ancestor of dev) instead of the deleted branch
+      head 43e501f6. Same predicate: the shipped node_memory_retrieval_effect/contract.yaml declares no
+      `index` routing entry AND carries no ''index'' token in validation_rules.constraint_definitions.operation.'
+    source: manual
+    status: verified
+    evidence_artifact: supersedes_dod_evidence:dod-omn-15235-route-and-literal-removed
+    checks:
+      - check_type: command
+        check_value: gh api 'repos/OmniNode-ai/omnimemory/contents/src/omnimemory/nodes/node_memory_retrieval_effect/contract.yaml?ref=25c829ed42135a286024deec8dbeb549084cb447'
+          --jq .content | base64 -d | python3 -c "import sys,yaml; d=yaml.safe_load(sys.stdin); ops={e.get('operation')
+          for e in d['handler_routing']['handlers']}; lit=str(d['validation_rules']['constraint_definitions']['operation']);
+          sys.exit(0 if 'index' not in ops and 'index' not in lit else 1)"
+  - id: dod-omn-15235-qdrant-retained-sup-0001
+    description: 'Append-only rebind of dod-omn-15235-handler-qdrant-retained onto the squash-merge commit
+      25c829ed42135a286024deec8dbeb549084cb447 instead of the deleted branch head 43e501f6. HandlerQdrant
+      and its `index` implementation are retained in shipped dev content — no capability regression from
+      removing the false route.'
+    source: manual
+    status: verified
+    evidence_artifact: supersedes_dod_evidence:dod-omn-15235-handler-qdrant-retained
+    checks:
+      - check_type: command
+        check_value: gh api 'repos/OmniNode-ai/omnimemory/contents/src/omnimemory/nodes/node_memory_retrieval_effect/handlers/handler_qdrant.py?ref=25c829ed42135a286024deec8dbeb549084cb447'
+          --jq .content | base64 -d | grep -q '_OP_INDEX'
+  - id: dod-omn-15235-full-gates-200-supersede-0001
+    description: 'Append-only rebind of dod-omn-15235-full-gates-200, which was doubly weak: it pinned
+      the deleted branch head 43e501f6 AND its check merely echoed that commit''s own .sha — a tautology
+      that asserted nothing about any gate. Replaced with a falsifiable readback of the CI job that actually
+      collected the ported gate: omnimemory Actions job 90128715016 ("Tests (1/1)", run 30311691538) on
+      PR #417, whose log shows SELECTED_PATHS=["tests/unit/nodes/"] and "302 passed in 27.60s" — i.e.
+      the selector reached tests/unit/nodes/test_handler_routing_boot_resolvable.py rather than selecting
+      it away (the vacuous-green failure mode recorded in the original entry). The check fails if that
+      job''s conclusion is anything but success.'
+    source: manual
+    status: verified
+    evidence_artifact: supersedes_dod_evidence:dod-omn-15235-full-gates-200
+    checks:
+      - check_type: command
+        check_value: test "$(gh api repos/OmniNode-ai/omnimemory/actions/jobs/90128715016 --jq .conclusion)"
+          = success
+  - id: dod-omn-15235-full-gates-200-supersede-0002
+    description: 'Append-only rebind of dod-omn-15235-full-gates-200-supersede-0001, which an independent
+      verifier (2026-07-28, verifier not implementer and not the original lane) showed still misses the
+      durable-ref bar. supersede-0001 binds omnimemory Actions job 90128715016, whose head_sha is 43e501f6b1a01b3dcc12930d35797df1c10203bd
+      - the DELETED, diverged branch head that rebind existed to escape. A CI job over an unmerged head
+      is not product-repo content at a durable ref, and the SELECTED_PATHS / "302 passed" detail its description
+      leans on lives in an Actions LOG (default 90-day retention), so that proof expires while the entry
+      keeps reading PASS. supersede-0001 also RETIRED the original .200 full-gate claim without replacing
+      it - a silent scope reduction, not the pure ref repair it was presented as. THIS entry binds product-repo
+      content at the durable squash-merge commit 25c829ed42135a286024deec8dbeb549084cb447 (ancestor of
+      omnimemory dev) and asserts the property the gate run existed to underwrite: the SHIPPED gate is
+      the UNWEAKENED OMN-13551/OMN-13603 predicate - _KNOWN_INJECTABLE is exactly {event_bus, container,
+      ownership_query} and _UNWIRED_DEPENDENCY_ALLOWLIST is empty - so the recorded RED (exactly one quarantine,
+      required-unresolvable=[config]) and the GREEN after it cannot have been manufactured by padding
+      the allowlist or widening the injectable set, the two cheats that would make the whole receipt vacuous.
+      Falsifiability PROVEN, not asserted: the same predicate over the same file with one allowlist entry
+      injected exits 1, and with config added to _KNOWN_INJECTABLE exits 1 (transcripts in the receipt).
+      HONEST RESIDUAL: the original claim also covered a LOCAL .200 run (full suite 2541 passed / 198
+      skipped, ruff, mypy --strict on 310 files, pre-commit). A local run leaves no artifact a third party
+      can resolve, so no entry in this contract claims it any longer and none can - local-gate attestation
+      has no durable binding surface today.'
+    source: manual
+    status: verified
+    evidence_artifact: supersedes_dod_evidence:dod-omn-15235-full-gates-200-supersede-0001
+    checks:
+      - check_type: command
+        check_value: |-
+          gh api 'repos/OmniNode-ai/omnimemory/contents/tests/unit/nodes/test_handler_routing_boot_resolvable.py?ref=25c829ed42135a286024deec8dbeb549084cb447' --jq .content | base64 -d | python3 -c "import sys,re; s=sys.stdin.read(); m=re.search(r'_KNOWN_INJECTABLE = frozenset\(\{([^}]*)\}\)', s); a=re.search(r'_UNWIRED_DEPENDENCY_ALLOWLIST: dict\[str, str\] = \{([^}]*)\}', s); sys.exit(0 if m and a and sorted(re.findall(r'[a-z_]+', m.group(1))) == ['container', 'event_bus', 'ownership_query'] and a.group(1).strip() == '' else 1)"
+  - id: occ-self-bind-pr-5279
+    description: 'Mechanical occ-preflight self-bind for OCC PR #5279 (the durable-ref rebind round),
+      NOT a substantive evidence claim. occ-preflight requires at least one PASS receipt per ticket bound
+      to the OCC PR or one of its commit SHAs; without it the check returns reason=pr_ticket_mismatch
+      because every substantive receipt on this contract points at omnimemory content, not at this OCC
+      PR. Under the durable-ref bar this entry is INERT tier by construction - it proves only that the
+      PR exists - and it is labelled as such so no evaluator mistakes it for proof of anything about the
+      omnimemory fix. The substantive claims live in dod-omn-15235-red-to-green-supersede-0001, -route-and-literal-removed-sup-0001,
+      -qdrant-retained-sup-0001 and -full-gates-200-supersede-0002, all bound to product content at the
+      durable squash-merge commit 25c829ed42135a286024deec8dbeb549084cb447.'
+    source: manual
+    status: verified
+    checks:
+      - check_type: command
+        check_value: gh pr view ${PR_NUMBER} --repo ${REPO} --json number,state

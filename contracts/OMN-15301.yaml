@@ -1,0 +1,144 @@
+---
+schema_version: "1.0.0"
+ticket_id: "OMN-15301"
+title: "Autobind OCC evidence for OMN-15301"
+summary: >-
+  OCC Evidence-Source autobind companion (OMN-13317 F1) for PR #2512, plus an append-only digest-pin evidence
+  extension for omninode_infra#727. PR #727 pins the onex-dev runtime kustomization to candidate-416b7b9,
+  the first image carrying the projection-writer fix.
+is_seam_ticket: false
+interface_change: false
+interfaces_touched: []
+evidence_requirements:
+  - kind: "ci"
+    description: "PR #2512 product diff scope present"
+    command: "gh pr view ${PR_NUMBER} --repo ${REPO} --json files"
+emergency_bypass:
+  enabled: false
+  justification: ""
+  follow_up_ticket_id: ""
+dod_evidence:
+  - id: "dod-OmniNode-ai-omnibase_infra-pr-2512"
+    description: "PR #2512 on OmniNode-ai/omnibase_infra — Evidence-Source autobind."
+    source: "generated"
+    checks:
+      - check_type: "command"
+        check_value: "gh pr view ${PR_NUMBER} --repo ${REPO} --json number,state"
+  - id: "dod-OmniNode-ai-omnibase_infra-pr-2512-ci"
+    description: "PR #2512 on OmniNode-ai/omnibase_infra — product diff scope check (OMN-14425)."
+    source: "generated"
+    checks:
+      - check_type: "command"
+        check_value: "gh pr view ${PR_NUMBER} --repo ${REPO} --json files"
+  - id: "occ-self-bind-pr-5261"
+    description: "OCC companion PR #5261 — self-bind for OMN-15301 (OMN-14650)."
+    source: "generated"
+    checks:
+      - check_type: "command"
+        check_value: "gh pr view ${PR_NUMBER} --repo ${REPO} --json number,state"
+  - id: "dod-omn15301-pr-727-head"
+    description: "Binds OMN-15301 to the exact omninode_infra#727 head that CI evaluated."
+    source: "manual"
+    status: "verified"
+    checks:
+      - check_type: "command"
+        check_value: >-
+          test "$(gh pr view 727 --repo OmniNode-ai/omninode_infra --json headRefOid --jq .headRefOid)"
+          = "b9f759148a6327a51fd92586678640eda7030b05"
+  - id: "dod-omn15301-pr-727-file-scope"
+    description: "Verifies the digest pin PR changes only the onex-dev runtime kustomization."
+    source: "manual"
+    status: "verified"
+    checks:
+      - check_type: "command"
+        check_value: >-
+          test "$(gh pr view 727 --repo OmniNode-ai/omninode_infra --json files --jq '[.files[].path]
+          | sort | join(",")')" = "k8s/onex-dev/runtime/kustomization.yaml"
+  - id: "dod-omn15301-runtime-candidate-pin"
+    description: >-
+      Confirms the candidate image tag/digest lineage is present in the kustomization at the bound PR
+      head.
+    source: "manual"
+    status: "verified"
+    checks:
+      - check_type: "command"
+        check_value: >-
+          gh api repos/OmniNode-ai/omninode_infra/contents/k8s/onex-dev/runtime/kustomization.yaml -H
+          'Accept: application/vnd.github.raw' --method GET -f ref=b9f759148a6327a51fd92586678640eda7030b05
+          | grep -q 'candidate-416b7b9'
+  - id: "occ-self-bind-pr-5275-omn15301"
+    description: "OCC companion PR #5275 — self-bind for OMN-15301 digest-pin extension."
+    source: "manual"
+    status: "verified"
+    checks:
+      - check_type: "command"
+        check_value: "gh pr view 5275 --repo OmniNode-ai/onex_change_control --json number,state,headRefOid"
+  - id: "dod-omn15301-pr-727-head-supersede-15328"
+    evidence_artifact: "supersedes_dod_evidence:dod-omn15301-pr-727-head"
+    description: >-
+      Append-only retirement of the omninode_infra#727 head-pin check. The superseded item probes OmniNode-ai/omninode_infra,
+      which is PRIVATE -- OCC CI's repo-scoped github.token (ci.yml `GH_TOKEN: ${{ github.token }}`, the
+      reusable contract-compliance job) gets a 404 on any cross-repo read into it, so the check structurally
+      BLOCKs out of context regardless of the pinned SHA's correctness (rolling-plan section 1a item 13).
+      It also pins the frozen PR head b9f7591, so a revert on dev would leave it GREEN forever (revert-blind).
+      This replacement restates the same claim -- "the head CI evaluated for the digest pin is the one
+      that produced the shipped image" -- as a PUBLIC-repo probe: it binds the omnibase_infra Actions
+      run (30347509136) that produced the pinned digest to its conclusion, headSha, trigger, and branch,
+      verbatim from the already-merged OMN-15328 entry dod-15328-build-run-30347509136-provenance (OCC#5289).
+      Re-executable by any token with public read. Verified by execution 2026-07-28: exit 0 as written;
+      exit 1 with headSha swapped for a non-matching value.
+    source: "manual"
+    status: "verified"
+    checks:
+      - check_type: "command"
+        check_value: |-
+          gh run view 30347509136 --repo OmniNode-ai/omnibase_infra --json conclusion,headSha,event,headBranch | jq -e '.conclusion == "success" and .headSha == "416b7b9945b6e1f7135a7befe7ea7f4f3668704d" and .event == "workflow_dispatch" and .headBranch == "dev"' >/dev/null
+  - id: "dod-omn15301-pr-727-file-scope-supersede-15328"
+    evidence_artifact: "supersedes_dod_evidence:dod-omn15301-pr-727-file-scope"
+    description: >-
+      Append-only retirement of the omninode_infra#727 file-scope check. The superseded item's `gh pr
+      view 727 --repo OmniNode-ai/omninode_infra --json files` probe hits the same PRIVATE-repo wall (item
+      13) as the head-pin check, and it is a bare existence/listing probe (L0) rather than a content assertion.
+      Its real purpose was to establish that the pin PR carries exactly one artifact -- the digest --
+      with nothing else riding along. This replacement proves the digest itself independent of trusting
+      the private PR's diff: it downloads the PUBLIC build-manifest.json artifact from the run that produced
+      the image and asserts image_digest, commit_sha, image_tag, workflow_run_id, and prod_pinnable all
+      together, verbatim from the already-merged OMN-15328 entry dod-15328-manifest-binds-digest-commit-run
+      (OCC#5289). If the digest the kustomization pins does not match this manifest, no claim about #727's
+      file scope would matter anyway. Verified by execution 2026-07-28: exit 0 as written; exit 1 with
+      image_digest swapped for the predecessor pin's digest.
+    source: "manual"
+    status: "verified"
+    checks:
+      - check_type: "command"
+        check_value: |-
+          d=$(mktemp -d) && gh run download 30347509136 --repo OmniNode-ai/omnibase_infra -n build-manifest-candidate-candidate-416b7b9-20260728094011 -D "$d" && jq -e '.image_digest == "sha256:1c4e306268290df9c378a8ec5973b9c0eaeb8cf094db2923b52ff4c68272fb03" and .commit_sha == "416b7b9945b6e1f7135a7befe7ea7f4f3668704d" and .image_tag == "candidate-416b7b9-20260728094011" and .workflow_run_id == "30347509136" and .prod_pinnable == false' "$d/build-manifest.json" >/dev/null; rc=$?; rm -rf "$d"; exit $rc
+  - id: "dod-omn15301-runtime-candidate-pin-supersede-15328"
+    evidence_artifact: "supersedes_dod_evidence:dod-omn15301-runtime-candidate-pin"
+    description: >-
+      Append-only retirement of the omninode_infra#727 candidate-pin content check. The superseded item
+      reads `gh api repos/OmniNode-ai/omninode_infra/contents/.../kustomization.yaml?ref=b9f7591...` --
+      PRIVATE (item 13) AND pinned to the frozen feature-branch head, so a revert of the fix on dev leaves
+      it GREEN forever (revert-blind). This replacement closes both defects at once with a two-leg PUBLIC
+      probe against omnibase_infra, verbatim from the already-merged OMN-15328 entries (OCC#5289): leg
+      1 (dod-15328-fix-621e5689-ancestor-of-416b7b99) proves the projection-writer fix commit 621e5689
+      is an ancestor of the built commit 416b7b99 (the actual lineage claim the candidate tag encodes);
+      leg 2 (dod-15328-fix-present-at-dev-head) reads the MUTABLE omnibase_infra `dev` ref and asserts
+      the fixed transaction-scoped tenant seam is still present there, so a revert of the fix on dev turns
+      this entry RED -- unlike the superseded entry, which cannot ever go red once merged. Verified by
+      execution 2026-07-28: both legs exit 0 as written (leg 1 against the current dev HEAD a0cec71f);
+      leg 1 exits 1 with the compare endpoints reversed; leg 2 exits 1 at the pre-fix parent 78b11b77c906ab7edb85db794c27e9b8486d9c60.
+    source: "manual"
+    status: "verified"
+    checks:
+      - check_type: "command"
+        check_value: |-
+          gh api repos/OmniNode-ai/omnibase_infra/compare/621e56899a0d2e40a7159a7a4667c3edf6807f91...416b7b9945b6e1f7135a7befe7ea7f4f3668704d | jq -e '.status == "ahead" and .behind_by == 0' >/dev/null && gh api 'repos/OmniNode-ai/omnibase_infra/contents/src/omnibase_infra/runtime/auto_wiring/handler_wiring.py?ref=dev' -H 'Accept: application/vnd.github.raw' | grep -qF 'SELECT set_config(%s, %s, true)'
+  - id: "occ-self-bind-pr-5298-omn15301-retire"
+    description: "OCC companion PR #5298 — self-bind for the OMN-15301 #727 defective-evidence retirement
+      (OMN-14650)."
+    source: "manual"
+    status: "verified"
+    checks:
+      - check_type: "command"
+        check_value: "gh pr view 5298 --repo OmniNode-ai/onex_change_control --json number,state,headRefOid"

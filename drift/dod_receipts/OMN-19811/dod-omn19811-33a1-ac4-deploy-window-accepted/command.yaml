@@ -1,0 +1,113 @@
+---
+schema_version: 1.0.0
+ticket_id: OMN-19811
+evidence_item_id: dod-omn19811-33a1-ac4-deploy-window-accepted
+check_type: command
+check_value: |-
+  bash -eu <<'CHECK'
+  set -o pipefail
+  root="$(mktemp -d)"
+  trap 'rm -rf "$root"' EXIT
+  gh api repos/OmniNode-ai/omnibase_infra/actions/runs/37193369383 > "$root/run.json"
+  gh api repos/OmniNode-ai/omnibase_infra/actions/jobs/111410052502 > "$root/job.json"
+  gh api repos/OmniNode-ai/omnibase_infra/actions/jobs/111410052502/logs --allow-escape-sequences > "$root/job.log"
+  python3 - "$root" <<'PYPROBE'
+  import json, re, sys
+  from pathlib import Path
+  root = Path(sys.argv[1])
+  run = json.loads((root / "run.json").read_text())
+  job = json.loads((root / "job.json").read_text())
+  assert run["id"] == 37193369383
+  assert run["path"] == ".github/workflows/chain-canary.yml"
+  assert run["head_branch"] == "dev"
+  assert run["head_sha"] == "2ad2097757d61c1a9a4b6b70cb4d40494a3b01eb"
+  assert run["status"] == "completed" and run["conclusion"] == "success"
+  assert job["run_id"] == run["id"] and job["id"] == 111410052502
+  assert job["name"] == "Chain Canary (dev lane)" and job["conclusion"] == "success"
+  log = re.sub(r"^[0-9T:.Z-]+ ", "", (root / "job.log").read_text(), flags=re.M)
+  assert "lane dev-201 deploy agent: http://192.168.86.201:8098" in log
+  start = log.index("deploy window (OMN-19811):\n")
+  block = "\n".join(log[start:].splitlines()[:5])
+  def valid(value):
+      return all((
+          value.startswith("deploy window (OMN-19811):\n"),
+          "  - status: `not_needed`" in value,
+          "  - deploy agent: http://192.168.86.201:8098" in value,
+          "  - deploy job(s) in the first attempt's window: none" in value,
+          re.search(r"  - pre-fire deploy: [0-9a-f-]{36}, queued 1 \(waited [1-9][0-9]*s, converged=True\)", value) is not None,
+      ))
+  assert valid(block)
+  assert not valid(block.replace("http://192.168.86.201:8098", "unreadable"))
+  assert not valid(block.replace("converged=True", "converged=False"))
+  assert not valid(block.replace("deploy window (OMN-19811):", "window absent:"))
+  assert "chain canary PROBE-GREEN" in log
+  print(json.dumps({key: run[key] for key in ("id", "path", "head_branch", "head_sha", "status", "conclusion")}, sort_keys=True))
+  print("job=" + str(job["id"]) + " runner=" + job["runner_name"])
+  print(block)
+  print("negative controls: missing agent, non-convergence and missing deploy-window block rejected")
+  PYPROBE
+  CHECK
+contract_entry_sha256: sha256:daea7b48a7b324de3a86c372c2d4925777bfed59b5b1592a0d925bb758bd1acd
+status: PASS
+commit_sha: 2ad2097757d61c1a9a4b6b70cb4d40494a3b01eb
+runner: omn19811-33a1-2a21@h202
+probe_command: |-
+  bash -eu <<'CHECK'
+  set -o pipefail
+  root="$(mktemp -d)"
+  trap 'rm -rf "$root"' EXIT
+  gh api repos/OmniNode-ai/omnibase_infra/actions/runs/37193369383 > "$root/run.json"
+  gh api repos/OmniNode-ai/omnibase_infra/actions/jobs/111410052502 > "$root/job.json"
+  gh api repos/OmniNode-ai/omnibase_infra/actions/jobs/111410052502/logs --allow-escape-sequences > "$root/job.log"
+  python3 - "$root" <<'PYPROBE'
+  import json, re, sys
+  from pathlib import Path
+  root = Path(sys.argv[1])
+  run = json.loads((root / "run.json").read_text())
+  job = json.loads((root / "job.json").read_text())
+  assert run["id"] == 37193369383
+  assert run["path"] == ".github/workflows/chain-canary.yml"
+  assert run["head_branch"] == "dev"
+  assert run["head_sha"] == "2ad2097757d61c1a9a4b6b70cb4d40494a3b01eb"
+  assert run["status"] == "completed" and run["conclusion"] == "success"
+  assert job["run_id"] == run["id"] and job["id"] == 111410052502
+  assert job["name"] == "Chain Canary (dev lane)" and job["conclusion"] == "success"
+  log = re.sub(r"^[0-9T:.Z-]+ ", "", (root / "job.log").read_text(), flags=re.M)
+  assert "lane dev-201 deploy agent: http://192.168.86.201:8098" in log
+  start = log.index("deploy window (OMN-19811):\n")
+  block = "\n".join(log[start:].splitlines()[:5])
+  def valid(value):
+      return all((
+          value.startswith("deploy window (OMN-19811):\n"),
+          "  - status: `not_needed`" in value,
+          "  - deploy agent: http://192.168.86.201:8098" in value,
+          "  - deploy job(s) in the first attempt's window: none" in value,
+          re.search(r"  - pre-fire deploy: [0-9a-f-]{36}, queued 1 \(waited [1-9][0-9]*s, converged=True\)", value) is not None,
+      ))
+  assert valid(block)
+  assert not valid(block.replace("http://192.168.86.201:8098", "unreadable"))
+  assert not valid(block.replace("converged=True", "converged=False"))
+  assert not valid(block.replace("deploy window (OMN-19811):", "window absent:"))
+  assert "chain canary PROBE-GREEN" in log
+  print(json.dumps({key: run[key] for key in ("id", "path", "head_branch", "head_sha", "status", "conclusion")}, sort_keys=True))
+  print("job=" + str(job["id"]) + " runner=" + job["runner_name"])
+  print(block)
+  print("negative controls: missing agent, non-convergence and missing deploy-window block rejected")
+  PYPROBE
+  CHECK
+probe_stdout: |-
+  {"conclusion": "success", "head_branch": "dev", "head_sha": "2ad2097757d61c1a9a4b6b70cb4d40494a3b01eb", "id": 37193369383, "path": ".github/workflows/chain-canary.yml", "status": "completed"}
+  job=111410052502 runner=omninode-mini-runner-1
+  deploy window (OMN-19811):
+    - status: `not_needed` — first attempt ended green, which a redeploy does not explain; the window was not examined for a retry
+    - deploy agent: http://192.168.86.201:8098
+    - deploy job(s) in the first attempt's window: none
+    - pre-fire deploy: 29d01590-5934-4f11-a936-ffb8ab7e2aa5, queued 1 (waited 1085s, converged=True)
+  negative controls: missing agent, non-convergence and missing deploy-window block rejected
+exit_code: 0
+run_timestamp: '2026-10-04T11:00:43Z'
+duration_ms: 1101
+verifier: occ-probe-capture-v1
+artifact_sha256:
+  - sha256:5e547acdf8040edec63a37903258b51448e538c01072ec8b60221c05ab756cb4
+  - sha256:3ff118e98299c95af51f3b9f6df9e2011048c374557c3f702e9bec683b8cf1ee

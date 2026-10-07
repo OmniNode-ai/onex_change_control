@@ -1,0 +1,150 @@
+---
+schema_version: "1.0.0"
+ticket_id: "OMN-13335"
+title: "escalation up-tier discriminator — terminal emission must not crash on negative savings"
+summary: >
+  OMN-13335 is the SEA customer-beta discriminator: an escalating delegation must reach a terminal carrying
+  escalation_count>=1 with a cloud model_name and a quality-gate verdict. The prior "routing config is
+  correct" theory (PR #1402 / merged 2026-06-25) was REFUTED by a fresh live run (CID 67d2bfc8): an escalating
+  code_generation delegation walks the ladder, delegation-escalation-triggered.v1 fires, the higher-tier
+  inference RESPONSE arrives — but the escalation silently EXHAUSTS the ladder without ever emitting a
+  terminal. The ticket was reopened. #magic___^_^___line Root cause (environment-independent, proven by
+  a failing-then-green unit test in the orchestrator's single terminal builder _emit_terminal): the builder
+  computes total_savings_usd = cost.cost_savings_usd - prior_attempt_cost_usd. On an escalation that ran
+  a metered prior tier (e.g. cheap_cloud GLM) and then landed on a FAILED / escalation-exhausted terminal
+  whose final tier carries no premium counterfactual (cost.cost_savings_usd == 0.0), this subtraction
+  goes NEGATIVE. The builder then constructs the compat ModelTaskDelegatedEvent with that negative cost_savings_usd,
+  but the core wire DTO pins cost_savings_usd with ge=0.0, so construction raises ValidationError — crashing
+  the dispatcher with NO terminal emitted. That is the silent terminal loss the live run observed: an
+  escalated-to-ceiling delegation can never yield a passing terminal because the terminal is lost to a
+  validation error before it is ever published. #magic___^_^___line Fix (orchestrator emitter layer, root
+  cause — not a core constraint relaxation): clamp total_savings_usd to its honest floor of 0.0 in _emit_terminal.
+  Savings cannot be negative — an escalation that burned metered budget did not "save" negative money;
+  that spend is already captured in cost_usd. With the clamp, a valid terminal is ALWAYS emitted (completed
+  when the gate passes, a clean FAILED terminal otherwise) instead of being silently lost.
+is_seam_ticket: false
+interface_change: false
+interfaces_touched: []
+evidence_requirements:
+  - kind: "tests"
+    description: "Failing-then-green unit test drives the orchestrator handler over its per-step entrypoints
+      (routing decision -> inference response -> quality gate result) through a metered-prior-tier escalation
+      that exhausts the ladder. RED: terminal construction raised ValidationError on negative cost_savings_usd
+      (-0.0014 vs ge=0.0). GREEN after the clamp: exactly one terminal compat event is emitted with cost_savings_usd
+      >= 0, positive cost_usd (metered spend surfaced), and escalation_count >= 1."
+    command: "uv run pytest tests/unit/delegation/test_ceiling_quality_gate_wiring_omn13335.py -q"
+  - kind: "ci"
+    description: "mypy --strict green on the changed handler; ruff format + check clean; full unit delegation
+      suite green (391 passed, 1 intentionally not run) — savings clamp introduces no regression."
+    command: "uv run mypy src/omnimarket/nodes/node_delegation_orchestrator/handlers/handler_delegation_workflow.py
+      --strict"
+emergency_bypass:
+  enabled: false
+  justification: ""
+  follow_up_ticket_id: ""
+dod_evidence:
+  - id: "dod-001"
+    description: "An escalation that ran a metered prior tier and then exhausts the ladder emits a valid
+      terminal instead of crashing. The new test reproduces the live silent-terminal-loss (RED: ValidationError
+      on negative cost_savings_usd) and proves the clamp emits exactly one terminal compat event with
+      non-negative savings."
+    source: "manual"
+    checks:
+      - check_type: "command"
+        check_value: "grep -q '^status: PASS$' drift/dod_receipts/OMN-13335/dod-001/command.yaml && grep
+          -q '^pr_number: 1406$' drift/dod_receipts/OMN-13335/dod-001/command.yaml"
+  - id: "dod-002"
+    description: "The metered escalation spend still surfaces as positive terminal cost_usd and the terminal
+      records escalation_count >= 1, so the discriminator row is real (clamp does not zero the cost or
+      hide the escalation)."
+    source: "manual"
+    checks:
+      - check_type: "command"
+        check_value: "grep -q '^status: PASS$' drift/dod_receipts/OMN-13335/dod-002/command.yaml && grep
+          -q '^pr_number: 1406$' drift/dod_receipts/OMN-13335/dod-002/command.yaml"
+  - id: "dod-003"
+    description: "No regression across the delegation cost/escalation suites (OMN-13396/13408/13470/13475/13535)
+      — the savings clamp only changes the previously-crashing negative path."
+    source: "manual"
+    checks:
+      - check_type: "command"
+        check_value: "grep -q '^status: PASS$' drift/dod_receipts/OMN-13335/dod-003/command.yaml && grep
+          -q '^pr_number: 1406$' drift/dod_receipts/OMN-13335/dod-003/command.yaml"
+  - id: "dod-mypy"
+    description: "mypy --strict green on the changed orchestrator handler."
+    source: "manual"
+    checks:
+      - check_type: "command"
+        check_value: "grep -q '^status: PASS$' drift/dod_receipts/OMN-13335/dod-mypy/command.yaml && grep
+          -q '^pr_number: 1406$' drift/dod_receipts/OMN-13335/dod-mypy/command.yaml"
+  - id: "dod-omnimarket-pr"
+    description: "omnimarket PR #1406 carries the root-cause fix, product-side ticket contract, and focused
+      proof receipts."
+    source: "manual"
+    checks:
+      - check_type: "command"
+        check_value: "grep -q '^status: PASS$' drift/dod_receipts/OMN-13335/dod-omnimarket-pr/command.yaml
+          && grep -q '^pr_number: 1406$' drift/dod_receipts/OMN-13335/dod-omnimarket-pr/command.yaml"
+  - id: "dod-occ-pr"
+    description: "onex_change_control PR #3101 carries the central contract and receipt evidence cited
+      by omnimarket PR #1406."
+    source: "manual"
+    checks:
+      - check_type: "command"
+        check_value: "grep -q '^status: PASS$' drift/dod_receipts/OMN-13335/dod-occ-pr/command.yaml &&
+          grep -q '^pr_number: 3101$' drift/dod_receipts/OMN-13335/dod-occ-pr/command.yaml"
+  - id: "dod-deploy"
+    description: "Deploy assessment for the runtime handler change: omnimarket PR #1406 requires the normal
+      post-merge stability-test deployment and a fresh escalation live-close proof."
+    source: "manual"
+    checks:
+      - check_type: "command"
+        check_value: "grep -q '^status: PASS$' drift/dod_receipts/OMN-13335/dod-deploy/command.yaml &&
+          grep -qi 'deploy' drift/dod_receipts/OMN-13335/dod-deploy/command.yaml"
+  - id: "dod-gemini-no-think-fix"
+    description: "omnimarket PR #1410 adds the contract-only Gemini ceiling thinking-off profile and focused
+      TDD guard for the OMN-13335 code escalation ceiling path."
+    source: "manual"
+    checks:
+      - check_type: "command"
+        check_value: "grep -q '^status: PASS$' drift/dod_receipts/OMN-13335/dod-gemini-no-think-fix/command.yaml
+          && grep -q '^pr_number: 1410$' drift/dod_receipts/OMN-13335/dod-gemini-no-think-fix/command.yaml"
+  - id: "dod-gemini-no-think-probe"
+    description: "Live dev-lane Gemini probe proves the remaining OMN-13335 failure is thinking-token
+      truncation: default/low reasoning consumes the visible output budget while reasoning_effort=none
+      produces a complete judgeable answer."
+    source: "manual"
+    checks:
+      - check_type: "command"
+        check_value: "grep -q '^status: PASS$' drift/dod_receipts/OMN-13335/dod-gemini-no-think-probe/command.yaml
+          && grep -q '^pr_number: 1410$' drift/dod_receipts/OMN-13335/dod-gemini-no-think-probe/command.yaml"
+  - id: "dod-occ-pr-3112"
+    description: "onex_change_control PR #3112 carries the central Gemini no-think contract and receipt
+      evidence cited by omnimarket PR #1410."
+    source: "manual"
+    checks:
+      - check_type: "command"
+        check_value: "grep -q '^status: PASS$' drift/dod_receipts/OMN-13335/dod-occ-pr-3112/command.yaml
+          && grep -q '^pr_number: 3112$' drift/dod_receipts/OMN-13335/dod-occ-pr-3112/command.yaml"
+  - id: "dod-final-artifact-only-directive"
+    description: "omnimarket PR #1427 strengthens the cloud-gemini-flash-no-think-code tier-prompt directive
+      to forbid prose outside the fenced block (before OR after), so the gemini-2.5-flash code ceiling
+      emits final-artifact-only output and legitimately satisfies the deterministic final_artifact_only
+      DoD instead of being hard-floored on TASK_MISMATCH. No gate weakening: final_artifact_only stays
+      in the deterministic hard floor, the 0.85 bar and judge-combine are untouched; the change is the
+      tier prompt only and is code-scoped so prose escalation classes are unaffected. TDD: two new unit
+      asserts pin the directive is injected into the code-tier system prompt and NOT into a research prose
+      task."
+    source: "manual"
+    checks:
+      - check_type: "command"
+        check_value: "grep -q '^status: PASS$' drift/dod_receipts/OMN-13335/dod-final-artifact-only-directive/command.yaml
+          && grep -q '^pr_number: 1427$' drift/dod_receipts/OMN-13335/dod-final-artifact-only-directive/command.yaml"
+  - id: "dod-occ-pr-final-artifact-only"
+    description: "onex_change_control PR #3139 carries the central final-artifact-only directive contract
+      entry and receipt evidence cited by omnimarket PR #1427."
+    source: "manual"
+    checks:
+      - check_type: "command"
+        check_value: "grep -q '^status: PASS$' drift/dod_receipts/OMN-13335/dod-occ-pr-final-artifact-only/command.yaml
+          && grep -q '^pr_number: 3139$' drift/dod_receipts/OMN-13335/dod-occ-pr-final-artifact-only/command.yaml"

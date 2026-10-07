@@ -1,0 +1,53 @@
+---
+schema_version: "1.0.0"
+ticket_id: "OMN-18085"
+evidence_item_id: "dod-OmniNode-ai-omninode_infra-pr-1284"
+check_type: "command"
+check_value: |-
+  gh pr view 1284 --repo OmniNode-ai/omninode_infra --json number,state
+contract_sha256: "sha256:e817abf9d5c3c6038be35acbc4c846c41c5213210ac8925376d2c82d7b272e53"
+contract_entry_sha256: "sha256:cd2fe1ae130c69a0ab6fe2950faac8d4be1dabca5f8c301e69f811dec777033a"
+status: PASS
+run_timestamp: "2026-09-09T18:26:14+00:00"
+commit_sha: "22ee1d88d50fbb302a9e4ae0a6279f3d949ab95a"
+runner: "omnidash-rollout-strategy"
+verifier: "occ-union-resolve-same-ticket-companion"
+probe_command: |-
+  gh pr view 1284 --repo OmniNode-ai/omninode_infra --json number,state,headRefName \
+    && gh api repos/OmniNode-ai/omninode_infra/pulls/1284/files --paginate --jq '.[].filename'
+probe_stdout: |
+  {"headRefName":"jonah/omn-18085-omnidash-rollout-strategy","number":1284,"state":"OPEN"}
+  k8s/onex-dev-overlay-dev/kustomization.yaml
+  k8s/onex-dev-overlay-dev/patches/omnidash-deployment.yaml
+actual_output: |-
+  PASS: PR #1284 is open on OmniNode-ai/omninode_infra at 22ee1d88d50fbb302a9e4ae0a6279f3d949ab95a,
+  and the new overlay patch file k8s/onex-dev-overlay-dev/patches/omnidash-deployment.yaml is
+  present in its diff, alongside the kustomization.yaml entry that registers it. Those two files
+  are the whole diff - nothing else is touched.
+
+  The patch pins the omnidash rollout to maxSurge 0 / maxUnavailable 1 in the DEV OVERLAY only.
+
+  Correction to PR #1282's framing, recorded here rather than glossed: #1282 said omnidash "has
+  the identical 25%/25%-on-a-full-node shape". Right about the effect, wrong about the source.
+  omnidash does NOT inherit the Kubernetes default - k8s/onex-dev/omnidash/deployment.yaml
+  declares maxSurge 1 / maxUnavailable 0 EXPLICITLY, and the live Deployment reads back the same
+  at 2026-09-09T18:07Z:
+    2 {"rollingUpdate":{"maxSurge":1,"maxUnavailable":0},"type":"RollingUpdate"}
+  Different source, identical arithmetic, identical deadlock: at replicas 2 the Deployment must
+  create a third pod and may not terminate either running pod first, so it can only progress by
+  finding 100m of unallocated CPU on a node with 120m free.
+
+  AC8 (the enumeration) is bound here and is discharged by the rendered overlay: omnidash and
+  omniweb are the ONLY replicas-2 Deployments the render produces, and both now carry maxSurge 0 /
+  maxUnavailable 1. The four replicas-1 Deployments with the same surge-requiring shape -
+  omnimarket-projection-api and umami (explicit maxSurge 1 / maxUnavailable 0), memgraph-lab and
+  pgweb (no strategy, inheriting the default) - are named and deliberately left alone, because at
+  one replica maxUnavailable 1 is a full outage of that workload for the rollout rather than a
+  degraded-but-serving pair.
+
+  Stated plainly rather than implied: omnidash is NOT currently broken. Both pods have been
+  Running since 2026-09-02T13:22Z and the cluster-wide count of pods awaiting scheduling was zero
+  at 2026-09-09T18:07Z. This is a latent deadlock removed before it fires, not an incident repair.
+exit_code: 0
+pr_number: 1284
+branch: "jonah/omn-18085-omnidash-companion"

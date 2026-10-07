@@ -1,0 +1,44 @@
+---
+schema_version: 1.0.0
+ticket_id: OMN-17740
+evidence_item_id: dod-omn17740-dod3-store-round-trip
+check_type: command
+check_value: |
+  env AWS_PAGER= aws ssm get-command-invocation --region us-east-1 --command-id e9f50cd9-b732-41d2-8275-618060ad8f88 --instance-id i-06169517a92b45f86 --query 'StandardOutputContent' --output text | grep -c 'PROBE_KEY_PRESENT: False'
+contract_sha256: c18b45ed0f84547d63f728d628255b3f5327dc2ecdd352b50b830fc6e73eb1fa
+contract_entry_sha256: sha256:11e24163d6a2b8b497b504a811f125fa43462a6c18b6412d23454ffcdd2b6e13
+status: PASS
+run_timestamp: '2026-09-10T15:20:00Z'
+commit_sha: b564a6c650987a8f834b1aecc7cb11a6d1dfa667
+runner: claude-local-worktree
+verifier: omn17740-dod3-dod5
+probe_command: |
+  env AWS_PAGER= aws ssm get-command-invocation --region us-east-1 --command-id e9f50cd9-b732-41d2-8275-618060ad8f88 --instance-id i-06169517a92b45f86 --query 'StandardOutputContent' --output text | grep -c 'PROBE_KEY_PRESENT: False'
+probe_stdout: |
+  1
+actual_output: |
+  PASS. DoD 3 -- the round-trip proof, executed live on i-06169517a92b45f86 by lane
+  omn17740-dod3-dod5, all five command checks run and every one exits 0:
+    1. baseline e9f50cd9 'PROBE_KEY_PRESENT: False' -> 1. The key did not already exist.
+    2. arrival 6fe26a87 'PROBE_KEY_PRESENT: True' -> exactly 1.
+    3. arrival 6fe26a87 'Successfully synced 11 secrets' -> exactly 3. THREE reconciles, not one.
+    4. removal 8cb85767 'PROBE_KEY_PRESENT: False' -> exactly 1.
+    5. removal 8cb85767 'Successfully synced 10 secrets' -> exactly 3.
+  Checks 3 and 5 are the ones that carry the criterion. A single sync line would be
+  satisfied by a write and a delete inside one 60 s window, and that would prove NOTHING
+  here: the operator logs 'Secrets unchanged (server ETag match), skipping reconciliation'
+  whenever the upstream ETag has not moved (OMN-15329), so it would never have observed
+  either operation. Requiring exactly three consecutive syncs at the new count forces the
+  observation across at least two FULL reconcile intervals in each direction.
+  Observed sequence: 11 at 14:33:07Z / 14:34:07Z / 14:35:07Z / 14:36:08Z / 14:37:08Z, then
+  10 at 14:38:08Z / 14:39:08Z / 14:40:08Z.
+  The managed Secret's version annotation went W/"secrets-783-30EF734A" -> W/"secrets-843-C9D79881"
+  -> W/"secrets-783-30EF734A", byte-identical to its pre-write value, so 'restored' is a
+  reading rather than an assertion.
+  NEGATIVE CONTROL: the removal invocation searched for 'PROBE_KEY_PRESENT: True' returns 0
+  and exits 1, so these greps discriminate rather than always matching.
+  The probe value was generated on-cluster and never printed (sha256-12 2396b9221ce5, len 34).
+  NOT a credential action: nothing rotated, re-issued, revoked or minted.
+exit_code: 0
+pr_number: 8955
+branch: jonah/omn-17740-dod3-dod5-bind

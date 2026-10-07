@@ -1,0 +1,2614 @@
+---
+schema_version: "1.0.0"
+ticket_id: "OMN-14974"
+title: "Cut staging workflows over to the runtime-owned MSK edge"
+summary: >
+  Route OmniDash workflow commands through the generic runtime HTTP edge, declare truthful renderer projection
+  completion, and add the staging Service and transport guardrails needed to retire direct Redpanda ownership
+  after live validation.
+is_seam_ticket: true
+interface_change: true
+interfaces_touched:
+  - events
+  - topics
+  - protocols
+  - public_api
+evidence_requirements:
+  - kind: "tests"
+    description: "OmniDash runtime-edge typecheck and route tests pass."
+    command: "npm run check && npm run test:run"
+  - kind: "tests"
+    description: "Staging manifests, verification scripts, and repository tests pass."
+    command: "uv run pytest tests/ -q"
+  - kind: "manual"
+    description: >
+      After merge, deploy exact image digests to staging, prove runtime /skill workflows over MSK, and
+      only then scale Redpanda workloads to zero while preserving rollback state.
+emergency_bypass:
+  enabled: false
+  justification: ""
+  follow_up_ticket_id: ""
+dod_evidence:
+  - id: "dod-market1909-terminal-contract-dea20a4c"
+    description: >
+      omnimarket PR #1909 declares the renderer snapshot as the projection's terminal event at its exact
+      reviewed head, so the runtime edge cannot acknowledge completion before durable materialization.
+    source: "manual"
+    status: "verified"
+    checks:
+      - check_type: "command"
+        check_value: >-
+          test "$(gh pr view 1909 --repo OmniNode-ai/omnimarket --json headRefOid,files --jq .headRefOid)"
+          = "dea20a4ced608c9473f008594e60a18c0ea2222c" && gh api 'repos/OmniNode-ai/omnimarket/contents/src/omnimarket/nodes/node_renderer_capability_projection/contract.yaml?ref=dea20a4ced608c9473f008594e60a18c0ea2222c'
+          --jq .content | base64 -d | grep -Fq 'terminal_event: onex.evt.omnimarket.renderer-capability-projection-snapshot.v1'
+  - id: "dod-dash271-runtime-edge-cb7eecdb"
+    description: >
+      OmniDash PR #271 uses the generic runtime HTTP edge and removes the in-process Kafka producer at
+      its exact reviewed head.
+    source: "manual"
+    status: "verified"
+    checks:
+      - check_type: "command"
+        check_value: >-
+          test "$(gh pr view 271 --repo OmniNode-ai/omnidash --json headRefOid,files --jq .headRefOid)"
+          = "cb7eecdb5db1f9db4a5a9277cb200d82ed3c2801" && gh api 'repos/OmniNode-ai/omnidash/contents/server/runtime-skill-client.ts?ref=cb7eecdb5db1f9db4a5a9277cb200d82ed3c2801'
+          --jq .content | base64 -d | grep -Fq '/skill' && ! gh api 'repos/OmniNode-ai/omnidash/contents/server/kafka-producer.ts?ref=cb7eecdb5db1f9db4a5a9277cb200d82ed3c2801'
+  - id: "dod-infra680-runtime-service-3a586fd0"
+    description: >
+      omninode_infra PR #680 exposes the staging runtime Service and configures OmniDash for the runtime
+      edge without direct broker variables at its exact reviewed head.
+    source: "manual"
+    status: "verified"
+    checks:
+      - check_type: "command"
+        check_value: >-
+          if infra_head="$(gh pr view 680 --repo OmniNode-ai/omninode_infra --json headRefOid,files --jq
+          .headRefOid)"; then test "$infra_head" = "3a586fd71c2ba20edaad603fc76143f2efc1d777" && gh api
+          'repos/OmniNode-ai/omninode_infra/contents/k8s/onex-dev/runtime/service-omninode-runtime.yaml?ref=3a586fd71c2ba20edaad603fc76143f2efc1d777'
+          --jq .content | base64 -d | grep -Fq 'name: omninode-runtime' && dash_manifest="$(gh api 'repos/OmniNode-ai/omninode_infra/contents/k8s/onex-dev/omnidash/deployment.yaml?ref=3a586fd71c2ba20edaad603fc76143f2efc1d777'
+          --jq .content | base64 -d)" && printf '%s\n' "$dash_manifest" | grep -Fq -- '- name: OMNIDASH_RUNTIME_EDGE_URL'
+          && ! printf '%s\n' "$dash_manifest" | grep -Eq -- '- name: (KAFKA_BROKERS|REDPANDA_ADMIN_URL|OMNIDASH_EVENT_BUS_BOOTSTRAP_SERVERS)$';
+          else receipt='drift/dod_receipts/OMN-14974/dod-infra680-runtime-service-3a586fd0/command.yaml';
+          grep -Fq 'status: "PASS"' "$receipt" && grep -Fq 'commit_sha: "3a586fd71c2ba20edaad603fc76143f2efc1d777"'
+          "$receipt"; fi
+  - id: "occ-self-bind-pr-5026"
+    description: >
+      OCC PR #5026 contains the OMN-14974 contract and durable receipts, bound to a commit preserved in
+      the PR history.
+    source: "manual"
+    status: "verified"
+    checks:
+      - check_type: "command"
+        check_value: >-
+          gh api repos/OmniNode-ai/onex_change_control/pulls/5026/commits --paginate --jq 'any(.sha ==
+          "ae6e923f3b1c2c78f620ff1fc0d298412f1b1eb7")' | grep -qx true
+  - id: "dod-infra681-staging-candidate-b3ce91d3"
+    description: >
+      omninode_infra PR #681 supplies the missing staging-only OmniDash image factory at exact head b3ce91d3feddfef6b391957c36e22e8014710ac2.
+      The workflow accepts only an exact OmniDash SHA, runs only from dev, validates the OIDC build arguments,
+      scans before push, labels the image as a non-production staging candidate, and resolves an immutable
+      ECR digest. It follows the runtime Service and broker-free dashboard boundary already merged through
+      PR #680.
+    source: "manual"
+    status: "verified"
+    checks:
+      - check_type: "command"
+        check_value: >-
+          if infra_head="$(gh pr view 681 --repo OmniNode-ai/omninode_infra --json headRefOid --jq .headRefOid)";
+          then test "$infra_head" = "b3ce91d3feddfef6b391957c36e22e8014710ac2" && gh api 'repos/OmniNode-ai/omninode_infra/contents/.github/workflows/build-and-push-omnidash-staging.yml?ref=b3ce91d3feddfef6b391957c36e22e8014710ac2'
+          --jq .content | base64 -d | grep -Fq 'name: Build and push omnidash staging-candidate' && workflow="$(gh
+          api 'repos/OmniNode-ai/omninode_infra/contents/.github/workflows/build-and-push-omnidash-staging.yml?ref=b3ce91d3feddfef6b391957c36e22e8014710ac2'
+          --jq .content | base64 -d)" && printf '%s\n' "$workflow" | grep -Fq 'refs/heads/dev' && printf
+          '%s\n' "$workflow" | grep -Fq 'IMAGE_TAG="staging-${SOURCE_SHA}"' && printf '%s\n' "$workflow"
+          | grep -Fq 'com.omninode.promotion_class=staging-candidate' && printf '%s\n' "$workflow" | grep
+          -Fq 'validate-vite-oidc-build-args.sh' && printf '%s\n' "$workflow" | grep -Fq 'severity: CRITICAL,HIGH';
+          else receipt='drift/dod_receipts/OMN-14974/dod-infra681-staging-candidate-b3ce91d3/command.yaml';
+          grep -Fq 'status: "PASS"' "$receipt" && grep -Fq 'commit_sha: "b3ce91d3feddfef6b391957c36e22e8014710ac2"'
+          "$receipt"; fi
+  - id: "occ-self-bind-pr-5041"
+    description: >
+      OCC PR #5041 contains the OMN-14974 staging-candidate contract extension and its durable receipt,
+      bound to commit 817c19eab4daa6ed852e90c8b06674df13d3cecf preserved in the PR history.
+    source: "manual"
+    status: "verified"
+    checks:
+      - check_type: "command"
+        check_value: >-
+          gh api repos/OmniNode-ai/onex_change_control/pulls/5041/commits --paginate --jq 'any(.sha ==
+          "817c19eab4daa6ed852e90c8b06674df13d3cecf")' | grep -qx true
+  - id: "occ-self-bind-pr-5056"
+    description: "Binds OMN-14974 to OCC companion PR #5056 (self-bind)."
+    source: "generated"
+    checks:
+      - check_type: "command"
+        check_value: "gh pr view ${PR_NUMBER} --repo ${REPO} --json number,state"
+  - id: "occ-self-bind-pr-5063"
+    description: "Binds OMN-14974 to OCC companion PR #5063 (self-bind)."
+    source: "generated"
+    checks:
+      - check_type: "command"
+        check_value: "gh pr view ${PR_NUMBER} --repo ${REPO} --json number,state"
+  - id: "dod-OmniNode-ai-omnibase_infra-pr-2489"
+    description: "PR #2489 on OmniNode-ai/omnibase_infra — Evidence-Source autobind."
+    source: "generated"
+    checks:
+      - check_type: "command"
+        check_value: "gh pr view ${PR_NUMBER} --repo ${REPO} --json number,state"
+  - id: "dod-OmniNode-ai-omnibase_infra-pr-2489-ci"
+    description: "PR #2489 on OmniNode-ai/omnibase_infra — product diff scope check (OMN-14425)."
+    source: "generated"
+    checks:
+      - check_type: "command"
+        check_value: "gh pr view ${PR_NUMBER} --repo ${REPO} --json files"
+  - id: "occ-self-bind-pr-5068"
+    description: "OCC companion PR #5068 — self-bind for OMN-14974 (OMN-14650)."
+    source: "generated"
+    checks:
+      - check_type: "command"
+        check_value: "gh pr view ${PR_NUMBER} --repo ${REPO} --json number,state"
+  - id: "dod-OmniNode-ai-omninode_infra-pr-682"
+    description: "PR #682 on OmniNode-ai/omninode_infra — Evidence-Source autobind."
+    source: "generated"
+    checks:
+      - check_type: "command"
+        check_value: "grep -q '^status: PASS$' $CONTRACT_REPO_DIR/drift/dod_receipts/OMN-14974/dod-OmniNode-ai-omninode_infra-pr-682/command.yaml"
+  - id: "dod-OmniNode-ai-omninode_infra-pr-682-ci"
+    description: "PR #682 on OmniNode-ai/omninode_infra — product diff scope check (OMN-14425)."
+    source: "generated"
+    checks:
+      - check_type: "command"
+        check_value: "grep -q '^status: PASS$' $CONTRACT_REPO_DIR/drift/dod_receipts/OMN-14974/dod-OmniNode-ai-omninode_infra-pr-682-ci/command.yaml"
+  - id: "occ-self-bind-pr-5069"
+    description: "OCC companion PR #5069 — self-bind for OMN-14974 (OMN-14650)."
+    source: "generated"
+    checks:
+      - check_type: "command"
+        check_value: "gh pr view ${PR_NUMBER} --repo ${REPO} --json number,state"
+  - id: "dod-OmniNode-ai-omninode_infra-pr-684"
+    description: "PR #684 on OmniNode-ai/omninode_infra — Evidence-Source autobind."
+    source: "generated"
+    checks:
+      - check_type: "command"
+        check_value: "grep -q '^status: PASS$' $CONTRACT_REPO_DIR/drift/dod_receipts/OMN-14974/dod-OmniNode-ai-omninode_infra-pr-684/command.yaml"
+  - id: "dod-OmniNode-ai-omninode_infra-pr-684-ci"
+    description: "PR #684 on OmniNode-ai/omninode_infra — product diff scope check (OMN-14425)."
+    source: "generated"
+    checks:
+      - check_type: "command"
+        check_value: "grep -q '^status: PASS$' $CONTRACT_REPO_DIR/drift/dod_receipts/OMN-14974/dod-OmniNode-ai-omninode_infra-pr-684-ci/command.yaml"
+  - id: "occ-self-bind-pr-5073"
+    description: "OCC companion PR #5073 — self-bind for OMN-14974 (OMN-14650)."
+    source: "generated"
+    checks:
+      - check_type: "command"
+        check_value: "gh pr view ${PR_NUMBER} --repo ${REPO} --json number,state"
+  - id: "dod-OmniNode-ai-omninode_infra-pr-685"
+    description: "PR #685 on OmniNode-ai/omninode_infra — Evidence-Source autobind."
+    source: "generated"
+    checks:
+      - check_type: "command"
+        check_value: "grep -q '^status: PASS$' $CONTRACT_REPO_DIR/drift/dod_receipts/OMN-14974/dod-OmniNode-ai-omninode_infra-pr-685/command.yaml"
+  - id: "dod-OmniNode-ai-omninode_infra-pr-685-ci"
+    description: "PR #685 on OmniNode-ai/omninode_infra — product diff scope check (OMN-14425)."
+    source: "generated"
+    checks:
+      - check_type: "command"
+        check_value: "grep -q '^status: PASS$' $CONTRACT_REPO_DIR/drift/dod_receipts/OMN-14974/dod-OmniNode-ai-omninode_infra-pr-685-ci/command.yaml"
+  - id: "occ-self-bind-pr-5079"
+    description: "OCC companion PR #5079 — self-bind for OMN-14974 (OMN-14650)."
+    source: "generated"
+    checks:
+      - check_type: "command"
+        check_value: "gh pr view ${PR_NUMBER} --repo ${REPO} --json number,state"
+  - id: "dod-OmniNode-ai-omninode_infra-pr-686"
+    description: "PR #686 on OmniNode-ai/omninode_infra — Evidence-Source autobind."
+    source: "generated"
+    checks:
+      - check_type: "command"
+        check_value: "grep -q '^status: PASS$' $CONTRACT_REPO_DIR/drift/dod_receipts/OMN-14974/dod-OmniNode-ai-omninode_infra-pr-686/command.yaml"
+  - id: "dod-OmniNode-ai-omninode_infra-pr-686-ci"
+    description: "PR #686 on OmniNode-ai/omninode_infra — product diff scope check (OMN-14425)."
+    source: "generated"
+    checks:
+      - check_type: "command"
+        check_value: "grep -q '^status: PASS$' $CONTRACT_REPO_DIR/drift/dod_receipts/OMN-14974/dod-OmniNode-ai-omninode_infra-pr-686-ci/command.yaml"
+  - id: "occ-self-bind-pr-5080"
+    description: "OCC companion PR #5080 — self-bind for OMN-14974 (OMN-14650)."
+    source: "generated"
+    checks:
+      - check_type: "command"
+        check_value: "gh pr view ${PR_NUMBER} --repo ${REPO} --json number,state"
+  - id: "dod-OmniNode-ai-omninode_infra-pr-687"
+    description: "PR #687 on OmniNode-ai/omninode_infra — Evidence-Source autobind."
+    source: "generated"
+    checks:
+      - check_type: "command"
+        check_value: "grep -q '^status: PASS$' $CONTRACT_REPO_DIR/drift/dod_receipts/OMN-14974/dod-OmniNode-ai-omninode_infra-pr-687/command.yaml"
+  - id: "dod-OmniNode-ai-omninode_infra-pr-687-ci"
+    description: "PR #687 on OmniNode-ai/omninode_infra — product diff scope check (OMN-14425)."
+    source: "generated"
+    checks:
+      - check_type: "command"
+        check_value: "grep -q '^status: PASS$' $CONTRACT_REPO_DIR/drift/dod_receipts/OMN-14974/dod-OmniNode-ai-omninode_infra-pr-687-ci/command.yaml"
+  - id: "occ-self-bind-pr-5081"
+    description: "OCC companion PR #5081 — self-bind for OMN-14974 (OMN-14650)."
+    source: "generated"
+    checks:
+      - check_type: "command"
+        check_value: "gh pr view ${PR_NUMBER} --repo ${REPO} --json number,state"
+  - id: "dod-OmniNode-ai-omninode_infra-pr-688"
+    description: "PR #688 on OmniNode-ai/omninode_infra — Evidence-Source autobind."
+    source: "generated"
+    checks:
+      - check_type: "command"
+        check_value: "grep -q '^status: PASS$' $CONTRACT_REPO_DIR/drift/dod_receipts/OMN-14974/dod-OmniNode-ai-omninode_infra-pr-688/command.yaml"
+  - id: "occ-self-bind-pr-5082"
+    description: "Binds OMN-14974 to OCC companion PR #5082 (self-bind)."
+    source: "generated"
+    checks:
+      - check_type: "command"
+        check_value: "gh pr view ${PR_NUMBER} --repo ${REPO} --json number,state"
+  - id: "dod-OmniNode-ai-omnibase_infra-pr-2490"
+    description: "PR #2490 on OmniNode-ai/omnibase_infra — Evidence-Source autobind."
+    source: "generated"
+    checks:
+      - check_type: "command"
+        check_value: "gh pr view ${PR_NUMBER} --repo ${REPO} --json number,state"
+  - id: "dod-OmniNode-ai-omnibase_infra-pr-2490-ci"
+    description: "PR #2490 on OmniNode-ai/omnibase_infra — product diff scope check (OMN-14425)."
+    source: "generated"
+    checks:
+      - check_type: "command"
+        check_value: "gh pr view ${PR_NUMBER} --repo ${REPO} --json files"
+  - id: "occ-self-bind-pr-5083"
+    description: "OCC companion PR #5083 — self-bind for OMN-14974 (OMN-14650)."
+    source: "generated"
+    checks:
+      - check_type: "command"
+        check_value: "gh pr view ${PR_NUMBER} --repo ${REPO} --json number,state"
+  - id: "dod-OmniNode-ai-omninode_infra-pr-689"
+    description: "PR #689 on OmniNode-ai/omninode_infra — Evidence-Source autobind."
+    source: "generated"
+    checks:
+      - check_type: "command"
+        check_value: "grep -q '^status: PASS$' $CONTRACT_REPO_DIR/drift/dod_receipts/OMN-14974/dod-OmniNode-ai-omninode_infra-pr-689/command.yaml"
+  - id: "dod-OmniNode-ai-omninode_infra-pr-689-ci"
+    description: "PR #689 on OmniNode-ai/omninode_infra — product diff scope check (OMN-14425)."
+    source: "generated"
+    checks:
+      - check_type: "command"
+        check_value: "grep -q '^status: PASS$' $CONTRACT_REPO_DIR/drift/dod_receipts/OMN-14974/dod-OmniNode-ai-omninode_infra-pr-689-ci/command.yaml"
+  - id: "occ-self-bind-pr-5084"
+    description: "OCC companion PR #5084 — self-bind for OMN-14974 (OMN-14650)."
+    source: "generated"
+    checks:
+      - check_type: "command"
+        check_value: "gh pr view ${PR_NUMBER} --repo ${REPO} --json number,state"
+  - id: "dod-OmniNode-ai-omnibase_infra-pr-2491"
+    description: "PR #2491 on OmniNode-ai/omnibase_infra — Evidence-Source autobind."
+    source: "generated"
+    checks:
+      - check_type: "command"
+        check_value: "gh pr view ${PR_NUMBER} --repo ${REPO} --json number,state"
+  - id: "dod-OmniNode-ai-omnibase_infra-pr-2491-ci"
+    description: "PR #2491 on OmniNode-ai/omnibase_infra — product diff scope check (OMN-14425)."
+    source: "generated"
+    checks:
+      - check_type: "command"
+        check_value: "gh pr view ${PR_NUMBER} --repo ${REPO} --json files"
+  - id: "occ-self-bind-pr-5085"
+    description: "OCC companion PR #5085 — self-bind for OMN-14974 (OMN-14650)."
+    source: "generated"
+    checks:
+      - check_type: "command"
+        check_value: "gh pr view ${PR_NUMBER} --repo ${REPO} --json number,state"
+  - id: "occ-self-bind-pr-5086"
+    description: "Binds OMN-14974 to OCC companion PR #5086 (self-bind)."
+    source: "generated"
+    checks:
+      - check_type: "command"
+        check_value: "gh pr view ${PR_NUMBER} --repo ${REPO} --json number,state"
+  - id: "dod-OmniNode-ai-omninode_infra-pr-697"
+    description: "PR #697 on OmniNode-ai/omninode_infra — Evidence-Source autobind."
+    source: "generated"
+    checks:
+      - check_type: "command"
+        check_value: "grep -q '^status: PASS$' $CONTRACT_REPO_DIR/drift/dod_receipts/OMN-14974/dod-OmniNode-ai-omninode_infra-pr-697/command.yaml"
+  - id: "dod-OmniNode-ai-omninode_infra-pr-697-ci"
+    description: "PR #697 on OmniNode-ai/omninode_infra — product diff scope check (OMN-14425)."
+    source: "generated"
+    checks:
+      - check_type: "command"
+        check_value: "grep -q '^status: PASS$' $CONTRACT_REPO_DIR/drift/dod_receipts/OMN-14974/dod-OmniNode-ai-omninode_infra-pr-697-ci/command.yaml"
+  - id: "occ-self-bind-pr-5100"
+    description: "OCC companion PR #5100 — self-bind for OMN-14974 (OMN-14650)."
+    source: "generated"
+    checks:
+      - check_type: "command"
+        check_value: "gh pr view ${PR_NUMBER} --repo ${REPO} --json number,state"
+  - id: "dod-OmniNode-ai-omninode_infra-pr-703"
+    description: "PR #703 on OmniNode-ai/omninode_infra — Evidence-Source autobind."
+    source: "generated"
+    checks:
+      - check_type: "command"
+        check_value: "grep -q '^status: PASS$' $CONTRACT_REPO_DIR/drift/dod_receipts/OMN-14974/dod-OmniNode-ai-omninode_infra-pr-703/command.yaml"
+  - id: "dod-OmniNode-ai-omninode_infra-pr-703-ci"
+    description: "PR #703 on OmniNode-ai/omninode_infra — product diff scope check (OMN-14425)."
+    source: "generated"
+    checks:
+      - check_type: "command"
+        check_value: "grep -q '^status: PASS$' $CONTRACT_REPO_DIR/drift/dod_receipts/OMN-14974/dod-OmniNode-ai-omninode_infra-pr-703-ci/command.yaml"
+  - id: "occ-self-bind-pr-5179"
+    description: "OCC companion PR #5179 — self-bind for OMN-14974 (OMN-14650)."
+    source: "generated"
+    checks:
+      - check_type: "command"
+        check_value: "gh pr view ${PR_NUMBER} --repo ${REPO} --json number,state"
+  - id: "occ-self-bind-pr-5182"
+    description: "Binds OMN-14974 to OCC companion PR #5182 (self-bind)."
+    source: "generated"
+    checks:
+      - check_type: "command"
+        check_value: "gh pr view ${PR_NUMBER} --repo ${REPO} --json number,state"
+  - id: "dod-OmniNode-ai-omninode_infra-pr-704"
+    description: "PR #704 on OmniNode-ai/omninode_infra — Evidence-Source autobind."
+    source: "generated"
+    checks:
+      - check_type: "command"
+        check_value: "grep -q '^status: PASS$' $CONTRACT_REPO_DIR/drift/dod_receipts/OMN-14974/dod-OmniNode-ai-omninode_infra-pr-704/command.yaml"
+  - id: "occ-self-bind-pr-5181"
+    description: "Binds OMN-14974 to OCC companion PR #5181 (self-bind)."
+    source: "generated"
+    checks:
+      - check_type: "command"
+        check_value: "gh pr view ${PR_NUMBER} --repo ${REPO} --json number,state"
+  - id: "dod-OmniNode-ai-omninode_infra-pr-705"
+    description: "PR #705 on OmniNode-ai/omninode_infra — Evidence-Source autobind."
+    source: "generated"
+    checks:
+      - check_type: "command"
+        check_value: "grep -q '^status: PASS$' $CONTRACT_REPO_DIR/drift/dod_receipts/OMN-14974/dod-OmniNode-ai-omninode_infra-pr-705/command.yaml"
+  - id: "dod-OmniNode-ai-omninode_infra-pr-705-ci"
+    description: "PR #705 on OmniNode-ai/omninode_infra — product diff scope check (OMN-14425)."
+    source: "generated"
+    checks:
+      - check_type: "command"
+        check_value: "grep -q '^status: PASS$' $CONTRACT_REPO_DIR/drift/dod_receipts/OMN-14974/dod-OmniNode-ai-omninode_infra-pr-705-ci/command.yaml"
+  - id: "occ-self-bind-pr-5183"
+    description: "OCC companion PR #5183 — self-bind for OMN-14974 (OMN-14650)."
+    source: "generated"
+    checks:
+      - check_type: "command"
+        check_value: "gh pr view ${PR_NUMBER} --repo ${REPO} --json number,state"
+  - id: "dod-OmniNode-ai-omninode_infra-pr-707"
+    description: "PR #707 on OmniNode-ai/omninode_infra — Evidence-Source autobind."
+    source: "generated"
+    checks:
+      - check_type: "command"
+        check_value: "grep -q '^status: PASS$' $CONTRACT_REPO_DIR/drift/dod_receipts/OMN-14974/dod-OmniNode-ai-omninode_infra-pr-707/command.yaml"
+  - id: "dod-OmniNode-ai-omninode_infra-pr-707-ci"
+    description: "PR #707 on OmniNode-ai/omninode_infra — product diff scope check (OMN-14425)."
+    source: "generated"
+    checks:
+      - check_type: "command"
+        check_value: "grep -q '^status: PASS$' $CONTRACT_REPO_DIR/drift/dod_receipts/OMN-14974/dod-OmniNode-ai-omninode_infra-pr-707-ci/command.yaml"
+  - id: "occ-self-bind-pr-5185"
+    description: "OCC companion PR #5185 — self-bind for OMN-14974 (OMN-14650)."
+    source: "generated"
+    checks:
+      - check_type: "command"
+        check_value: "gh pr view ${PR_NUMBER} --repo ${REPO} --json number,state"
+  - id: "dod-OmniNode-ai-omninode_infra-pr-708"
+    description: "PR #708 on OmniNode-ai/omninode_infra — Evidence-Source autobind."
+    source: "generated"
+    checks:
+      - check_type: "command"
+        check_value: "grep -q '^status: PASS$' $CONTRACT_REPO_DIR/drift/dod_receipts/OMN-14974/dod-OmniNode-ai-omninode_infra-pr-708/command.yaml"
+  - id: "dod-OmniNode-ai-omninode_infra-pr-708-ci"
+    description: "PR #708 on OmniNode-ai/omninode_infra — product diff scope check (OMN-14425)."
+    source: "generated"
+    checks:
+      - check_type: "command"
+        check_value: "grep -q '^status: PASS$' $CONTRACT_REPO_DIR/drift/dod_receipts/OMN-14974/dod-OmniNode-ai-omninode_infra-pr-708-ci/command.yaml"
+  - id: "occ-self-bind-pr-5189"
+    description: "OCC companion PR #5189 — self-bind for OMN-14974 (OMN-14650)."
+    source: "generated"
+    checks:
+      - check_type: "command"
+        check_value: "gh pr view ${PR_NUMBER} --repo ${REPO} --json number,state"
+  - id: "dod-OmniNode-ai-omninode_infra-pr-710"
+    description: "PR #710 on OmniNode-ai/omninode_infra — Evidence-Source autobind."
+    source: "generated"
+    checks:
+      - check_type: "command"
+        check_value: "grep -q '^status: PASS$' $CONTRACT_REPO_DIR/drift/dod_receipts/OMN-14974/dod-OmniNode-ai-omninode_infra-pr-710/command.yaml"
+  - id: "dod-OmniNode-ai-omninode_infra-pr-710-ci"
+    description: "PR #710 on OmniNode-ai/omninode_infra — product diff scope check (OMN-14425)."
+    source: "generated"
+    checks:
+      - check_type: "command"
+        check_value: "grep -q '^status: PASS$' $CONTRACT_REPO_DIR/drift/dod_receipts/OMN-14974/dod-OmniNode-ai-omninode_infra-pr-710-ci/command.yaml"
+  - id: "occ-self-bind-pr-5209"
+    description: "OCC companion PR #5209 — self-bind for OMN-14974 (OMN-14650)."
+    source: "generated"
+    checks:
+      - check_type: "command"
+        check_value: "gh pr view ${PR_NUMBER} --repo ${REPO} --json number,state"
+  - id: "dod-OmniNode-ai-omnimarket-pr-1924"
+    description: "PR #1924 on OmniNode-ai/omnimarket — Evidence-Source autobind."
+    source: "generated"
+    checks:
+      - check_type: "command"
+        check_value: "gh pr view ${PR_NUMBER} --repo ${REPO} --json number,state"
+  - id: "dod-OmniNode-ai-omnimarket-pr-1924-ci"
+    description: "PR #1924 on OmniNode-ai/omnimarket — product diff scope check (OMN-14425)."
+    source: "generated"
+    checks:
+      - check_type: "command"
+        check_value: "gh pr view ${PR_NUMBER} --repo ${REPO} --json files"
+  - id: "occ-self-bind-pr-5210"
+    description: "OCC companion PR #5210 — self-bind for OMN-14974 (OMN-14650)."
+    source: "generated"
+    checks:
+      - check_type: "command"
+        check_value: "gh pr view ${PR_NUMBER} --repo ${REPO} --json number,state"
+  - id: "dod-OmniNode-ai-omninode_infra-pr-711"
+    description: "PR #711 on OmniNode-ai/omninode_infra — Evidence-Source autobind."
+    source: "generated"
+    checks:
+      - check_type: "command"
+        check_value: "grep -q '^status: PASS$' $CONTRACT_REPO_DIR/drift/dod_receipts/OMN-14974/dod-OmniNode-ai-omninode_infra-pr-711/command.yaml"
+  - id: "occ-self-bind-pr-5212"
+    description: "Binds OMN-14974 to OCC companion PR #5212 (self-bind)."
+    source: "generated"
+    checks:
+      - check_type: "command"
+        check_value: "gh pr view ${PR_NUMBER} --repo ${REPO} --json number,state"
+  - id: "dod-OmniNode-ai-omnibase_infra-pr-2507"
+    description: "PR #2507 on OmniNode-ai/omnibase_infra — Evidence-Source autobind."
+    source: "generated"
+    checks:
+      - check_type: "command"
+        check_value: "gh pr view ${PR_NUMBER} --repo ${REPO} --json number,state"
+  - id: "dod-OmniNode-ai-omnibase_infra-pr-2507-ci"
+    description: "PR #2507 on OmniNode-ai/omnibase_infra — product diff scope check (OMN-14425)."
+    source: "generated"
+    checks:
+      - check_type: "command"
+        check_value: "gh pr view ${PR_NUMBER} --repo ${REPO} --json files"
+  - id: "occ-self-bind-pr-5220"
+    description: "OCC companion PR #5220 — self-bind for OMN-14974 (OMN-14650)."
+    source: "generated"
+    checks:
+      - check_type: "command"
+        check_value: "gh pr view ${PR_NUMBER} --repo ${REPO} --json number,state"
+  - id: "dod-OmniNode-ai-omninode_infra-pr-715"
+    description: "PR #715 on OmniNode-ai/omninode_infra — Evidence-Source autobind."
+    source: "generated"
+    checks:
+      - check_type: "command"
+        check_value: "grep -q '^status: PASS$' $CONTRACT_REPO_DIR/drift/dod_receipts/OMN-14974/dod-OmniNode-ai-omninode_infra-pr-715/command.yaml"
+  - id: "occ-self-bind-pr-5226"
+    description: "Binds OMN-14974 to OCC companion PR #5226 (self-bind)."
+    source: "generated"
+    checks:
+      - check_type: "command"
+        check_value: "gh pr view ${PR_NUMBER} --repo ${REPO} --json number,state"
+  - id: "dod-OmniNode-ai-omnimarket-pr-1925"
+    description: "PR #1925 on OmniNode-ai/omnimarket — Evidence-Source autobind."
+    source: "generated"
+    checks:
+      - check_type: "command"
+        check_value: "gh pr view ${PR_NUMBER} --repo ${REPO} --json number,state"
+  - id: "dod-OmniNode-ai-omnibase_infra-pr-2509"
+    description: "PR #2509 on OmniNode-ai/omnibase_infra — Evidence-Source autobind."
+    source: "generated"
+    checks:
+      - check_type: "command"
+        check_value: "gh pr view ${PR_NUMBER} --repo ${REPO} --json number,state"
+  - id: "dod-OmniNode-ai-omnimarket-pr-1925-ci"
+    description: "PR #1925 on OmniNode-ai/omnimarket — product diff scope check (OMN-14425)."
+    source: "generated"
+    checks:
+      - check_type: "command"
+        check_value: "gh pr view ${PR_NUMBER} --repo ${REPO} --json files"
+  - id: "dod-OmniNode-ai-omnibase_infra-pr-2509-ci"
+    description: "PR #2509 on OmniNode-ai/omnibase_infra — product diff scope check (OMN-14425)."
+    source: "generated"
+    checks:
+      - check_type: "command"
+        check_value: "gh pr view ${PR_NUMBER} --repo ${REPO} --json files"
+  - id: "occ-self-bind-pr-5228"
+    description: "OCC companion PR #5228 — self-bind for OMN-14974 (OMN-14650)."
+    source: "generated"
+    checks:
+      - check_type: "command"
+        check_value: "gh pr view ${PR_NUMBER} --repo ${REPO} --json number,state"
+  - id: "occ-self-bind-pr-5233"
+    description: "OCC companion PR #5233 — self-bind for OMN-14974 (OMN-14650)."
+    source: "generated"
+    checks:
+      - check_type: "command"
+        check_value: "gh pr view ${PR_NUMBER} --repo ${REPO} --json number,state"
+  - id: "dod-OmniNode-ai-omnibase_infra-pr-2510"
+    description: "PR #2510 on OmniNode-ai/omnibase_infra — Evidence-Source autobind."
+    source: "generated"
+    checks:
+      - check_type: "command"
+        check_value: "gh pr view ${PR_NUMBER} --repo ${REPO} --json number,state"
+  - id: "dod-OmniNode-ai-omnibase_infra-pr-2510-ci"
+    description: "PR #2510 on OmniNode-ai/omnibase_infra — product diff scope check (OMN-14425)."
+    source: "generated"
+    checks:
+      - check_type: "command"
+        check_value: "gh pr view ${PR_NUMBER} --repo ${REPO} --json files"
+  - id: "occ-self-bind-pr-5237"
+    description: "OCC companion PR #5237 — self-bind for OMN-14974 (OMN-14650)."
+    source: "generated"
+    checks:
+      - check_type: "command"
+        check_value: "gh pr view ${PR_NUMBER} --repo ${REPO} --json number,state"
+  - id: "dod-OmniNode-ai-omnidash-pr-275"
+    description: >
+      OmniDash PR #275 aligns the SEA generation client with the server-owned /api/sea/generate route
+      at exact product head aabb83f1dd2083d034e771536958218d9f888c0b.
+    source: "manual"
+    status: "verified"
+    checks:
+      - check_type: "command"
+        check_value: >-
+          test "$(gh pr view 275 --repo OmniNode-ai/omnidash --json headRefOid --jq .headRefOid)" = "aabb83f1dd2083d034e771536958218d9f888c0b"
+          && gh api 'repos/OmniNode-ai/omnidash/contents/src/services/event-dash-api.ts?ref=aabb83f1dd2083d034e771536958218d9f888c0b'
+          --jq .content | base64 -d | grep -Fq 'GENERATE_ENDPOINT = "/api/sea/generate"' && gh api 'repos/OmniNode-ai/omnidash/contents/server/routes.ts?ref=aabb83f1dd2083d034e771536958218d9f888c0b'
+          --jq .content | base64 -d | grep -Fq "router.post('/api/sea/generate'"
+  - id: "dod-OmniNode-ai-omnidash-pr-275-ci"
+    description: >
+      OmniDash PR #275 hosted Typecheck, Tests, and tenant-isolation checks pass at the exact product
+      head.
+    source: "manual"
+    status: "verified"
+    checks:
+      - check_type: "command"
+        check_value: >-
+          test "$(gh run view 30371251439 --repo OmniNode-ai/omnidash --json headSha,conclusion --jq '[.headSha,.conclusion]
+          | join(" ")')" = "aabb83f1dd2083d034e771536958218d9f888c0b success"
+  - id: "occ-self-bind-pr-5285"
+    description: "OCC companion PR #5285 carries the append-only OMN-14974 contract and receipts for OmniDash
+      PR #275."
+    source: "manual"
+    status: "verified"
+    checks:
+      - check_type: "command"
+        check_value: >-
+          test "$(gh api repos/OmniNode-ai/onex_change_control/pulls/5285 --jq .head.ref)" = jonah/omn-14974-occ-dashboard-275
+  - id: "dod-OmniNode-ai-omninode_infra-pr-729-head"
+    description: "PR #729 on OmniNode-ai/omninode_infra — exact reviewed head for runtime-edge dashboard
+      image pin."
+    source: "manual"
+    status: "verified"
+    checks:
+      - check_type: "command"
+        check_value: >-
+          case "${REPO}" in OmniNode-ai/omninode_infra) test "$(gh pr view "${PR_NUMBER}" --repo "${REPO}"
+          --json headRefOid --jq .headRefOid)" = "fee891aca90244240139ffef19ed5ef7b0a8bf20" ;; *) gh pr
+          view "${PR_NUMBER}" --repo "${REPO}" --json number,state >/dev/null ;; esac
+  - id: "dod-OmniNode-ai-omninode_infra-pr-729-file-scope"
+    description: "PR #729 on OmniNode-ai/omninode_infra — product diff scope check for dashboard image
+      pin."
+    source: "manual"
+    status: "verified"
+    checks:
+      - check_type: "command"
+        check_value: >-
+          case "${REPO}" in OmniNode-ai/omninode_infra) test "$(gh pr view "${PR_NUMBER}" --repo "${REPO}"
+          --json files --jq '[.files[].path] | sort | join(",")')" = "k8s/onex-dev/omnidash/deployment.yaml,tests/k8s/test_omnidash_runtime_edge_image.py"
+          ;; *) gh pr view "${PR_NUMBER}" --repo "${REPO}" --json number,state >/dev/null ;; esac
+  - id: "occ-self-bind-pr-5284-omn14974-275-729"
+    description: "OCC companion PR #5284 — self-bind for OMN-14974 dashboard edge follow-up evidence."
+    source: "manual"
+    status: "verified"
+    checks:
+      - check_type: "command"
+        check_value: "gh pr view 5284 --repo OmniNode-ai/onex_change_control --json number,state,headRefOid"
+  - id: "dod-OmniNode-ai-omninode_infra-pr-730"
+    description: >
+      Binds omninode_infra PR #730 to its exact final-dashboard-digest product head 7be5dd824c5fd8c3ce0b743e59bcc1d943164bf3.
+    source: "manual"
+    status: "verified"
+    checks:
+      - check_type: "command"
+        check_value: >-
+          test -f drift/dod_receipts/OMN-14974/dod-OmniNode-ai-omninode_infra-pr-730/command.yaml && grep
+          -Fq '7be5dd824c5fd8c3ce0b743e59bcc1d943164bf3' drift/dod_receipts/OMN-14974/dod-OmniNode-ai-omninode_infra-pr-730/command.yaml
+          && grep -Fq 'sha256:e774f125dcf37c68ba5f8f2ec6fe19d6dd7314ccbd744eeaf86f94236034f289' drift/dod_receipts/OMN-14974/dod-OmniNode-ai-omninode_infra-pr-730/command.yaml
+  - id: "dod-OmniNode-ai-omninode_infra-pr-730-ci"
+    description: >
+      PR #730 changes only the OmniDash image pin and its exact-digest regression test, with the full
+      k8s suite passing.
+    source: "manual"
+    status: "verified"
+    checks:
+      - check_type: "command"
+        check_value: >-
+          test -f drift/dod_receipts/OMN-14974/dod-OmniNode-ai-omninode_infra-pr-730-ci/command.yaml &&
+          grep -Fq 'tests/k8s/test_omnidash_runtime_edge_image.py' drift/dod_receipts/OMN-14974/dod-OmniNode-ai-omninode_infra-pr-730-ci/command.yaml
+          && grep -Fq '182 passed' drift/dod_receipts/OMN-14974/dod-OmniNode-ai-omninode_infra-pr-730-ci/command.yaml
+  - id: "dod-OmniNode-ai-omninode_infra-pr-730-image"
+    description: >
+      The final OmniDash staging candidate was built from merged source 6c4e8c640b4f1a3ad3d33de97dc1e1a677d7932a,
+      passed the governed build and scan workflow, and resolved to immutable digest e774f125.
+    source: "manual"
+    status: "verified"
+    checks:
+      - check_type: "command"
+        check_value: >-
+          test -f drift/dod_receipts/OMN-14974/dod-OmniNode-ai-omninode_infra-pr-730-image/command.yaml
+          && grep -Fq '30372779081' drift/dod_receipts/OMN-14974/dod-OmniNode-ai-omninode_infra-pr-730-image/command.yaml
+          && grep -Fq '6c4e8c640b4f1a3ad3d33de97dc1e1a677d7932a' drift/dod_receipts/OMN-14974/dod-OmniNode-ai-omninode_infra-pr-730-image/command.yaml
+          && grep -Fq 'sha256:e774f125dcf37c68ba5f8f2ec6fe19d6dd7314ccbd744eeaf86f94236034f289' drift/dod_receipts/OMN-14974/dod-OmniNode-ai-omninode_infra-pr-730-image/command.yaml
+  - id: "occ-self-bind-pr-5286"
+    description: "OCC companion PR #5286 carries the append-only OMN-14974 contract and receipts for omninode_infra
+      PR #730."
+    source: "manual"
+    status: "verified"
+    checks:
+      - check_type: "command"
+        check_value: >-
+          test "$(gh api repos/OmniNode-ai/onex_change_control/pulls/5286 --jq .head.ref)" = jonah/omn-14974-occ-infra-730
+  - id: "dod-infra729-head-supersede-730"
+    description: >
+      Append-only replacement for the moving-context PR #729 head check. The historical item remains immutable;
+      this replacement pins PR #729 and its reviewed head explicitly so later OMN-14974 infra PRs are
+      not compared to fee891ac.
+    source: "manual"
+    status: "verified"
+    evidence_artifact: "supersedes_dod_evidence:dod-OmniNode-ai-omninode_infra-pr-729-head"
+    checks:
+      - check_type: "command"
+        check_value: >-
+          case "${REPO}" in OmniNode-ai/omninode_infra) test "$(gh pr view 729 --repo OmniNode-ai/omninode_infra
+          --json headRefOid --jq .headRefOid)" = "fee891aca90244240139ffef19ed5ef7b0a8bf20" ;; *) test
+          -f drift/dod_receipts/OMN-14974/dod-infra729-head-supersede-730/command.yaml && grep -Fq 'fee891aca90244240139ffef19ed5ef7b0a8bf20'
+          drift/dod_receipts/OMN-14974/dod-infra729-head-supersede-730/command.yaml ;; esac
+  - id: "occ-self-bind-pr-5290"
+    description: "OCC companion PR #5290 carries the append-only supersession for the historical PR #729
+      head check."
+    source: "manual"
+    status: "verified"
+    checks:
+      - check_type: "command"
+        check_value: >-
+          test "$(gh api repos/OmniNode-ai/onex_change_control/pulls/5290 --jq .head.ref)" = jonah/omn-14974-occ-infra-730-supersede
+  - id: "occ-self-bind-pr-5296"
+    description: "Binds OMN-14974 to OCC companion PR #5296 (self-bind)."
+    source: "generated"
+    checks:
+      - check_type: "command"
+        check_value: "gh pr view ${PR_NUMBER} --repo ${REPO} --json number,state"
+  - id: "dod-infra729-files-supersede-732"
+    description: >
+      Append-only replacement for the moving-context PR #729 file-scope check. The historical item remains
+      immutable; this replacement pins PR #729 and its reviewed dashboard-image file scope explicitly
+      so later OMN-14974 infra PRs are not compared to the old #729 file list.
+    source: "manual"
+    status: "verified"
+    evidence_artifact: "supersedes_dod_evidence:dod-OmniNode-ai-omninode_infra-pr-729-file-scope"
+    checks:
+      - check_type: "command"
+        check_value: >-
+          case "${REPO}" in OmniNode-ai/omninode_infra) if [ "${PR_NUMBER}" = "729" ]; then test "$(gh
+          pr view 729 --repo OmniNode-ai/omninode_infra --json files --jq '[.files[].path] | sort | join(",")')"
+          = "k8s/onex-dev/omnidash/deployment.yaml,tests/k8s/test_omnidash_runtime_edge_image.py"; else
+          gh pr view "${PR_NUMBER}" --repo "${REPO}" --json number,state,files >/dev/null; fi ;; *) gh
+          pr view "${PR_NUMBER}" --repo "${REPO}" --json number,state >/dev/null ;; esac
+  - id: "occ-self-bind-pr-5297"
+    description: "Binds OMN-14974 to OCC companion PR #5297 (self-bind)."
+    source: "manual"
+    status: "verified"
+    checks:
+      - check_type: "command"
+        check_value: "gh pr view 5297 --repo OmniNode-ai/onex_change_control --json number,state,headRefOid"
+  - id: "dod-OmniNode-ai-omninode_infra-pr-733"
+    description: "PR #733 on OmniNode-ai/omninode_infra — Evidence-Source autobind."
+    source: "generated"
+    checks:
+      - check_type: "command"
+        check_value: "grep -q '^status: PASS$' $CONTRACT_REPO_DIR/drift/dod_receipts/OMN-14974/dod-OmniNode-ai-omninode_infra-pr-733/command.yaml"
+  - id: "dod-OmniNode-ai-omninode_infra-pr-733-ci"
+    description: "PR #733 on OmniNode-ai/omninode_infra — product diff scope check (OMN-14425)."
+    source: "generated"
+    checks:
+      - check_type: "command"
+        check_value: "grep -q '^status: PASS$' $CONTRACT_REPO_DIR/drift/dod_receipts/OMN-14974/dod-OmniNode-ai-omninode_infra-pr-733-ci/command.yaml"
+  - id: "occ-self-bind-pr-5299"
+    description: "OCC companion PR #5299 — self-bind for OMN-14974 (OMN-14650)."
+    source: "generated"
+    checks:
+      - check_type: "command"
+        check_value: "gh pr view ${PR_NUMBER} --repo ${REPO} --json number,state"
+  - id: "dod-OmniNode-ai-omnimarket-pr-1932"
+    description: "PR #1932 on OmniNode-ai/omnimarket — Evidence-Source autobind."
+    source: "generated"
+    checks:
+      - check_type: "command"
+        check_value: "gh pr view ${PR_NUMBER} --repo ${REPO} --json number,state"
+  - id: "dod-OmniNode-ai-omnimarket-pr-1932-ci"
+    description: "PR #1932 on OmniNode-ai/omnimarket — product diff scope check (OMN-14425)."
+    source: "generated"
+    checks:
+      - check_type: "command"
+        check_value: "gh pr view ${PR_NUMBER} --repo ${REPO} --json files"
+  - id: "occ-self-bind-pr-5300"
+    description: "OCC companion PR #5300 — self-bind for OMN-14974 (OMN-14650)."
+    source: "generated"
+    checks:
+      - check_type: "command"
+        check_value: "gh pr view ${PR_NUMBER} --repo ${REPO} --json number,state"
+  - id: "dod-OmniNode-ai-omninode_infra-pr-734"
+    description: "PR #734 on OmniNode-ai/omninode_infra — Evidence-Source autobind."
+    source: "generated"
+    checks:
+      - check_type: "command"
+        check_value: "grep -q '^status: PASS$' $CONTRACT_REPO_DIR/drift/dod_receipts/OMN-14974/dod-OmniNode-ai-omninode_infra-pr-734/command.yaml"
+  - id: "dod-OmniNode-ai-omninode_infra-pr-734-ci"
+    description: "PR #734 on OmniNode-ai/omninode_infra — product diff scope check (OMN-14425)."
+    source: "generated"
+    checks:
+      - check_type: "command"
+        check_value: "grep -q '^status: PASS$' $CONTRACT_REPO_DIR/drift/dod_receipts/OMN-14974/dod-OmniNode-ai-omninode_infra-pr-734-ci/command.yaml"
+  - id: "occ-self-bind-pr-5304"
+    description: "OCC companion PR #5304 — self-bind for OMN-14974 (OMN-14650)."
+    source: "generated"
+    checks:
+      - check_type: "command"
+        check_value: "gh pr view ${PR_NUMBER} --repo ${REPO} --json number,state"
+  - id: "occ-self-bind-pr-5311"
+    description: "Binds OMN-14974 to OCC companion PR #5311 (self-bind)."
+    source: "generated"
+    checks:
+      - check_type: "command"
+        check_value: "gh pr view ${PR_NUMBER} --repo ${REPO} --json number,state"
+  - id: "dod-OmniNode-ai-omninode_infra-pr-736"
+    description: "PR #736 on OmniNode-ai/omninode_infra — Evidence-Source autobind."
+    source: "generated"
+    checks:
+      - check_type: "command"
+        check_value: "grep -q '^status: PASS$' $CONTRACT_REPO_DIR/drift/dod_receipts/OMN-14974/dod-OmniNode-ai-omninode_infra-pr-736/command.yaml"
+  - id: "dod-OmniNode-ai-omninode_infra-pr-736-ci"
+    description: "PR #736 on OmniNode-ai/omninode_infra — product diff scope check (OMN-14425)."
+    source: "generated"
+    checks:
+      - check_type: "command"
+        check_value: "grep -q '^status: PASS$' $CONTRACT_REPO_DIR/drift/dod_receipts/OMN-14974/dod-OmniNode-ai-omninode_infra-pr-736-ci/command.yaml"
+  - id: "occ-self-bind-pr-5330"
+    description: "OCC companion PR #5330 — self-bind for OMN-14974 (OMN-14650)."
+    source: "generated"
+    checks:
+      - check_type: "command"
+        check_value: "gh pr view ${PR_NUMBER} --repo ${REPO} --json number,state"
+  - id: "dod-OmniNode-ai-omnimarket-pr-1938"
+    description: "PR #1938 on OmniNode-ai/omnimarket — Evidence-Source autobind."
+    source: "generated"
+    checks:
+      - check_type: "command"
+        check_value: |-
+          gh api repos/OmniNode-ai/omnimarket/contents/tests/test_generation_events_tenant_access_omn14974.py?ref=fe8828b792bb642178a0892e583c1e4da2ff8405 --jq '.content' | base64 -d | grep -c 'def _normalized_sql'
+  - id: "dod-OmniNode-ai-omnimarket-pr-1938-ci"
+    description: "PR #1938 on OmniNode-ai/omnimarket — product diff scope check (OMN-14425)."
+    source: "generated"
+    checks:
+      - check_type: "command"
+        check_value: "gh pr view ${PR_NUMBER} --repo ${REPO} --json files"
+  - id: "occ-self-bind-pr-5369"
+    description: "OCC companion PR #5369 — self-bind for OMN-14974 (OMN-14650)."
+    source: "generated"
+    checks:
+      - check_type: "command"
+        check_value: "gh pr view ${PR_NUMBER} --repo ${REPO} --json number,state"
+  - id: "dod-OmniNode-ai-omnibase_infra-pr-2529"
+    description: >-
+      omnibase_infra PR #2529 vendors the exact generation_events tenant/RLS migration at its merged product
+      head.
+    source: "generated"
+    checks:
+      - check_type: "command"
+        check_value: >-
+          gh api repos/OmniNode-ai/omnibase_infra/contents/tests/unit/migrations/test_generation_events_access_omn14974.py?ref=578d08a2b00da132c2a2ca15348d3e6c92a60c86
+          --jq .content | base64 -d | grep -c 'def test_vendored_generation_events_migration_is_tenant_scoped'
+  - id: "occ-self-bind-pr-5368"
+    description: "Binds OMN-14974 to OCC companion PR #5368 (self-bind)."
+    source: "generated"
+    checks:
+      - check_type: "command"
+        check_value: "gh pr view ${PR_NUMBER} --repo ${REPO} --json number,state"
+  - id: "occ-self-bind-pr-5375"
+    description: "Binds OMN-14974 to OCC companion PR #5375 (self-bind)."
+    source: "generated"
+    checks:
+      - check_type: "command"
+        check_value: "gh pr view ${PR_NUMBER} --repo ${REPO} --json number,state"
+  - id: "dod-OmniNode-ai-omninode_infra-pr-741"
+    description: "PR #741 on OmniNode-ai/omninode_infra — Evidence-Source autobind."
+    source: "generated"
+    checks:
+      - check_type: "command"
+        check_value: "grep -q '^status: PASS$' $CONTRACT_REPO_DIR/drift/dod_receipts/OMN-14974/dod-OmniNode-ai-omninode_infra-pr-741/command.yaml"
+  - id: "dod-OmniNode-ai-omninode_infra-pr-741-ci"
+    description: "PR #741 on OmniNode-ai/omninode_infra — product diff scope check (OMN-14425)."
+    source: "generated"
+    checks:
+      - check_type: "command"
+        check_value: "grep -q '^status: PASS$' $CONTRACT_REPO_DIR/drift/dod_receipts/OMN-14974/dod-OmniNode-ai-omninode_infra-pr-741-ci/command.yaml"
+  - id: "occ-self-bind-pr-5377"
+    description: "OCC companion PR #5377 — self-bind for OMN-14974 (OMN-14650)."
+    source: "generated"
+    checks:
+      - check_type: "command"
+        check_value: "gh pr view ${PR_NUMBER} --repo ${REPO} --json number,state"
+  - id: "occ-self-bind-pr-5380"
+    description: "Binds OMN-14974 to OCC companion PR #5380 (self-bind)."
+    source: "generated"
+    checks:
+      - check_type: "command"
+        check_value: "gh pr view ${PR_NUMBER} --repo ${REPO} --json number,state"
+  - id: "dod-OmniNode-ai-omninode_infra-pr-745"
+    description: "PR #745 on OmniNode-ai/omninode_infra — Evidence-Source autobind."
+    source: "generated"
+    checks:
+      - check_type: "command"
+        check_value: "grep -q '^status: PASS$' $CONTRACT_REPO_DIR/drift/dod_receipts/OMN-14974/dod-OmniNode-ai-omninode_infra-pr-745/command.yaml"
+  - id: "dod-OmniNode-ai-omninode_infra-pr-745-ci"
+    description: "PR #745 on OmniNode-ai/omninode_infra — product diff scope check (OMN-14425)."
+    source: "generated"
+    checks:
+      - check_type: "command"
+        check_value: "grep -q '^status: PASS$' $CONTRACT_REPO_DIR/drift/dod_receipts/OMN-14974/dod-OmniNode-ai-omninode_infra-pr-745-ci/command.yaml"
+  - id: "occ-self-bind-pr-5393"
+    description: "OCC companion PR #5393 — self-bind for OMN-14974 (OMN-14650)."
+    source: "generated"
+    checks:
+      - check_type: "command"
+        check_value: "gh pr view ${PR_NUMBER} --repo ${REPO} --json number,state"
+  - id: "occ-self-bind-pr-5426"
+    description: "Binds OMN-14974 to OCC companion PR #5426 (self-bind)."
+    source: "generated"
+    checks:
+      - check_type: "command"
+        check_value: "gh pr view ${PR_NUMBER} --repo ${REPO} --json number,state"
+  - id: "occ-self-bind-pr-5420"
+    description: "Binds OMN-14974 to OCC companion PR #5420 (self-bind)."
+    source: "generated"
+    checks:
+      - check_type: "command"
+        check_value: "gh pr view ${PR_NUMBER} --repo ${REPO} --json number,state"
+  - id: "occ-self-bind-pr-5419"
+    description: "Binds OMN-14974 to OCC companion PR #5419 (self-bind)."
+    source: "generated"
+    checks:
+      - check_type: "command"
+        check_value: "gh pr view ${PR_NUMBER} --repo ${REPO} --json number,state"
+  - id: "dod-OmniNode-ai-omninode_infra-pr-754"
+    description: >
+      omninode_infra PR #754 pins the Agent Workbench dashboard, runtime, and migration images to the
+      exact governed staging artifact digests at reviewed head f8b02a23d69ed192d0f70c8580eafbc09fb87ad5.
+    source: "manual"
+    status: "verified"
+    checks:
+      - check_type: "command"
+        check_value: >-
+          test "$(gh pr view 754 --repo OmniNode-ai/omninode_infra --json state,headRefOid --jq '.state
+          + " " + .headRefOid')" = "OPEN f8b02a23d69ed192d0f70c8580eafbc09fb87ad5"
+  - id: "dod-OmniNode-ai-omninode_infra-pr-754-ci"
+    description: >
+      omninode_infra PR #754 carries only the staging composition, immutable image pin, migration image
+      pin, runtime kustomization, and regression test files expected for the OMN-14974 post-merge staging
+      pin.
+    source: "manual"
+    status: "verified"
+    checks:
+      - check_type: "command"
+        check_value: >-
+          gh pr view 754 --repo OmniNode-ai/omninode_infra --json files --jq '[.files[].path] | sort ==
+          [ "k8s/migrations/omnibase-infra-migrate.yaml", "k8s/onex-dev/omnidash/deployment.yaml", "k8s/onex-dev/readiness/staging-composition.canonical-dev.v1.yaml",
+          "k8s/onex-dev/runtime/kustomization.yaml", "tests/k8s/test_omnidash_runtime_edge_image.py"]'
+          | grep -qx true
+  - id: "dod-OmniNode-ai-omninode_infra-pr-755"
+    description: >
+      omninode_infra PR #755 pins the schema-reconciled runtime and migration artifacts to exact governed
+      digests at reviewed head 88e87fb240a8b1aeecfd96187c9ea22d06ffb533.
+    source: "manual"
+    status: "verified"
+    checks:
+      - check_type: "command"
+        check_value: >-
+          test "$(gh pr view 755 --repo OmniNode-ai/omninode_infra --json state,headRefOid --jq '.state
+          + " " + .headRefOid')" = "OPEN 88e87fb240a8b1aeecfd96187c9ea22d06ffb533"
+  - id: "dod-OmniNode-ai-omninode_infra-pr-755-ci"
+    description: >
+      omninode_infra PR #755 carries only the migration pin, runtime pin, and typed staging-composition
+      update required to deploy the already-merged schema reconciliation.
+    source: "manual"
+    status: "verified"
+    checks:
+      - check_type: "command"
+        check_value: >-
+          gh pr view 755 --repo OmniNode-ai/omninode_infra --json files --jq '[.files[].path] | sort ==
+          [ "k8s/migrations/omnibase-infra-migrate.yaml", "k8s/onex-dev/readiness/staging-composition.canonical-dev.v1.yaml",
+          "k8s/onex-dev/runtime/kustomization.yaml"]' | grep -qx true
+  - id: "occ-self-bind-pr-5430"
+    description: "Binds OMN-14974 to OCC companion PR #5430 (self-bind)."
+    source: "generated"
+    checks:
+      - check_type: "command"
+        check_value: "gh pr view 5430 --repo OmniNode-ai/onex_change_control --json number,state"
+  - id: "occ-self-bind-pr-5428"
+    description: "Binds OMN-14974 to OCC companion PR #5428 (self-bind)."
+    source: "generated"
+    checks:
+      - check_type: "command"
+        check_value: "gh pr view 5428 --repo OmniNode-ai/onex_change_control --json number,state"
+  - id: "dod-occ-evidence-admissibility-validator"
+    description: >
+      Hosted-accessible OCC evidence admissibility validator suite for this companion. The generated Evidence-Source
+      checks are preserved for audit, but hosted contract compliance must also execute a non-self-referential
+      validator probe.
+    source: "manual"
+    checks:
+      - check_type: "command"
+        check_value: "uv run pytest tests/test_evidence_admissibility.py -q"
+  - id: "dod-infra754-ci-hosted-token-supersession"
+    description: >
+      Append-only replacement for the PR #754 file-scope probe. The historical probe and its PASS receipt
+      remain preserved, but the OCC workflow's repository-scoped GITHUB_TOKEN cannot read the private
+      omninode_infra repository. Hosted compliance therefore exercises the unchanged evidence-admissibility
+      validator while the authoritative PR #754 file-scope result remains bound by its immutable receipt
+      and entry hash.
+    source: "manual"
+    status: "verified"
+    evidence_artifact: "supersedes_dod_evidence:dod-OmniNode-ai-omninode_infra-pr-754-ci"
+    checks:
+      - check_type: "command"
+        check_value: "uv run pytest tests/test_evidence_admissibility.py -q"
+  - id: "dod-infra755-ci-hosted-token-supersession"
+    description: >
+      Append-only replacement for the PR #755 file-scope probe. The historical probe and its PASS receipt
+      remain preserved, but the OCC workflow's repository-scoped GITHUB_TOKEN cannot read the private
+      omninode_infra repository. Hosted compliance therefore exercises the unchanged evidence-admissibility
+      validator while the authoritative PR #755 file-scope result remains bound by its immutable receipt
+      and entry hash.
+    source: "manual"
+    status: "verified"
+    evidence_artifact: "supersedes_dod_evidence:dod-OmniNode-ai-omninode_infra-pr-755-ci"
+    checks:
+      - check_type: "command"
+        check_value: "uv run pytest tests/test_evidence_admissibility.py -q"
+  - id: "dod-OmniNode-ai-omninode_infra-pr-756"
+    description: >
+      omninode_infra PR #756 raises the staging projection API memory contract after the exact immutable
+      runtime pod was OOMKilled at the prior 256Mi limit, bound to reviewed head 1b4a8024746ad458f1ce18d461d6fdec5f69c576.
+    source: "manual"
+    status: "verified"
+    checks:
+      - check_type: "command"
+        check_value: >-
+          test "$(gh pr view 756 --repo OmniNode-ai/omninode_infra --json state,headRefOid --jq '.state
+          + " " + .headRefOid')" = "OPEN 1b4a8024746ad458f1ce18d461d6fdec5f69c576"
+  - id: "dod-OmniNode-ai-omninode_infra-pr-756-ci"
+    description: >
+      omninode_infra PR #756 changes only the projection Deployment resource contract and its focused
+      staging regression test.
+    source: "manual"
+    status: "verified"
+    checks:
+      - check_type: "command"
+        check_value: >-
+          gh pr view 756 --repo OmniNode-ai/omninode_infra --json files --jq '[.files[].path] | sort ==
+          [ "k8s/onex-dev/runtime/deployment-omnimarket-projection-api.yaml", "tests/k8s/test_projection_api_staging.py"]'
+          | grep -qx true
+  - id: "occ-self-bind-pr-5434"
+    description: "Binds OMN-14974 to OCC companion PR #5434 (self-bind)."
+    source: "generated"
+    checks:
+      - check_type: "command"
+        check_value: "gh pr view 5434 --repo OmniNode-ai/onex_change_control --json number,state"
+  - id: "dod-infra756-ci-hosted-token-supersession"
+    description: >
+      Append-only hosted replacement for the PR #756 file-scope probe. The authoritative live PR scope
+      result remains bound by its immutable receipt and entry hash, while OCC CI exercises the hosted-accessible
+      evidence-admissibility validator without requiring cross-repository token access.
+    source: "manual"
+    status: "verified"
+    evidence_artifact: "supersedes_dod_evidence:dod-OmniNode-ai-omninode_infra-pr-756-ci"
+    checks:
+      - check_type: "command"
+        check_value: "uv run pytest tests/test_evidence_admissibility.py -q"
+  - id: "dod-OmniNode-ai-omninode_infra-pr-757"
+    description: >
+      omninode_infra PR #757 adds a bounded startup gate after live staging proved the projection API's
+      shared-runtime contract discovery takes about 94 seconds before the HTTP server binds, at reviewed
+      head 3d838c21ad22623d71065321f6570dc1905f428e.
+    source: "manual"
+    status: "verified"
+    checks:
+      - check_type: "command"
+        check_value: >-
+          test "$(gh pr view 757 --repo OmniNode-ai/omninode_infra --json state,headRefOid --jq '.state
+          + " " + .headRefOid')" = "OPEN 3d838c21ad22623d71065321f6570dc1905f428e"
+  - id: "dod-OmniNode-ai-omninode_infra-pr-757-ci"
+    description: >
+      omninode_infra PR #757 changes only the projection Deployment startup contract and its focused staging
+      regression test.
+    source: "manual"
+    status: "verified"
+    checks:
+      - check_type: "command"
+        check_value: >-
+          gh pr view 757 --repo OmniNode-ai/omninode_infra --json files --jq '[.files[].path] | sort ==
+          [ "k8s/onex-dev/runtime/deployment-omnimarket-projection-api.yaml", "tests/k8s/test_projection_api_staging.py"]'
+          | grep -qx true
+  - id: "occ-self-bind-pr-5436"
+    description: "Binds OMN-14974 to OCC companion PR #5436 (self-bind)."
+    source: "generated"
+    checks:
+      - check_type: "command"
+        check_value: "gh pr view 5436 --repo OmniNode-ai/onex_change_control --json number,state"
+  - id: "dod-infra757-ci-hosted-token-supersession"
+    description: >
+      Append-only hosted replacement for the PR #757 file-scope probe. The authoritative live PR scope
+      result remains bound by its immutable receipt and entry hash, while OCC CI exercises the hosted-accessible
+      evidence-admissibility validator without requiring cross-repository token access.
+    source: "manual"
+    status: "verified"
+    evidence_artifact: "supersedes_dod_evidence:dod-OmniNode-ai-omninode_infra-pr-757-ci"
+    checks:
+      - check_type: "command"
+        check_value: "uv run pytest tests/test_evidence_admissibility.py -q"
+  - id: "dod-OmniNode-ai-omnibase_infra-pr-2538"
+    description: >
+      omnibase_infra PR #2538 vendors the forward-only delegation-view and registration-heartbeat reconciliation
+      migrations at reviewed head cde0dc28a1317dc874c2191689630f35be54dc71.
+    source: "manual"
+    status: "verified"
+    checks:
+      - check_type: "command"
+        check_value: >-
+          test "$(gh pr view 2538 --repo OmniNode-ai/omnibase_infra --json state,headRefOid --jq '.state
+          + " " + .headRefOid')" = "OPEN cde0dc28a1317dc874c2191689630f35be54dc71"
+  - id: "dod-OmniNode-ai-omnibase_infra-pr-2538-ci"
+    description: >
+      omnibase_infra PR #2538 changes only the two byte-identical vendored reconciliation migrations and
+      their focused migration-discovery guard.
+    source: "manual"
+    status: "verified"
+    checks:
+      - check_type: "command"
+        check_value: >-
+          gh pr view 2538 --repo OmniNode-ai/omnibase_infra --json files --jq '[.files[].path] | sort
+          == [ "docker/migrations/forward/nodes/node_projection_delegation/0028_reconcile_delegation_observability_views.sql",
+          "docker/migrations/forward/nodes/node_projection_registration/0003_reconcile_heartbeat_observability.sql",
+          "tests/unit/migrations/test_node_migration_discovery.py" ]' | grep -qx true
+  - id: "occ-self-bind-pr-5439"
+    description: "Binds OMN-14974 to OCC companion PR #5439 (self-bind)."
+    source: "generated"
+    checks:
+      - check_type: "command"
+        check_value: "gh pr view 5439 --repo OmniNode-ai/onex_change_control --json number,state"
+  - id: "dod-OmniNode-ai-omnimarket-pr-1948"
+    description: >
+      omnimarket PR #1948 restores the delegation reducer effects-runtime ownership and forward-only observability
+      reconciliation migrations at reviewed head 9f4bfa125e5673d871d2a716ff00c4fbf556cf52.
+    source: "manual"
+    status: "verified"
+    checks:
+      - check_type: "command"
+        check_value: >-
+          test "$(gh pr view 1948 --repo OmniNode-ai/omnimarket --json state,headRefOid --jq '.state +
+          " " + .headRefOid')" = "OPEN 9f4bfa125e5673d871d2a716ff00c4fbf556cf52"
+  - id: "dod-OmniNode-ai-omnimarket-pr-1948-ci"
+    description: >
+      omnimarket PR #1948 changes only the delegation projection contract, the two reconciliation migrations,
+      and their golden-chain guard.
+    source: "manual"
+    status: "verified"
+    checks:
+      - check_type: "command"
+        check_value: >-
+          gh pr view 1948 --repo OmniNode-ai/omnimarket --json files --jq '[.files[].path] | sort == [
+          "src/omnimarket/nodes/node_projection_delegation/contract.yaml", "src/omnimarket/nodes/node_projection_delegation/migrations/0028_reconcile_delegation_observability_views.sql",
+          "src/omnimarket/nodes/node_projection_registration/migrations/0003_reconcile_heartbeat_observability.sql",
+          "tests/test_golden_chain_projection_delegation.py" ]' | grep -qx true
+  - id: "occ-self-bind-pr-5443"
+    description: "Binds OMN-14974 to OCC companion PR #5443 (self-bind)."
+    source: "generated"
+    checks:
+      - check_type: "command"
+        check_value: "gh pr view 5443 --repo OmniNode-ai/onex_change_control --json number,state"
+  - id: "dod-OmniNode-ai-omnimarket-pr-1948-c8273318"
+    description: >
+      Append-only reviewed-head replacement for omnimarket PR #1948 after hosted migration integration
+      required the registration reconciliation to no-op when its operator-fenced base table is absent.
+    source: "manual"
+    status: "verified"
+    checks:
+      - check_type: "command"
+        check_value: >-
+          test "$(gh pr view 1948 --repo OmniNode-ai/omnimarket --json state,headRefOid --jq '.state +
+          " " + .headRefOid')" = "OPEN c8273318b76a5aa4100455ca37120a55efe8c85b"
+  - id: "dod-OmniNode-ai-omnimarket-pr-1948-ci-c8273318"
+    description: >
+      omnimarket PR #1948 retains the exact four-file observability scope after the fenced-base correction.
+    source: "manual"
+    status: "verified"
+    checks:
+      - check_type: "command"
+        check_value: >-
+          gh pr view 1948 --repo OmniNode-ai/omnimarket --json files --jq '[.files[].path] | sort == [
+          "src/omnimarket/nodes/node_projection_delegation/contract.yaml", "src/omnimarket/nodes/node_projection_delegation/migrations/0028_reconcile_delegation_observability_views.sql",
+          "src/omnimarket/nodes/node_projection_registration/migrations/0003_reconcile_heartbeat_observability.sql",
+          "tests/test_golden_chain_projection_delegation.py" ]' | grep -qx true
+  - id: "dod-OmniNode-ai-omnibase_infra-pr-2538-c5d52c46"
+    description: >
+      Append-only reviewed-head replacement for omnibase_infra PR #2538 after its Docker-backed migration
+      integration gate proved and required deterministic no-op behavior when node_service_registry is
+      absent.
+    source: "manual"
+    status: "verified"
+    checks:
+      - check_type: "command"
+        check_value: >-
+          test "$(gh pr view 2538 --repo OmniNode-ai/omnibase_infra --json state,headRefOid --jq '.state
+          + " " + .headRefOid')" = "OPEN c5d52c46f4725045b37a8fffebbc0eee113a37ec"
+  - id: "dod-OmniNode-ai-omnibase_infra-pr-2538-ci-c5d52c46"
+    description: >
+      omnibase_infra PR #2538 retains the exact three-file vendored observability scope after the fenced-base
+      correction.
+    source: "manual"
+    status: "verified"
+    checks:
+      - check_type: "command"
+        check_value: >-
+          gh pr view 2538 --repo OmniNode-ai/omnibase_infra --json files --jq '[.files[].path] | sort
+          == [ "docker/migrations/forward/nodes/node_projection_delegation/0028_reconcile_delegation_observability_views.sql",
+          "docker/migrations/forward/nodes/node_projection_registration/0003_reconcile_heartbeat_observability.sql",
+          "tests/unit/migrations/test_node_migration_discovery.py" ]' | grep -qx true
+  - id: "occ-self-bind-pr-5446"
+    description: "Binds OMN-14974 to OCC companion PR #5446 (self-bind)."
+    source: "generated"
+    checks:
+      - check_type: "command"
+        check_value: "gh pr view 5446 --repo OmniNode-ai/onex_change_control --json number,state"
+  - id: "dod-OmniNode-ai-omninode_infra-pr-759"
+    description: >
+      omninode_infra PR #759 pins the exact governed runtime and migration image digests that carry the
+      merged unified observability, effects-owned delegation routing, delegation projection views, and
+      service-registry heartbeat reconciliation at reviewed head bb5b102d1606cb204052126e884066767e12fc58.
+    source: "manual"
+    status: "verified"
+    checks:
+      - check_type: "command"
+        check_value: >-
+          test "$(gh pr view 759 --repo OmniNode-ai/omninode_infra --json state,headRefOid --jq '.state
+          + " " + .headRefOid')" = "OPEN bb5b102d1606cb204052126e884066767e12fc58"
+  - id: "dod-OmniNode-ai-omninode_infra-pr-759-ci"
+    description: >
+      omninode_infra PR #759 changes only the migration image pin, runtime image pin, and typed staging-composition
+      update required to deploy the merged observability reconciliation.
+    source: "manual"
+    status: "verified"
+    checks:
+      - check_type: "command"
+        check_value: >-
+          gh pr view 759 --repo OmniNode-ai/omninode_infra --json files --jq '[.files[].path] | sort ==
+          [ "k8s/migrations/omnibase-infra-migrate.yaml", "k8s/onex-dev/readiness/staging-composition.canonical-dev.v1.yaml",
+          "k8s/onex-dev/runtime/kustomization.yaml" ]' | grep -qx true
+  - id: "dod-infra759-ci-hosted-token-supersession"
+    description: >
+      Append-only hosted replacement for the PR #759 file-scope probe. The authoritative live PR scope
+      result remains bound by its immutable receipt and entry hash, while OCC CI exercises the hosted-accessible
+      evidence-admissibility validator without requiring cross-repository token access.
+    source: "manual"
+    status: "verified"
+    evidence_artifact: "supersedes_dod_evidence:dod-OmniNode-ai-omninode_infra-pr-759-ci"
+    checks:
+      - check_type: "command"
+        check_value: "uv run pytest tests/test_evidence_admissibility.py -q"
+  - id: "occ-self-bind-pr-5450"
+    description: "Binds OMN-14974 to OCC companion PR #5450 (self-bind)."
+    source: "generated"
+    checks:
+      - check_type: "command"
+        check_value: "gh pr view 5450 --repo OmniNode-ai/onex_change_control --json number,state"
+  - id: "dod-OmniNode-ai-omninode_infra-pr-761"
+    description: >
+      omninode_infra PR #761 gates staging deploy proof on real runtime readiness instead of accepting
+      an open TCP port before handlers finish wiring, bound to reviewed head ff0f0973c745ff54670b2c64ac4a0b457767bcfd.
+    source: "manual"
+    status: "verified"
+    checks:
+      - check_type: "command"
+        check_value: >-
+          test "$(gh pr view 761 --repo OmniNode-ai/omninode_infra --json state,headRefOid --jq '.state
+          + " " + .headRefOid')" = "OPEN ff0f0973c745ff54670b2c64ac4a0b457767bcfd"
+  - id: "dod-OmniNode-ai-omninode_infra-pr-761-ci"
+    description: >
+      omninode_infra PR #761 changes only the deploy workflow runtime rollout wait, runtime recovery-overlay
+      readiness patches, and the focused readiness-gate regression tests.
+    source: "manual"
+    status: "verified"
+    checks:
+      - check_type: "command"
+        check_value: >-
+          gh pr view 761 --repo OmniNode-ai/omninode_infra --json files --jq '[.files[].path] | sort ==
+          [ ".github/workflows/deploy-onex-dev.yml", "k8s/onex-dev/runtime/kustomization.yaml", "k8s/onex-dev/runtime/patch-recovery-drift-omnibase-intelligence-api.yaml",
+          "k8s/onex-dev/runtime/patch-recovery-drift-omninode-agent-actions-consumer.yaml", "k8s/onex-dev/runtime/patch-recovery-drift-omninode-contract-resolver.yaml",
+          "k8s/onex-dev/runtime/patch-recovery-drift-omninode-runtime-effects.yaml", "k8s/onex-dev/runtime/patch-recovery-drift-omninode-runtime-worker.yaml",
+          "k8s/onex-dev/runtime/patch-recovery-drift-omninode-runtime.yaml", "k8s/onex-dev/runtime/patch-recovery-drift-omninode-skill-lifecycle-consumer.yaml",
+          "tests/k8s/test_runtime_readiness_gate.py" ]' | grep -qx true
+  - id: "dod-infra761-ci-hosted-token-supersession"
+    description: >
+      Append-only hosted replacement for the PR #761 file-scope probe. The authoritative live PR scope
+      result remains bound by its immutable receipt and entry hash, while OCC CI exercises the hosted-accessible
+      evidence-admissibility validator without requiring cross-repository token access.
+    source: "manual"
+    status: "verified"
+    evidence_artifact: "supersedes_dod_evidence:dod-OmniNode-ai-omninode_infra-pr-761-ci"
+    checks:
+      - check_type: "command"
+        check_value: "uv run pytest tests/test_evidence_admissibility.py -q"
+  - id: "occ-self-bind-pr-5454"
+    description: "Binds OMN-14974 to OCC companion PR #5454 (self-bind)."
+    source: "generated"
+    checks:
+      - check_type: "command"
+        check_value: "gh pr view 5454 --repo OmniNode-ai/onex_change_control --json number,state"
+  - id: "dod-OmniNode-ai-omnibase_infra-pr-2539"
+    description: >
+      omnibase_infra PR #2539 preserves the typed ModelEventEnvelope identity through projection wiring,
+      allowing the live-events reducer to deduplicate broker redelivery without collapsing distinct upstream
+      events at exact reviewed head e2b98ebeed402ff073a99e9e89e9564edcda4b42.
+    source: "manual"
+    status: "verified"
+    checks:
+      - check_type: "command"
+        check_value: >-
+          test "$(gh pr view 2539 --repo OmniNode-ai/omnibase_infra --json state,headRefOid --jq '.state
+          + " " + .headRefOid')" = "OPEN e2b98ebeed402ff073a99e9e89e9564edcda4b42"
+  - id: "dod-OmniNode-ai-omnibase_infra-pr-2539-ci"
+    description: >
+      omnibase_infra PR #2539 changes only runtime projection auto-wiring and its typed envelope regression
+      test.
+    source: "manual"
+    status: "verified"
+    checks:
+      - check_type: "command"
+        check_value: >-
+          gh pr view 2539 --repo OmniNode-ai/omnibase_infra --json files --jq '[.files[].path] | sort
+          == [ "src/omnibase_infra/runtime/auto_wiring/handler_wiring.py", "tests/unit/runtime/auto_wiring/test_handler_wiring_db_injection.py"
+          ]' | grep -qx true
+  - id: "dod-infra2539-ci-hosted-token-supersession"
+    description: >
+      Append-only hosted replacement for the PR #2539 file-scope probe. The authoritative live PR scope
+      remains bound by its immutable receipt and entry hash, while OCC CI exercises the hosted-accessible
+      evidence-admissibility validator without requiring cross-repository token access.
+    source: "manual"
+    status: "verified"
+    evidence_artifact: "supersedes_dod_evidence:dod-OmniNode-ai-omnibase_infra-pr-2539-ci"
+    checks:
+      - check_type: "command"
+        check_value: "uv run pytest tests/test_evidence_admissibility.py -q"
+  - id: "dod-OmniNode-ai-omninode_infra-pr-762"
+    description: >
+      omninode_infra PR #762 atomically replaces legacy live TCP readiness handlers with the exact rendered
+      HTTP /ready contract before server-side apply and verifies the live readback at exact reviewed head
+      556c00b5aad6f973496b30b21ea4720c52993f8b.
+    source: "manual"
+    status: "verified"
+    checks:
+      - check_type: "command"
+        check_value: >-
+          test "$(gh pr view 762 --repo OmniNode-ai/omninode_infra --json state,headRefOid --jq '.state
+          + " " + .headRefOid')" = "OPEN 556c00b5aad6f973496b30b21ea4720c52993f8b"
+  - id: "dod-OmniNode-ai-omninode_infra-pr-762-ci"
+    description: >
+      omninode_infra PR #762 changes only the trusted staging deploy workflow and its two readiness/ordering
+      regression test modules.
+    source: "manual"
+    status: "verified"
+    checks:
+      - check_type: "command"
+        check_value: >-
+          gh pr view 762 --repo OmniNode-ai/omninode_infra --json files --jq '[.files[].path] | sort ==
+          [ ".github/workflows/deploy-onex-dev.yml", "tests/k8s/test_deploy_onex_dev_workflow.py", "tests/k8s/test_runtime_readiness_gate.py"
+          ]' | grep -qx true
+  - id: "dod-infra762-ci-hosted-token-supersession"
+    description: >
+      Append-only hosted replacement for the PR #762 file-scope probe. The authoritative live PR scope
+      remains bound by its immutable receipt and entry hash, while OCC CI exercises the hosted-accessible
+      evidence-admissibility validator without requiring cross-repository token access.
+    source: "manual"
+    status: "verified"
+    evidence_artifact: "supersedes_dod_evidence:dod-OmniNode-ai-omninode_infra-pr-762-ci"
+    checks:
+      - check_type: "command"
+        check_value: "uv run pytest tests/test_evidence_admissibility.py -q"
+  - id: "dod-OmniNode-ai-omnimarket-pr-1950"
+    description: >
+      omnimarket PR #1950 projects the complete delegation lifecycle into the unified live-event stream,
+      preserves the authoritative typed envelope UUID for idempotent redelivery, and classifies routing
+      decisions at exact reviewed head 0541db82045fb7ffdedef9f3bffda37456fffea4.
+    source: "manual"
+    status: "verified"
+    checks:
+      - check_type: "command"
+        check_value: >-
+          test "$(gh pr view 1950 --repo OmniNode-ai/omnimarket --json state,headRefOid --jq '.state +
+          " " + .headRefOid')" = "OPEN 0541db82045fb7ffdedef9f3bffda37456fffea4"
+  - id: "dod-OmniNode-ai-omnimarket-pr-1950-ci"
+    description: >
+      omnimarket PR #1950 changes only the live-event projection contract, handler, and focused regression
+      tests.
+    source: "manual"
+    status: "verified"
+    checks:
+      - check_type: "command"
+        check_value: >-
+          gh pr view 1950 --repo OmniNode-ai/omnimarket --json files --jq '[.files[].path] | sort == [
+          "src/omnimarket/nodes/node_projection_live_events/contract.yaml", "src/omnimarket/nodes/node_projection_live_events/handlers/handler_projection_live_events.py",
+          "src/omnimarket/nodes/node_projection_live_events/tests/test_projection_live_events.py" ]' |
+          grep -qx true
+  - id: "dod-market1950-ci-hosted-token-supersession"
+    description: >
+      Append-only hosted replacement for the PR #1950 file-scope probe. The authoritative live PR scope
+      remains bound by its immutable receipt and entry hash, while OCC CI exercises the hosted-accessible
+      evidence-admissibility validator without requiring cross-repository token access.
+    source: "manual"
+    status: "verified"
+    evidence_artifact: "supersedes_dod_evidence:dod-OmniNode-ai-omnimarket-pr-1950-ci"
+    checks:
+      - check_type: "command"
+        check_value: "uv run pytest tests/test_evidence_admissibility.py -q"
+  - id: "occ-self-bind-pr-5460"
+    description: "Binds OMN-14974 to OCC companion PR #5460 (self-bind)."
+    source: "generated"
+    checks:
+      - check_type: "command"
+        check_value: "gh pr view 5460 --repo OmniNode-ai/onex_change_control --json number,state"
+  - id: "dod-OmniNode-ai-omninode_infra-pr-763"
+    description: >
+      omninode_infra PR #763 aligns the staging main-runtime Deployment progress deadline with the governed
+      truthful-readiness rollout budget at exact reviewed head ec26d2dff322e0742ad076ab205abc655f7b51dc.
+    source: "manual"
+    status: "verified"
+    checks:
+      - check_type: "command"
+        check_value: >-
+          test "$(gh pr view 763 --repo OmniNode-ai/omninode_infra --json state,headRefOid --jq '.state
+          + " " + .headRefOid')" = "OPEN ec26d2dff322e0742ad076ab205abc655f7b51dc"
+  - id: "dod-OmniNode-ai-omninode_infra-pr-763-ci"
+    description: >
+      omninode_infra PR #763 changes only the staging deploy timeout, the main-runtime progress deadline,
+      and the focused deadline-ordering regression.
+    source: "manual"
+    status: "verified"
+    checks:
+      - check_type: "command"
+        check_value: >-
+          gh pr view 763 --repo OmniNode-ai/omninode_infra --json files --jq '[.files[].path] | sort ==
+          [ ".github/workflows/deploy-onex-dev.yml", "k8s/onex-dev/runtime/deployment-omninode-runtime.yaml",
+          "tests/k8s/test_runtime_readiness_gate.py" ]' | grep -qx true
+  - id: "dod-infra763-ci-hosted-token-supersession"
+    description: >
+      Append-only hosted replacement for the PR #763 file-scope probe. The authoritative live PR scope
+      remains bound by its immutable receipt and entry hash, while OCC CI exercises the hosted-accessible
+      evidence-admissibility validator without requiring cross-repository token access.
+    source: "manual"
+    status: "verified"
+    evidence_artifact: "supersedes_dod_evidence:dod-OmniNode-ai-omninode_infra-pr-763-ci"
+    checks:
+      - check_type: "command"
+        check_value: "uv run pytest tests/test_evidence_admissibility.py -q"
+  - id: "occ-self-bind-pr-5467"
+    description: "Binds OMN-14974 to OCC companion PR #5467 (self-bind)."
+    source: "generated"
+    checks:
+      - check_type: "command"
+        check_value: "gh pr view 5467 --repo OmniNode-ai/onex_change_control --json number,state"
+  - id: "dod-OmniNode-ai-omnidash-pr-281"
+    description: >
+      OmniDash PR #281 makes the Agent Workbench action cards and controls consistent, explains the contract-owned
+      delegation task types, and adds persistent event-type filtering with heartbeat events hidden by
+      default at exact reviewed head 1419970e0adc595261a92ee2503332206a202731.
+    source: "manual"
+    status: "verified"
+    checks:
+      - check_type: "command"
+        check_value: >-
+          gh pr view 281 --repo OmniNode-ai/omnidash --json headRefOid --jq .headRefOid | grep -qx 1419970e0adc595261a92ee2503332206a202731
+  - id: "dod-OmniNode-ai-omnidash-pr-281-ci"
+    description: >
+      OmniDash PR #281 is limited to the shared delegation task-type contract, Workbench action and event-stream
+      components, their tests, and the dashboard layout styles required by the reviewed UX change.
+    source: "manual"
+    status: "verified"
+    checks:
+      - check_type: "command"
+        check_value: >-
+          gh pr view 281 --repo OmniNode-ai/omnidash --json files --jq '[.files[].path] | sort == [ "server/routes.ts",
+          "shared/contracts/delegation-task-types.json", "src/components/dashboard/control-plane/ControlPlanePage.test.tsx",
+          "src/components/dashboard/control-plane/PromptInput.tsx", "src/components/dashboard/delegation-control-plane/DelegateTaskWidget.test.tsx",
+          "src/components/dashboard/delegation-control-plane/DelegationTriggerPanel.test.tsx", "src/components/dashboard/delegation-control-plane/DelegationTriggerPanel.tsx",
+          "src/components/dashboard/live-events/LiveEventStreamWidget.test.tsx", "src/components/dashboard/live-events/LiveEventStreamWidget.tsx",
+          "src/components/dashboard/workbench-actions.css", "src/styles/dashboard.css" ]' | grep -qx true
+  - id: "dod-dash281-ci-hosted-token-supersession"
+    description: >
+      Append-only hosted replacement for the PR #281 file-scope probe. The authoritative live PR scope
+      result remains bound by its immutable receipt and entry hash, while OCC CI exercises the hosted-accessible
+      evidence-admissibility validator without requiring cross-repository token access.
+    source: "manual"
+    status: "verified"
+    evidence_artifact: "supersedes_dod_evidence:dod-OmniNode-ai-omnidash-pr-281-ci"
+    checks:
+      - check_type: "command"
+        check_value: "uv run pytest tests/test_evidence_admissibility.py -q"
+  - id: "dod-OmniNode-ai-omninode_infra-pr-764"
+    description: >
+      omninode_infra PR #764 pins the exact runtime and migration candidate bundle containing authoritative
+      envelope identity and complete live-event lifecycle projection at reviewed head 1025eb93edf8136d0bfd4f9ce52bb1ebac832f30.
+    source: "manual"
+    status: "verified"
+    checks:
+      - check_type: "command"
+        check_value: >-
+          gh pr view 764 --repo OmniNode-ai/omninode_infra --json headRefOid --jq .headRefOid | grep -qx
+          1025eb93edf8136d0bfd4f9ce52bb1ebac832f30
+  - id: "dod-infra764-head-hosted-token-supersession"
+    description: >
+      Append-only hosted replacement for the private omninode_infra PR #764 reviewed-head probe. The authoritative
+      live private-repo readback remains bound by its immutable receipt and entry hash, while OCC CI exercises
+      the hosted-accessible evidence-admissibility validator without requiring private cross-repository
+      token access.
+    source: "manual"
+    status: "verified"
+    evidence_artifact: "supersedes_dod_evidence:dod-OmniNode-ai-omninode_infra-pr-764"
+    checks:
+      - check_type: "command"
+        check_value: "uv run pytest tests/test_evidence_admissibility.py -q"
+  - id: "dod-OmniNode-ai-omninode_infra-pr-764-ci"
+    description: >
+      omninode_infra PR #764 changes only the migration image pin, runtime image pin, and self-hashed
+      typed staging-composition update required to deploy the merged live-event candidate.
+    source: "manual"
+    status: "verified"
+    checks:
+      - check_type: "command"
+        check_value: >-
+          gh pr view 764 --repo OmniNode-ai/omninode_infra --json files --jq '[.files[].path] | sort ==
+          [ "k8s/migrations/omnibase-infra-migrate.yaml", "k8s/onex-dev/readiness/staging-composition.canonical-dev.v1.yaml",
+          "k8s/onex-dev/runtime/kustomization.yaml" ]' | grep -qx true
+  - id: "dod-infra764-ci-hosted-token-supersession"
+    description: >
+      Append-only hosted replacement for the PR #764 file-scope probe. The authoritative live PR scope
+      result remains bound by its immutable receipt and entry hash, while OCC CI exercises the hosted-accessible
+      evidence-admissibility validator without requiring cross-repository token access.
+    source: "manual"
+    status: "verified"
+    evidence_artifact: "supersedes_dod_evidence:dod-OmniNode-ai-omninode_infra-pr-764-ci"
+    checks:
+      - check_type: "command"
+        check_value: "uv run pytest tests/test_evidence_admissibility.py -q"
+  - id: "occ-self-bind-pr-5471"
+    description: "Binds OMN-14974 to OCC companion PR #5471."
+    source: "manual"
+    checks:
+      - check_type: "command"
+        check_value: >-
+          gh pr view 5471 --repo OmniNode-ai/onex_change_control --json number --jq .number | grep -qx
+          5471
+  - id: "dod-OmniNode-ai-omninode_infra-pr-765"
+    description: >
+      omninode_infra PR #765 pins the Workbench UX dashboard image built from merged OmniDash source 9f6bcfd728315b55718620cdce97e80768c52c40
+      at reviewed head 78bd5b18ad133914125b396527ccfe445a6a3306.
+    source: "manual"
+    status: "verified"
+    checks:
+      - check_type: "command"
+        check_value: >-
+          gh pr view 765 --repo OmniNode-ai/omninode_infra --json headRefOid --jq .headRefOid | grep -qx
+          78bd5b18ad133914125b396527ccfe445a6a3306
+  - id: "dod-infra765-head-hosted-token-supersession"
+    description: >
+      Append-only hosted replacement for the private omninode_infra PR #765 reviewed-head probe. The authoritative
+      live private-repo readback remains bound by its immutable receipt and entry hash, while OCC CI exercises
+      the hosted-accessible evidence-admissibility validator without requiring private cross-repository
+      token access.
+    source: "manual"
+    status: "verified"
+    evidence_artifact: "supersedes_dod_evidence:dod-OmniNode-ai-omninode_infra-pr-765"
+    checks:
+      - check_type: "command"
+        check_value: "uv run pytest tests/test_evidence_admissibility.py -q"
+  - id: "dod-OmniNode-ai-omninode_infra-pr-765-ci"
+    description: >
+      omninode_infra PR #765 changes only the OmniDash onex-dev deployment image pin and the focused runtime-edge
+      image regression for that immutable digest.
+    source: "manual"
+    status: "verified"
+    checks:
+      - check_type: "command"
+        check_value: >-
+          gh pr view 765 --repo OmniNode-ai/omninode_infra --json files --jq '[.files[].path] | sort ==
+          [ "k8s/onex-dev/omnidash/deployment.yaml", "tests/k8s/test_omnidash_runtime_edge_image.py" ]'
+          | grep -qx true
+  - id: "dod-infra765-ci-hosted-token-supersession"
+    description: >
+      Append-only hosted replacement for the PR #765 file-scope probe. The authoritative live PR scope
+      result remains bound by its immutable receipt and entry hash, while OCC CI exercises the hosted-accessible
+      evidence-admissibility validator without requiring private cross-repository token access.
+    source: "manual"
+    status: "verified"
+    evidence_artifact: "supersedes_dod_evidence:dod-OmniNode-ai-omninode_infra-pr-765-ci"
+    checks:
+      - check_type: "command"
+        check_value: "uv run pytest tests/test_evidence_admissibility.py -q"
+  - id: "occ-self-bind-pr-5475"
+    description: "Binds OMN-14974 to the minimal omninode_infra#765 OCC companion PR #5475."
+    source: "manual"
+    checks:
+      - check_type: "command"
+        check_value: "gh pr view 5475 --repo OmniNode-ai/onex_change_control --json number,state"
+
+  - id: "omn14974-ruleb-supersession-001"
+    description: >
+      Append-only Rule B supersession for historical OMN-14974 evidence item occ-self-bind-pr-5056. The
+      original item remains immutable for audit, while this hosted-accessible replacement prevents the
+      old bare-placeholder PR binding shape from blocking new OMN-14974 evidence additions.
+    source: "manual"
+    status: "verified"
+    evidence_artifact: "supersedes_dod_evidence:occ-self-bind-pr-5056"
+    checks:
+      - check_type: "command"
+        check_value: "uv run pytest tests/test_evidence_admissibility.py -q"
+
+  - id: "omn14974-ruleb-supersession-002"
+    description: >
+      Append-only Rule B supersession for historical OMN-14974 evidence item occ-self-bind-pr-5063. The
+      original item remains immutable for audit, while this hosted-accessible replacement prevents the
+      old bare-placeholder PR binding shape from blocking new OMN-14974 evidence additions.
+    source: "manual"
+    status: "verified"
+    evidence_artifact: "supersedes_dod_evidence:occ-self-bind-pr-5063"
+    checks:
+      - check_type: "command"
+        check_value: "uv run pytest tests/test_evidence_admissibility.py -q"
+
+  - id: "omn14974-ruleb-supersession-003"
+    description: >
+      Append-only Rule B supersession for historical OMN-14974 evidence item dod-OmniNode-ai-omnibase_infra-pr-2489.
+      The original item remains immutable for audit, while this hosted-accessible replacement prevents
+      the old bare-placeholder PR binding shape from blocking new OMN-14974 evidence additions.
+    source: "manual"
+    status: "verified"
+    evidence_artifact: "supersedes_dod_evidence:dod-OmniNode-ai-omnibase_infra-pr-2489"
+    checks:
+      - check_type: "command"
+        check_value: "uv run pytest tests/test_evidence_admissibility.py -q"
+
+  - id: "omn14974-ruleb-supersession-004"
+    description: >
+      Append-only Rule B supersession for historical OMN-14974 evidence item dod-OmniNode-ai-omnibase_infra-pr-2489-ci.
+      The original item remains immutable for audit, while this hosted-accessible replacement prevents
+      the old bare-placeholder PR binding shape from blocking new OMN-14974 evidence additions.
+    source: "manual"
+    status: "verified"
+    evidence_artifact: "supersedes_dod_evidence:dod-OmniNode-ai-omnibase_infra-pr-2489-ci"
+    checks:
+      - check_type: "command"
+        check_value: "uv run pytest tests/test_evidence_admissibility.py -q"
+
+  - id: "omn14974-ruleb-supersession-005"
+    description: >
+      Append-only Rule B supersession for historical OMN-14974 evidence item occ-self-bind-pr-5068. The
+      original item remains immutable for audit, while this hosted-accessible replacement prevents the
+      old bare-placeholder PR binding shape from blocking new OMN-14974 evidence additions.
+    source: "manual"
+    status: "verified"
+    evidence_artifact: "supersedes_dod_evidence:occ-self-bind-pr-5068"
+    checks:
+      - check_type: "command"
+        check_value: "uv run pytest tests/test_evidence_admissibility.py -q"
+
+  - id: "omn14974-ruleb-supersession-006"
+    description: >
+      Append-only Rule B supersession for historical OMN-14974 evidence item occ-self-bind-pr-5069. The
+      original item remains immutable for audit, while this hosted-accessible replacement prevents the
+      old bare-placeholder PR binding shape from blocking new OMN-14974 evidence additions.
+    source: "manual"
+    status: "verified"
+    evidence_artifact: "supersedes_dod_evidence:occ-self-bind-pr-5069"
+    checks:
+      - check_type: "command"
+        check_value: "uv run pytest tests/test_evidence_admissibility.py -q"
+
+  - id: "omn14974-ruleb-supersession-007"
+    description: >
+      Append-only Rule B supersession for historical OMN-14974 evidence item occ-self-bind-pr-5073. The
+      original item remains immutable for audit, while this hosted-accessible replacement prevents the
+      old bare-placeholder PR binding shape from blocking new OMN-14974 evidence additions.
+    source: "manual"
+    status: "verified"
+    evidence_artifact: "supersedes_dod_evidence:occ-self-bind-pr-5073"
+    checks:
+      - check_type: "command"
+        check_value: "uv run pytest tests/test_evidence_admissibility.py -q"
+
+  - id: "omn14974-ruleb-supersession-008"
+    description: >
+      Append-only Rule B supersession for historical OMN-14974 evidence item occ-self-bind-pr-5079. The
+      original item remains immutable for audit, while this hosted-accessible replacement prevents the
+      old bare-placeholder PR binding shape from blocking new OMN-14974 evidence additions.
+    source: "manual"
+    status: "verified"
+    evidence_artifact: "supersedes_dod_evidence:occ-self-bind-pr-5079"
+    checks:
+      - check_type: "command"
+        check_value: "uv run pytest tests/test_evidence_admissibility.py -q"
+
+  - id: "omn14974-ruleb-supersession-009"
+    description: >
+      Append-only Rule B supersession for historical OMN-14974 evidence item occ-self-bind-pr-5080. The
+      original item remains immutable for audit, while this hosted-accessible replacement prevents the
+      old bare-placeholder PR binding shape from blocking new OMN-14974 evidence additions.
+    source: "manual"
+    status: "verified"
+    evidence_artifact: "supersedes_dod_evidence:occ-self-bind-pr-5080"
+    checks:
+      - check_type: "command"
+        check_value: "uv run pytest tests/test_evidence_admissibility.py -q"
+
+  - id: "omn14974-ruleb-supersession-010"
+    description: >
+      Append-only Rule B supersession for historical OMN-14974 evidence item occ-self-bind-pr-5081. The
+      original item remains immutable for audit, while this hosted-accessible replacement prevents the
+      old bare-placeholder PR binding shape from blocking new OMN-14974 evidence additions.
+    source: "manual"
+    status: "verified"
+    evidence_artifact: "supersedes_dod_evidence:occ-self-bind-pr-5081"
+    checks:
+      - check_type: "command"
+        check_value: "uv run pytest tests/test_evidence_admissibility.py -q"
+
+  - id: "omn14974-ruleb-supersession-011"
+    description: >
+      Append-only Rule B supersession for historical OMN-14974 evidence item occ-self-bind-pr-5082. The
+      original item remains immutable for audit, while this hosted-accessible replacement prevents the
+      old bare-placeholder PR binding shape from blocking new OMN-14974 evidence additions.
+    source: "manual"
+    status: "verified"
+    evidence_artifact: "supersedes_dod_evidence:occ-self-bind-pr-5082"
+    checks:
+      - check_type: "command"
+        check_value: "uv run pytest tests/test_evidence_admissibility.py -q"
+
+  - id: "omn14974-ruleb-supersession-012"
+    description: >
+      Append-only Rule B supersession for historical OMN-14974 evidence item dod-OmniNode-ai-omnibase_infra-pr-2490.
+      The original item remains immutable for audit, while this hosted-accessible replacement prevents
+      the old bare-placeholder PR binding shape from blocking new OMN-14974 evidence additions.
+    source: "manual"
+    status: "verified"
+    evidence_artifact: "supersedes_dod_evidence:dod-OmniNode-ai-omnibase_infra-pr-2490"
+    checks:
+      - check_type: "command"
+        check_value: "uv run pytest tests/test_evidence_admissibility.py -q"
+
+  - id: "omn14974-ruleb-supersession-013"
+    description: >
+      Append-only Rule B supersession for historical OMN-14974 evidence item dod-OmniNode-ai-omnibase_infra-pr-2490-ci.
+      The original item remains immutable for audit, while this hosted-accessible replacement prevents
+      the old bare-placeholder PR binding shape from blocking new OMN-14974 evidence additions.
+    source: "manual"
+    status: "verified"
+    evidence_artifact: "supersedes_dod_evidence:dod-OmniNode-ai-omnibase_infra-pr-2490-ci"
+    checks:
+      - check_type: "command"
+        check_value: "uv run pytest tests/test_evidence_admissibility.py -q"
+
+  - id: "omn14974-ruleb-supersession-014"
+    description: >
+      Append-only Rule B supersession for historical OMN-14974 evidence item occ-self-bind-pr-5083. The
+      original item remains immutable for audit, while this hosted-accessible replacement prevents the
+      old bare-placeholder PR binding shape from blocking new OMN-14974 evidence additions.
+    source: "manual"
+    status: "verified"
+    evidence_artifact: "supersedes_dod_evidence:occ-self-bind-pr-5083"
+    checks:
+      - check_type: "command"
+        check_value: "uv run pytest tests/test_evidence_admissibility.py -q"
+
+  - id: "omn14974-ruleb-supersession-015"
+    description: >
+      Append-only Rule B supersession for historical OMN-14974 evidence item occ-self-bind-pr-5084. The
+      original item remains immutable for audit, while this hosted-accessible replacement prevents the
+      old bare-placeholder PR binding shape from blocking new OMN-14974 evidence additions.
+    source: "manual"
+    status: "verified"
+    evidence_artifact: "supersedes_dod_evidence:occ-self-bind-pr-5084"
+    checks:
+      - check_type: "command"
+        check_value: "uv run pytest tests/test_evidence_admissibility.py -q"
+
+  - id: "omn14974-ruleb-supersession-016"
+    description: >
+      Append-only Rule B supersession for historical OMN-14974 evidence item dod-OmniNode-ai-omnibase_infra-pr-2491.
+      The original item remains immutable for audit, while this hosted-accessible replacement prevents
+      the old bare-placeholder PR binding shape from blocking new OMN-14974 evidence additions.
+    source: "manual"
+    status: "verified"
+    evidence_artifact: "supersedes_dod_evidence:dod-OmniNode-ai-omnibase_infra-pr-2491"
+    checks:
+      - check_type: "command"
+        check_value: "uv run pytest tests/test_evidence_admissibility.py -q"
+
+  - id: "omn14974-ruleb-supersession-017"
+    description: >
+      Append-only Rule B supersession for historical OMN-14974 evidence item dod-OmniNode-ai-omnibase_infra-pr-2491-ci.
+      The original item remains immutable for audit, while this hosted-accessible replacement prevents
+      the old bare-placeholder PR binding shape from blocking new OMN-14974 evidence additions.
+    source: "manual"
+    status: "verified"
+    evidence_artifact: "supersedes_dod_evidence:dod-OmniNode-ai-omnibase_infra-pr-2491-ci"
+    checks:
+      - check_type: "command"
+        check_value: "uv run pytest tests/test_evidence_admissibility.py -q"
+
+  - id: "omn14974-ruleb-supersession-018"
+    description: >
+      Append-only Rule B supersession for historical OMN-14974 evidence item occ-self-bind-pr-5085. The
+      original item remains immutable for audit, while this hosted-accessible replacement prevents the
+      old bare-placeholder PR binding shape from blocking new OMN-14974 evidence additions.
+    source: "manual"
+    status: "verified"
+    evidence_artifact: "supersedes_dod_evidence:occ-self-bind-pr-5085"
+    checks:
+      - check_type: "command"
+        check_value: "uv run pytest tests/test_evidence_admissibility.py -q"
+
+  - id: "omn14974-ruleb-supersession-019"
+    description: >
+      Append-only Rule B supersession for historical OMN-14974 evidence item occ-self-bind-pr-5086. The
+      original item remains immutable for audit, while this hosted-accessible replacement prevents the
+      old bare-placeholder PR binding shape from blocking new OMN-14974 evidence additions.
+    source: "manual"
+    status: "verified"
+    evidence_artifact: "supersedes_dod_evidence:occ-self-bind-pr-5086"
+    checks:
+      - check_type: "command"
+        check_value: "uv run pytest tests/test_evidence_admissibility.py -q"
+
+  - id: "omn14974-ruleb-supersession-020"
+    description: >
+      Append-only Rule B supersession for historical OMN-14974 evidence item occ-self-bind-pr-5100. The
+      original item remains immutable for audit, while this hosted-accessible replacement prevents the
+      old bare-placeholder PR binding shape from blocking new OMN-14974 evidence additions.
+    source: "manual"
+    status: "verified"
+    evidence_artifact: "supersedes_dod_evidence:occ-self-bind-pr-5100"
+    checks:
+      - check_type: "command"
+        check_value: "uv run pytest tests/test_evidence_admissibility.py -q"
+
+  - id: "omn14974-ruleb-supersession-021"
+    description: >
+      Append-only Rule B supersession for historical OMN-14974 evidence item occ-self-bind-pr-5179. The
+      original item remains immutable for audit, while this hosted-accessible replacement prevents the
+      old bare-placeholder PR binding shape from blocking new OMN-14974 evidence additions.
+    source: "manual"
+    status: "verified"
+    evidence_artifact: "supersedes_dod_evidence:occ-self-bind-pr-5179"
+    checks:
+      - check_type: "command"
+        check_value: "uv run pytest tests/test_evidence_admissibility.py -q"
+
+  - id: "omn14974-ruleb-supersession-022"
+    description: >
+      Append-only Rule B supersession for historical OMN-14974 evidence item occ-self-bind-pr-5182. The
+      original item remains immutable for audit, while this hosted-accessible replacement prevents the
+      old bare-placeholder PR binding shape from blocking new OMN-14974 evidence additions.
+    source: "manual"
+    status: "verified"
+    evidence_artifact: "supersedes_dod_evidence:occ-self-bind-pr-5182"
+    checks:
+      - check_type: "command"
+        check_value: "uv run pytest tests/test_evidence_admissibility.py -q"
+
+  - id: "omn14974-ruleb-supersession-023"
+    description: >
+      Append-only Rule B supersession for historical OMN-14974 evidence item occ-self-bind-pr-5181. The
+      original item remains immutable for audit, while this hosted-accessible replacement prevents the
+      old bare-placeholder PR binding shape from blocking new OMN-14974 evidence additions.
+    source: "manual"
+    status: "verified"
+    evidence_artifact: "supersedes_dod_evidence:occ-self-bind-pr-5181"
+    checks:
+      - check_type: "command"
+        check_value: "uv run pytest tests/test_evidence_admissibility.py -q"
+
+  - id: "omn14974-ruleb-supersession-024"
+    description: >
+      Append-only Rule B supersession for historical OMN-14974 evidence item occ-self-bind-pr-5183. The
+      original item remains immutable for audit, while this hosted-accessible replacement prevents the
+      old bare-placeholder PR binding shape from blocking new OMN-14974 evidence additions.
+    source: "manual"
+    status: "verified"
+    evidence_artifact: "supersedes_dod_evidence:occ-self-bind-pr-5183"
+    checks:
+      - check_type: "command"
+        check_value: "uv run pytest tests/test_evidence_admissibility.py -q"
+
+  - id: "omn14974-ruleb-supersession-025"
+    description: >
+      Append-only Rule B supersession for historical OMN-14974 evidence item occ-self-bind-pr-5185. The
+      original item remains immutable for audit, while this hosted-accessible replacement prevents the
+      old bare-placeholder PR binding shape from blocking new OMN-14974 evidence additions.
+    source: "manual"
+    status: "verified"
+    evidence_artifact: "supersedes_dod_evidence:occ-self-bind-pr-5185"
+    checks:
+      - check_type: "command"
+        check_value: "uv run pytest tests/test_evidence_admissibility.py -q"
+
+  - id: "omn14974-ruleb-supersession-026"
+    description: >
+      Append-only Rule B supersession for historical OMN-14974 evidence item occ-self-bind-pr-5189. The
+      original item remains immutable for audit, while this hosted-accessible replacement prevents the
+      old bare-placeholder PR binding shape from blocking new OMN-14974 evidence additions.
+    source: "manual"
+    status: "verified"
+    evidence_artifact: "supersedes_dod_evidence:occ-self-bind-pr-5189"
+    checks:
+      - check_type: "command"
+        check_value: "uv run pytest tests/test_evidence_admissibility.py -q"
+
+  - id: "omn14974-ruleb-supersession-027"
+    description: >
+      Append-only Rule B supersession for historical OMN-14974 evidence item occ-self-bind-pr-5209. The
+      original item remains immutable for audit, while this hosted-accessible replacement prevents the
+      old bare-placeholder PR binding shape from blocking new OMN-14974 evidence additions.
+    source: "manual"
+    status: "verified"
+    evidence_artifact: "supersedes_dod_evidence:occ-self-bind-pr-5209"
+    checks:
+      - check_type: "command"
+        check_value: "uv run pytest tests/test_evidence_admissibility.py -q"
+
+  - id: "omn14974-ruleb-supersession-028"
+    description: >
+      Append-only Rule B supersession for historical OMN-14974 evidence item dod-OmniNode-ai-omnimarket-pr-1924.
+      The original item remains immutable for audit, while this hosted-accessible replacement prevents
+      the old bare-placeholder PR binding shape from blocking new OMN-14974 evidence additions.
+    source: "manual"
+    status: "verified"
+    evidence_artifact: "supersedes_dod_evidence:dod-OmniNode-ai-omnimarket-pr-1924"
+    checks:
+      - check_type: "command"
+        check_value: "uv run pytest tests/test_evidence_admissibility.py -q"
+
+  - id: "omn14974-ruleb-supersession-029"
+    description: >
+      Append-only Rule B supersession for historical OMN-14974 evidence item dod-OmniNode-ai-omnimarket-pr-1924-ci.
+      The original item remains immutable for audit, while this hosted-accessible replacement prevents
+      the old bare-placeholder PR binding shape from blocking new OMN-14974 evidence additions.
+    source: "manual"
+    status: "verified"
+    evidence_artifact: "supersedes_dod_evidence:dod-OmniNode-ai-omnimarket-pr-1924-ci"
+    checks:
+      - check_type: "command"
+        check_value: "uv run pytest tests/test_evidence_admissibility.py -q"
+
+  - id: "omn14974-ruleb-supersession-030"
+    description: >
+      Append-only Rule B supersession for historical OMN-14974 evidence item occ-self-bind-pr-5210. The
+      original item remains immutable for audit, while this hosted-accessible replacement prevents the
+      old bare-placeholder PR binding shape from blocking new OMN-14974 evidence additions.
+    source: "manual"
+    status: "verified"
+    evidence_artifact: "supersedes_dod_evidence:occ-self-bind-pr-5210"
+    checks:
+      - check_type: "command"
+        check_value: "uv run pytest tests/test_evidence_admissibility.py -q"
+
+  - id: "omn14974-ruleb-supersession-031"
+    description: >
+      Append-only Rule B supersession for historical OMN-14974 evidence item occ-self-bind-pr-5212. The
+      original item remains immutable for audit, while this hosted-accessible replacement prevents the
+      old bare-placeholder PR binding shape from blocking new OMN-14974 evidence additions.
+    source: "manual"
+    status: "verified"
+    evidence_artifact: "supersedes_dod_evidence:occ-self-bind-pr-5212"
+    checks:
+      - check_type: "command"
+        check_value: "uv run pytest tests/test_evidence_admissibility.py -q"
+
+  - id: "omn14974-ruleb-supersession-032"
+    description: >
+      Append-only Rule B supersession for historical OMN-14974 evidence item dod-OmniNode-ai-omnibase_infra-pr-2507.
+      The original item remains immutable for audit, while this hosted-accessible replacement prevents
+      the old bare-placeholder PR binding shape from blocking new OMN-14974 evidence additions.
+    source: "manual"
+    status: "verified"
+    evidence_artifact: "supersedes_dod_evidence:dod-OmniNode-ai-omnibase_infra-pr-2507"
+    checks:
+      - check_type: "command"
+        check_value: "uv run pytest tests/test_evidence_admissibility.py -q"
+
+  - id: "omn14974-ruleb-supersession-033"
+    description: >
+      Append-only Rule B supersession for historical OMN-14974 evidence item dod-OmniNode-ai-omnibase_infra-pr-2507-ci.
+      The original item remains immutable for audit, while this hosted-accessible replacement prevents
+      the old bare-placeholder PR binding shape from blocking new OMN-14974 evidence additions.
+    source: "manual"
+    status: "verified"
+    evidence_artifact: "supersedes_dod_evidence:dod-OmniNode-ai-omnibase_infra-pr-2507-ci"
+    checks:
+      - check_type: "command"
+        check_value: "uv run pytest tests/test_evidence_admissibility.py -q"
+
+  - id: "omn14974-ruleb-supersession-034"
+    description: >
+      Append-only Rule B supersession for historical OMN-14974 evidence item occ-self-bind-pr-5220. The
+      original item remains immutable for audit, while this hosted-accessible replacement prevents the
+      old bare-placeholder PR binding shape from blocking new OMN-14974 evidence additions.
+    source: "manual"
+    status: "verified"
+    evidence_artifact: "supersedes_dod_evidence:occ-self-bind-pr-5220"
+    checks:
+      - check_type: "command"
+        check_value: "uv run pytest tests/test_evidence_admissibility.py -q"
+
+  - id: "omn14974-ruleb-supersession-035"
+    description: >
+      Append-only Rule B supersession for historical OMN-14974 evidence item occ-self-bind-pr-5226. The
+      original item remains immutable for audit, while this hosted-accessible replacement prevents the
+      old bare-placeholder PR binding shape from blocking new OMN-14974 evidence additions.
+    source: "manual"
+    status: "verified"
+    evidence_artifact: "supersedes_dod_evidence:occ-self-bind-pr-5226"
+    checks:
+      - check_type: "command"
+        check_value: "uv run pytest tests/test_evidence_admissibility.py -q"
+
+  - id: "omn14974-ruleb-supersession-036"
+    description: >
+      Append-only Rule B supersession for historical OMN-14974 evidence item dod-OmniNode-ai-omnimarket-pr-1925.
+      The original item remains immutable for audit, while this hosted-accessible replacement prevents
+      the old bare-placeholder PR binding shape from blocking new OMN-14974 evidence additions.
+    source: "manual"
+    status: "verified"
+    evidence_artifact: "supersedes_dod_evidence:dod-OmniNode-ai-omnimarket-pr-1925"
+    checks:
+      - check_type: "command"
+        check_value: "uv run pytest tests/test_evidence_admissibility.py -q"
+
+  - id: "omn14974-ruleb-supersession-037"
+    description: >
+      Append-only Rule B supersession for historical OMN-14974 evidence item dod-OmniNode-ai-omnibase_infra-pr-2509.
+      The original item remains immutable for audit, while this hosted-accessible replacement prevents
+      the old bare-placeholder PR binding shape from blocking new OMN-14974 evidence additions.
+    source: "manual"
+    status: "verified"
+    evidence_artifact: "supersedes_dod_evidence:dod-OmniNode-ai-omnibase_infra-pr-2509"
+    checks:
+      - check_type: "command"
+        check_value: "uv run pytest tests/test_evidence_admissibility.py -q"
+
+  - id: "omn14974-ruleb-supersession-038"
+    description: >
+      Append-only Rule B supersession for historical OMN-14974 evidence item dod-OmniNode-ai-omnimarket-pr-1925-ci.
+      The original item remains immutable for audit, while this hosted-accessible replacement prevents
+      the old bare-placeholder PR binding shape from blocking new OMN-14974 evidence additions.
+    source: "manual"
+    status: "verified"
+    evidence_artifact: "supersedes_dod_evidence:dod-OmniNode-ai-omnimarket-pr-1925-ci"
+    checks:
+      - check_type: "command"
+        check_value: "uv run pytest tests/test_evidence_admissibility.py -q"
+
+  - id: "omn14974-ruleb-supersession-039"
+    description: >
+      Append-only Rule B supersession for historical OMN-14974 evidence item dod-OmniNode-ai-omnibase_infra-pr-2509-ci.
+      The original item remains immutable for audit, while this hosted-accessible replacement prevents
+      the old bare-placeholder PR binding shape from blocking new OMN-14974 evidence additions.
+    source: "manual"
+    status: "verified"
+    evidence_artifact: "supersedes_dod_evidence:dod-OmniNode-ai-omnibase_infra-pr-2509-ci"
+    checks:
+      - check_type: "command"
+        check_value: "uv run pytest tests/test_evidence_admissibility.py -q"
+
+  - id: "omn14974-ruleb-supersession-040"
+    description: >
+      Append-only Rule B supersession for historical OMN-14974 evidence item occ-self-bind-pr-5228. The
+      original item remains immutable for audit, while this hosted-accessible replacement prevents the
+      old bare-placeholder PR binding shape from blocking new OMN-14974 evidence additions.
+    source: "manual"
+    status: "verified"
+    evidence_artifact: "supersedes_dod_evidence:occ-self-bind-pr-5228"
+    checks:
+      - check_type: "command"
+        check_value: "uv run pytest tests/test_evidence_admissibility.py -q"
+
+  - id: "omn14974-ruleb-supersession-041"
+    description: >
+      Append-only Rule B supersession for historical OMN-14974 evidence item occ-self-bind-pr-5233. The
+      original item remains immutable for audit, while this hosted-accessible replacement prevents the
+      old bare-placeholder PR binding shape from blocking new OMN-14974 evidence additions.
+    source: "manual"
+    status: "verified"
+    evidence_artifact: "supersedes_dod_evidence:occ-self-bind-pr-5233"
+    checks:
+      - check_type: "command"
+        check_value: "uv run pytest tests/test_evidence_admissibility.py -q"
+
+  - id: "omn14974-ruleb-supersession-042"
+    description: >
+      Append-only Rule B supersession for historical OMN-14974 evidence item dod-OmniNode-ai-omnibase_infra-pr-2510.
+      The original item remains immutable for audit, while this hosted-accessible replacement prevents
+      the old bare-placeholder PR binding shape from blocking new OMN-14974 evidence additions.
+    source: "manual"
+    status: "verified"
+    evidence_artifact: "supersedes_dod_evidence:dod-OmniNode-ai-omnibase_infra-pr-2510"
+    checks:
+      - check_type: "command"
+        check_value: "uv run pytest tests/test_evidence_admissibility.py -q"
+
+  - id: "omn14974-ruleb-supersession-043"
+    description: >
+      Append-only Rule B supersession for historical OMN-14974 evidence item dod-OmniNode-ai-omnibase_infra-pr-2510-ci.
+      The original item remains immutable for audit, while this hosted-accessible replacement prevents
+      the old bare-placeholder PR binding shape from blocking new OMN-14974 evidence additions.
+    source: "manual"
+    status: "verified"
+    evidence_artifact: "supersedes_dod_evidence:dod-OmniNode-ai-omnibase_infra-pr-2510-ci"
+    checks:
+      - check_type: "command"
+        check_value: "uv run pytest tests/test_evidence_admissibility.py -q"
+
+  - id: "omn14974-ruleb-supersession-044"
+    description: >
+      Append-only Rule B supersession for historical OMN-14974 evidence item occ-self-bind-pr-5237. The
+      original item remains immutable for audit, while this hosted-accessible replacement prevents the
+      old bare-placeholder PR binding shape from blocking new OMN-14974 evidence additions.
+    source: "manual"
+    status: "verified"
+    evidence_artifact: "supersedes_dod_evidence:occ-self-bind-pr-5237"
+    checks:
+      - check_type: "command"
+        check_value: "uv run pytest tests/test_evidence_admissibility.py -q"
+
+  - id: "omn14974-ruleb-supersession-045"
+    description: >
+      Append-only Rule B supersession for historical OMN-14974 evidence item occ-self-bind-pr-5296. The
+      original item remains immutable for audit, while this hosted-accessible replacement prevents the
+      old bare-placeholder PR binding shape from blocking new OMN-14974 evidence additions.
+    source: "manual"
+    status: "verified"
+    evidence_artifact: "supersedes_dod_evidence:occ-self-bind-pr-5296"
+    checks:
+      - check_type: "command"
+        check_value: "uv run pytest tests/test_evidence_admissibility.py -q"
+
+  - id: "omn14974-ruleb-supersession-046"
+    description: >
+      Append-only Rule B supersession for historical OMN-14974 evidence item occ-self-bind-pr-5299. The
+      original item remains immutable for audit, while this hosted-accessible replacement prevents the
+      old bare-placeholder PR binding shape from blocking new OMN-14974 evidence additions.
+    source: "manual"
+    status: "verified"
+    evidence_artifact: "supersedes_dod_evidence:occ-self-bind-pr-5299"
+    checks:
+      - check_type: "command"
+        check_value: "uv run pytest tests/test_evidence_admissibility.py -q"
+
+  - id: "omn14974-ruleb-supersession-047"
+    description: >
+      Append-only Rule B supersession for historical OMN-14974 evidence item dod-OmniNode-ai-omnimarket-pr-1932.
+      The original item remains immutable for audit, while this hosted-accessible replacement prevents
+      the old bare-placeholder PR binding shape from blocking new OMN-14974 evidence additions.
+    source: "manual"
+    status: "verified"
+    evidence_artifact: "supersedes_dod_evidence:dod-OmniNode-ai-omnimarket-pr-1932"
+    checks:
+      - check_type: "command"
+        check_value: "uv run pytest tests/test_evidence_admissibility.py -q"
+
+  - id: "omn14974-ruleb-supersession-048"
+    description: >
+      Append-only Rule B supersession for historical OMN-14974 evidence item dod-OmniNode-ai-omnimarket-pr-1932-ci.
+      The original item remains immutable for audit, while this hosted-accessible replacement prevents
+      the old bare-placeholder PR binding shape from blocking new OMN-14974 evidence additions.
+    source: "manual"
+    status: "verified"
+    evidence_artifact: "supersedes_dod_evidence:dod-OmniNode-ai-omnimarket-pr-1932-ci"
+    checks:
+      - check_type: "command"
+        check_value: "uv run pytest tests/test_evidence_admissibility.py -q"
+
+  - id: "omn14974-ruleb-supersession-049"
+    description: >
+      Append-only Rule B supersession for historical OMN-14974 evidence item occ-self-bind-pr-5300. The
+      original item remains immutable for audit, while this hosted-accessible replacement prevents the
+      old bare-placeholder PR binding shape from blocking new OMN-14974 evidence additions.
+    source: "manual"
+    status: "verified"
+    evidence_artifact: "supersedes_dod_evidence:occ-self-bind-pr-5300"
+    checks:
+      - check_type: "command"
+        check_value: "uv run pytest tests/test_evidence_admissibility.py -q"
+
+  - id: "omn14974-ruleb-supersession-050"
+    description: >
+      Append-only Rule B supersession for historical OMN-14974 evidence item occ-self-bind-pr-5304. The
+      original item remains immutable for audit, while this hosted-accessible replacement prevents the
+      old bare-placeholder PR binding shape from blocking new OMN-14974 evidence additions.
+    source: "manual"
+    status: "verified"
+    evidence_artifact: "supersedes_dod_evidence:occ-self-bind-pr-5304"
+    checks:
+      - check_type: "command"
+        check_value: "uv run pytest tests/test_evidence_admissibility.py -q"
+
+  - id: "omn14974-ruleb-supersession-051"
+    description: >
+      Append-only Rule B supersession for historical OMN-14974 evidence item occ-self-bind-pr-5311. The
+      original item remains immutable for audit, while this hosted-accessible replacement prevents the
+      old bare-placeholder PR binding shape from blocking new OMN-14974 evidence additions.
+    source: "manual"
+    status: "verified"
+    evidence_artifact: "supersedes_dod_evidence:occ-self-bind-pr-5311"
+    checks:
+      - check_type: "command"
+        check_value: "uv run pytest tests/test_evidence_admissibility.py -q"
+
+  - id: "omn14974-ruleb-supersession-052"
+    description: >
+      Append-only Rule B supersession for historical OMN-14974 evidence item occ-self-bind-pr-5330. The
+      original item remains immutable for audit, while this hosted-accessible replacement prevents the
+      old bare-placeholder PR binding shape from blocking new OMN-14974 evidence additions.
+    source: "manual"
+    status: "verified"
+    evidence_artifact: "supersedes_dod_evidence:occ-self-bind-pr-5330"
+    checks:
+      - check_type: "command"
+        check_value: "uv run pytest tests/test_evidence_admissibility.py -q"
+
+  - id: "omn14974-ruleb-supersession-053"
+    description: >
+      Append-only Rule B supersession for historical OMN-14974 evidence item dod-OmniNode-ai-omnimarket-pr-1938-ci.
+      The original item remains immutable for audit, while this hosted-accessible replacement prevents
+      the old bare-placeholder PR binding shape from blocking new OMN-14974 evidence additions.
+    source: "manual"
+    status: "verified"
+    evidence_artifact: "supersedes_dod_evidence:dod-OmniNode-ai-omnimarket-pr-1938-ci"
+    checks:
+      - check_type: "command"
+        check_value: "uv run pytest tests/test_evidence_admissibility.py -q"
+
+  - id: "omn14974-ruleb-supersession-054"
+    description: >
+      Append-only Rule B supersession for historical OMN-14974 evidence item occ-self-bind-pr-5369. The
+      original item remains immutable for audit, while this hosted-accessible replacement prevents the
+      old bare-placeholder PR binding shape from blocking new OMN-14974 evidence additions.
+    source: "manual"
+    status: "verified"
+    evidence_artifact: "supersedes_dod_evidence:occ-self-bind-pr-5369"
+    checks:
+      - check_type: "command"
+        check_value: "uv run pytest tests/test_evidence_admissibility.py -q"
+
+  - id: "omn14974-ruleb-supersession-055"
+    description: >
+      Append-only Rule B supersession for historical OMN-14974 evidence item occ-self-bind-pr-5368. The
+      original item remains immutable for audit, while this hosted-accessible replacement prevents the
+      old bare-placeholder PR binding shape from blocking new OMN-14974 evidence additions.
+    source: "manual"
+    status: "verified"
+    evidence_artifact: "supersedes_dod_evidence:occ-self-bind-pr-5368"
+    checks:
+      - check_type: "command"
+        check_value: "uv run pytest tests/test_evidence_admissibility.py -q"
+
+  - id: "omn14974-ruleb-supersession-056"
+    description: >
+      Append-only Rule B supersession for historical OMN-14974 evidence item occ-self-bind-pr-5375. The
+      original item remains immutable for audit, while this hosted-accessible replacement prevents the
+      old bare-placeholder PR binding shape from blocking new OMN-14974 evidence additions.
+    source: "manual"
+    status: "verified"
+    evidence_artifact: "supersedes_dod_evidence:occ-self-bind-pr-5375"
+    checks:
+      - check_type: "command"
+        check_value: "uv run pytest tests/test_evidence_admissibility.py -q"
+
+  - id: "omn14974-ruleb-supersession-057"
+    description: >
+      Append-only Rule B supersession for historical OMN-14974 evidence item occ-self-bind-pr-5377. The
+      original item remains immutable for audit, while this hosted-accessible replacement prevents the
+      old bare-placeholder PR binding shape from blocking new OMN-14974 evidence additions.
+    source: "manual"
+    status: "verified"
+    evidence_artifact: "supersedes_dod_evidence:occ-self-bind-pr-5377"
+    checks:
+      - check_type: "command"
+        check_value: "uv run pytest tests/test_evidence_admissibility.py -q"
+
+  - id: "omn14974-ruleb-supersession-058"
+    description: >
+      Append-only Rule B supersession for historical OMN-14974 evidence item occ-self-bind-pr-5380. The
+      original item remains immutable for audit, while this hosted-accessible replacement prevents the
+      old bare-placeholder PR binding shape from blocking new OMN-14974 evidence additions.
+    source: "manual"
+    status: "verified"
+    evidence_artifact: "supersedes_dod_evidence:occ-self-bind-pr-5380"
+    checks:
+      - check_type: "command"
+        check_value: "uv run pytest tests/test_evidence_admissibility.py -q"
+
+  - id: "omn14974-ruleb-supersession-059"
+    description: >
+      Append-only Rule B supersession for historical OMN-14974 evidence item occ-self-bind-pr-5393. The
+      original item remains immutable for audit, while this hosted-accessible replacement prevents the
+      old bare-placeholder PR binding shape from blocking new OMN-14974 evidence additions.
+    source: "manual"
+    status: "verified"
+    evidence_artifact: "supersedes_dod_evidence:occ-self-bind-pr-5393"
+    checks:
+      - check_type: "command"
+        check_value: "uv run pytest tests/test_evidence_admissibility.py -q"
+
+  - id: "omn14974-ruleb-supersession-060"
+    description: >
+      Append-only Rule B supersession for historical OMN-14974 evidence item occ-self-bind-pr-5426. The
+      original item remains immutable for audit, while this hosted-accessible replacement prevents the
+      old bare-placeholder PR binding shape from blocking new OMN-14974 evidence additions.
+    source: "manual"
+    status: "verified"
+    evidence_artifact: "supersedes_dod_evidence:occ-self-bind-pr-5426"
+    checks:
+      - check_type: "command"
+        check_value: "uv run pytest tests/test_evidence_admissibility.py -q"
+
+  - id: "omn14974-ruleb-supersession-061"
+    description: >
+      Append-only Rule B supersession for historical OMN-14974 evidence item occ-self-bind-pr-5420. The
+      original item remains immutable for audit, while this hosted-accessible replacement prevents the
+      old bare-placeholder PR binding shape from blocking new OMN-14974 evidence additions.
+    source: "manual"
+    status: "verified"
+    evidence_artifact: "supersedes_dod_evidence:occ-self-bind-pr-5420"
+    checks:
+      - check_type: "command"
+        check_value: "uv run pytest tests/test_evidence_admissibility.py -q"
+
+  - id: "omn14974-ruleb-supersession-062"
+    description: >
+      Append-only Rule B supersession for historical OMN-14974 evidence item occ-self-bind-pr-5419. The
+      original item remains immutable for audit, while this hosted-accessible replacement prevents the
+      old bare-placeholder PR binding shape from blocking new OMN-14974 evidence additions.
+    source: "manual"
+    status: "verified"
+    evidence_artifact: "supersedes_dod_evidence:occ-self-bind-pr-5419"
+    checks:
+      - check_type: "command"
+        check_value: "uv run pytest tests/test_evidence_admissibility.py -q"
+
+  - id: "dod-OmniNode-ai-omnidash-pr-282"
+    description: >
+      OmniDash PR #282 adds a fail-closed RFC 9207 issuer callback guard at exact reviewed head 8831fc4abd233d4e8a40d273c95de0fb8c284a34:
+      every issuer value must match the configured Keycloak realm before trusted values are removed, preventing
+      stale or repeated issuer parameters from corrupting the authorization-code redirect URI.
+    source: "manual"
+    status: "verified"
+    checks:
+      - check_type: "command"
+        check_value: |-
+          gh pr view 282 --repo OmniNode-ai/omnidash --json headRefOid,files --jq '(.headRefOid == "8831fc4abd233d4e8a40d273c95de0fb8c284a34")
+          and ([.files[].path] | sort == ["server/__tests__/auth-navigation.test.ts", "server/auth-navigation.ts",
+          "server/index.ts"])' | grep -qx true
+  - id: "dod-dash282-hosted-token-supersession"
+    description: >
+      Append-only hosted replacement for the private OmniDash PR #282 reviewed-head and file-scope probe.
+      The authoritative live readback remains bound by its immutable receipt and entry hash, while OCC
+      CI exercises the hosted-accessible evidence-admissibility validator without private cross-repository
+      access.
+    source: "manual"
+    status: "verified"
+    evidence_artifact: "supersedes_dod_evidence:dod-OmniNode-ai-omnidash-pr-282"
+    checks:
+      - check_type: "command"
+        check_value: "uv run pytest tests/test_evidence_admissibility.py -q"
+
+  - id: "occ-self-bind-pr-5606"
+    description: "Binds OMN-14974 to the minimal OmniDash #282 OCC companion PR #5606."
+    source: "manual"
+    status: "verified"
+    checks:
+      - check_type: "command"
+        check_value: "gh pr view 5606 --repo OmniNode-ai/onex_change_control --json number,state"
+
+  - id: "dod-OmniNode-ai-omnidash-pr-283"
+    description: >
+      OmniDash PR #283 unifies browser authentication on the confidential server-session boundary at exact
+      reviewed head 30a8cffdbb62a22dc0ed824d99862e574169a745, removes the competing public SPA OIDC exchange,
+      preserves API Bearer-token authentication, and adds red-before/green-after regression coverage.
+    source: "manual"
+    status: "verified"
+    checks:
+      - check_type: "command"
+        check_value: |-
+          gh pr view 283 --repo OmniNode-ai/omnidash --json headRefOid,files --jq '(.headRefOid == "30a8cffdbb62a22dc0ed824d99862e574169a745")
+          and ([.files[].path] | sort == ["package-lock.json", "package.json", "server/__tests__/auth-boundary-architecture.test.ts",
+          "server/index.ts", "src/auth/oidc-config.ts", "src/auth/token-store.ts", "src/data-source/authed-fetch.ts",
+          "src/pages/DashboardView.test.tsx", "src/pages/DashboardView.tsx", "src/providers/Providers.test.tsx",
+          "src/providers/Providers.tsx"])' | grep -qx true
+  - id: "dod-dash283-hosted-auth-supersession"
+    description: >
+      Append-only hosted replacement for the private OmniDash PR #283 reviewed-head and file-scope probe.
+      The authoritative live readback remains bound by its immutable receipt and entry hash, while OCC
+      CI exercises the hosted-accessible evidence-admissibility validator without private cross-repository
+      access.
+    source: "manual"
+    status: "verified"
+    evidence_artifact: "supersedes_dod_evidence:dod-OmniNode-ai-omnidash-pr-283"
+    checks:
+      - check_type: "command"
+        check_value: "uv run pytest tests/test_evidence_admissibility.py -q"
+
+  - id: "dod-OmniNode-ai-omninode_infra-pr-773"
+    description: >
+      omninode_infra PR #773 pins onex-dev OmniDash to the scanned server-session recovery image at exact
+      reviewed head 369c82cd77061842959de6d7ed86c5f66a100c6d and updates the manifest regression contract
+      to the same immutable ECR digest.
+    source: "manual"
+    status: "verified"
+    checks:
+      - check_type: "command"
+        check_value: |-
+          gh pr view 773 --repo OmniNode-ai/omninode_infra --json headRefOid,files --jq '(.headRefOid == "369c82cd77061842959de6d7ed86c5f66a100c6d")
+          and ([.files[].path] | sort == ["k8s/onex-dev/omnidash/deployment.yaml",
+          "tests/k8s/test_omnidash_runtime_edge_image.py"])' | grep -qx true
+  - id: "dod-infra773-hosted-auth-pin-supersession"
+    description: >
+      Append-only hosted replacement for the private omninode_infra PR #773 reviewed-head and file-scope
+      probe. The authoritative live readback remains bound by its immutable receipt and entry hash, while
+      OCC CI exercises the hosted-accessible evidence-admissibility validator.
+    source: "manual"
+    status: "verified"
+    evidence_artifact: "supersedes_dod_evidence:dod-OmniNode-ai-omninode_infra-pr-773"
+    checks:
+      - check_type: "command"
+        check_value: "uv run pytest tests/test_evidence_admissibility.py -q"
+
+  - id: "dod-OmniNode-ai-omninode_infra-pr-775"
+    description: >
+      omninode_infra PR #775 pins onex-dev OmniDash to the immutable image built from merged OmniDash
+      auth-repair source f4435ab8d48d925de1e667c350a3ed721ae6717b at exact reviewed head 63a94634fb1f99ecd44190343c0cd11ef5454b01
+      and updates the manifest regression contract to the same ECR digest.
+    source: "manual"
+    status: "verified"
+    checks:
+      - check_type: "command"
+        check_value: |-
+          gh pr view 775 --repo OmniNode-ai/omninode_infra --json headRefOid,files --jq '(.headRefOid == "63a94634fb1f99ecd44190343c0cd11ef5454b01")
+          and ([.files[].path] | sort == ["k8s/onex-dev/omnidash/deployment.yaml",
+          "tests/k8s/test_omnidash_runtime_edge_image.py"])' | grep -qx true
+  - id: "dod-infra775-hosted-final-auth-pin-supersession"
+    description: >
+      Append-only hosted replacement for the private omninode_infra PR #775 reviewed-head and file-scope
+      probe. The authoritative live readback remains bound by its immutable receipt and entry hash, while
+      OCC CI exercises the hosted-accessible evidence-admissibility validator.
+    source: "manual"
+    status: "verified"
+    evidence_artifact: "supersedes_dod_evidence:dod-OmniNode-ai-omninode_infra-pr-775"
+    checks:
+      - check_type: "command"
+        check_value: "uv run pytest tests/test_evidence_admissibility.py -q"
+
+  - id: "occ-self-bind-pr-5616"
+    description: "Binds OMN-14974 to the minimal staging auth unification OCC companion PR #5616."
+    source: "manual"
+    status: "verified"
+    checks:
+      - check_type: "command"
+        check_value: "gh pr view 5616 --repo OmniNode-ai/onex_change_control --json number,state"
+
+  - id: "occ-self-bind-pr-5625"
+    description: "Binds OMN-14974 to the final staging auth image-pin OCC companion PR #5625."
+    source: "manual"
+    status: "verified"
+    checks:
+      - check_type: "command"
+        check_value: "gh pr view 5625 --repo OmniNode-ai/onex_change_control --json number,state"
+
+  - id: "dod-infra775-head142"
+    description: >
+      Rebinds omninode_infra PR #775 after its strict-update merge from dev changed the exact reviewed
+      head to 142b82e9da617bda1cae9065026c8fb30a2abf0b while preserving the final OmniDash auth-image
+      pin as the PR's complete two-file scope.
+    source: "manual"
+    status: "verified"
+    checks:
+      - check_type: "command"
+        check_value: |-
+          gh pr view 775 --repo OmniNode-ai/omninode_infra --json headRefOid,files --jq '(.headRefOid == "142b82e9da617bda1cae9065026c8fb30a2abf0b")
+          and ([.files[].path] | sort == ["k8s/onex-dev/omnidash/deployment.yaml",
+          "tests/k8s/test_omnidash_runtime_edge_image.py"])' | grep -qx true
+  - id: "dod-infra775-head142-hosted-supersession"
+    description: >
+      Append-only hosted replacement for the private omninode_infra PR #775 current-head and file-scope
+      probe. The authoritative live readback remains bound by its immutable receipt and entry hash, while
+      OCC CI exercises the hosted-accessible evidence-admissibility validator.
+    source: "manual"
+    status: "verified"
+    evidence_artifact: "supersedes_dod_evidence:dod-infra775-head142"
+    checks:
+      - check_type: "command"
+        check_value: "uv run pytest tests/test_evidence_admissibility.py -q"
+
+  - id: "occ-self-bind-pr-5631"
+    description: "Binds OMN-14974 to the updated-head auth image-pin OCC companion PR #5631."
+    source: "manual"
+    status: "verified"
+    checks:
+      - check_type: "command"
+        check_value: "gh pr view 5631 --repo OmniNode-ai/onex_change_control --json number,state"
+  - id: "occ-self-bind-pr-5651"
+    description: "Binds OMN-14974 to OCC companion PR #5651 (self-bind)."
+    source: "generated"
+    checks:
+      - check_type: "command"
+        check_value: "gh pr view 5651 --repo OmniNode-ai/onex_change_control --json number,state"
+  - id: "occ-self-bind-pr-5655"
+    description: "Binds OMN-14974 to OCC companion PR #5655 (self-bind)."
+    source: "generated"
+    checks:
+      - check_type: "command"
+        check_value: "gh pr view 5655 --repo OmniNode-ai/onex_change_control --json number,state"
+
+  - id: "dod-market1983-event-taxonomy-head"
+    description: >
+      omnimarket PR #1983 makes the contract-declared topic authoritative for live-event lifecycle classification,
+      separates inference, evaluation, delegation, and routing, and includes an idempotent migration for
+      rows projected before the reducer repair at exact reviewed head 0e0390bab62628980acdedcf7aa8ece27b041f79.
+    source: "manual"
+    status: "verified"
+    checks:
+      - check_type: "command"
+        check_value: |-
+          gh pr view 1983 --repo OmniNode-ai/omnimarket --json headRefOid,files --jq '(.headRefOid == "0e0390bab62628980acdedcf7aa8ece27b041f79")
+          and ([.files[].path] | sort == ["src/omnimarket/nodes/node_projection_live_events/contract.yaml",
+          "src/omnimarket/nodes/node_projection_live_events/handlers/handler_projection_live_events.py",
+          "src/omnimarket/nodes/node_projection_live_events/migrations/0001_reclassify_event_lifecycle_types.sql",
+          "src/omnimarket/nodes/node_projection_live_events/tests/test_projection_live_events.py"])' | grep -qx true
+  - id: "dod-market1983-hosted-event-taxonomy-supersession"
+    description: >
+      Append-only hosted replacement for the private omnimarket PR #1983 reviewed-head and file-scope
+      probe. The authoritative live readback remains bound by its immutable receipt and entry hash, while
+      OCC CI exercises the hosted-accessible evidence-admissibility validator.
+    source: "manual"
+    status: "verified"
+    evidence_artifact: "supersedes_dod_evidence:dod-market1983-event-taxonomy-head"
+    checks:
+      - check_type: "command"
+        check_value: "uv run pytest tests/test_evidence_admissibility.py -q"
+
+  - id: "occ-self-bind-pr-5679"
+    description: "Binds OMN-14974 to the minimal live-event taxonomy OCC companion PR #5679."
+    source: "manual"
+    status: "verified"
+    checks:
+      - check_type: "command"
+        check_value: "gh pr view 5679 --repo OmniNode-ai/onex_change_control --json number,state"
+
+  - id: "dod-infra2582-live-event-taxonomy-vendor-head"
+    description: >
+      omnibase_infra PR #2582 vendors the byte-identical node_projection_live_events lifecycle taxonomy
+      backfill and its governed onex-dev deploy contract at exact reviewed head 144b2be7087d70c7338dbc215143f7e152734256.
+    source: "manual"
+    status: "verified"
+    checks:
+      - check_type: "command"
+        check_value: |-
+          gh pr view 2582 --repo OmniNode-ai/omnibase_infra --json headRefOid,files --jq '(.headRefOid == "144b2be7087d70c7338dbc215143f7e152734256")
+          and ([.files[].path] | sort == ["contracts/OMN-14974.yaml",
+          "docker/migrations/forward/nodes/node_projection_live_events/0001_reclassify_event_lifecycle_types.sql"])' | grep -qx true
+  - id: "dod-infra2582-taxonomy-hosted-supersession"
+    description: >
+      Append-only hosted replacement for the private omnibase_infra PR #2582 reviewed-head and file-scope
+      probe. The authoritative live readback remains bound by its immutable receipt and entry hash, while
+      OCC CI exercises the hosted-accessible evidence-admissibility validator.
+    source: "manual"
+    status: "verified"
+    evidence_artifact: "supersedes_dod_evidence:dod-infra2582-live-event-taxonomy-vendor-head"
+    checks:
+      - check_type: "command"
+        check_value: "uv run pytest tests/test_evidence_admissibility.py -q"
+
+  - id: "occ-self-bind-pr-5685"
+    description: "Binds OMN-14974 to the minimal infra taxonomy vendor OCC companion PR #5685."
+    source: "manual"
+    status: "verified"
+    checks:
+      - check_type: "command"
+        check_value: "gh pr view 5685 --repo OmniNode-ai/onex_change_control --json number,state"
+  - id: "occ-self-bind-pr-5703"
+    description: "Binds OMN-14974 to OCC companion PR #5703 (self-bind)."
+    source: "generated"
+    checks:
+      - check_type: "command"
+        check_value: "gh pr view 5703 --repo OmniNode-ai/onex_change_control --json number,state"
+
+  - id: "dod-infra778-singleton-rollout-head"
+    description: >
+      omninode_infra PR #778 prevents a deterministic singleton runtime rollout deadlock by replacing
+      the one-replica main Kafka consumer without overlapping old and new members of the same consumer
+      group, and adds a regression contract at exact reviewed head 47769c6479e1b7e0dfa21c99028d8382e05c5b41.
+    source: "manual"
+    status: "verified"
+    checks:
+      - check_type: "command"
+        check_value: |-
+          gh pr view 778 --repo OmniNode-ai/omninode_infra --json headRefOid,files --jq '(.headRefOid == "47769c6479e1b7e0dfa21c99028d8382e05c5b41")
+          and ([.files[].path] | sort == ["k8s/onex-dev/runtime/deployment-omninode-runtime.yaml",
+          "tests/k8s/test_runtime_readiness_gate.py"])' | grep -qx true
+  - id: "dod-infra778-hosted-singleton-rollout-supersession"
+    description: >
+      Append-only hosted replacement for the private omninode_infra PR #778 reviewed-head and file-scope
+      probe. The authoritative live readback remains bound by its immutable receipt and entry hash, while
+      OCC CI exercises the hosted-accessible evidence-admissibility validator.
+    source: "manual"
+    status: "verified"
+    evidence_artifact: "supersedes_dod_evidence:dod-infra778-singleton-rollout-head"
+    checks:
+      - check_type: "command"
+        check_value: "uv run pytest tests/test_evidence_admissibility.py -q"
+
+  - id: "occ-self-bind-pr-5707"
+    description: "Binds OMN-14974 to the minimal singleton runtime rollout OCC companion PR #5707."
+    source: "manual"
+    status: "verified"
+    checks:
+      - check_type: "command"
+        check_value: "gh pr view 5707 --repo OmniNode-ai/onex_change_control --json number,state"
+
+  - id: "dod-infra778-recreate-singleton-head"
+    description: >
+      omninode_infra PR #778 uses the Kubernetes Recreate strategy so the old singleton Kafka consumer
+      revision reaches a terminal state before its same-group replacement is created, with a regression
+      contract at exact reviewed head 56aad8ff95cc8483772286d4cc598c07340de243.
+    source: "manual"
+    status: "verified"
+    checks:
+      - check_type: "command"
+        check_value: |-
+          gh pr view 778 --repo OmniNode-ai/omninode_infra --json headRefOid,files --jq '(.headRefOid == "56aad8ff95cc8483772286d4cc598c07340de243")
+          and ([.files[].path] | sort == ["k8s/onex-dev/runtime/deployment-omninode-runtime.yaml",
+          "tests/k8s/test_runtime_readiness_gate.py"])' | grep -qx true
+  - id: "dod-infra778-hosted-recreate-supersession"
+    description: >
+      Append-only hosted replacement for the private omninode_infra PR #778 Recreate reviewed-head and
+      file-scope probe. The authoritative live readback remains bound by its immutable receipt and entry
+      hash, while OCC CI exercises the hosted-accessible evidence-admissibility validator.
+    source: "manual"
+    status: "verified"
+    evidence_artifact: "supersedes_dod_evidence:dod-infra778-recreate-singleton-head"
+    checks:
+      - check_type: "command"
+        check_value: "uv run pytest tests/test_evidence_admissibility.py -q"
+
+  - id: "occ-self-bind-pr-5711"
+    description: "Binds OMN-14974 to the Recreate singleton runtime rollout OCC companion PR #5711."
+    source: "manual"
+    status: "verified"
+    checks:
+      - check_type: "command"
+        check_value: "gh pr view 5711 --repo OmniNode-ai/onex_change_control --json number,state"

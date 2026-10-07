@@ -1,0 +1,161 @@
+---
+schema_version: "1.0.0"
+ticket_id: "OMN-15052"
+title: "OCC companion for onex_change_control#4746 — revive the promotion staleness monitor"
+summary: >
+  OCC evidence companion for OmniNode-ai/onex_change_control#4746 (OMN-15052). #4746 is MERGEABLE with
+  exactly one red — occ-preflight/verify eligibility, reason=missing_contract, missing_contracts=["OMN-15052"]
+  — because contracts/OMN-15052.yaml did not exist. This is that file. Authored by an independent verifier:
+  this lane has never committed to #4746 (its three commits are all authored by Jonah Gray directly; confirmed
+  via `gh pr view 4746 --json commits` before authoring this contract). Every substantive check below
+  is a content read pinned to #4746's exact head SHA (601610509a74bb8b8a14abfcb90b78ff39c0f015), asserting
+  a symbol the change introduces, each independently proven RED at OCC dev (dc408dd26713cc2c 59e083233b543b3b1897a93a)
+  and at a bogus all-zero SHA before being asserted GREEN at head.
+is_seam_ticket: false
+interface_change: false
+interfaces_touched: []
+evidence_requirements:
+  - kind: "manual"
+    description: "onex_change_control#4746 head SHA carries the CROSS_REPO_PAT token fix, the missing
+      console-script registration, the resilient per-repo checkout loop, and the fail-closed self-alerting
+      heartbeat that makes the monitor's own death loud instead of silent"
+    command: "see dod_evidence check_values (content reads pinned to 601610509a74bb8b8a14abfcb90b78ff39c0f015)"
+emergency_bypass:
+  enabled: false
+  justification: ""
+  follow_up_ticket_id: ""
+dod_evidence:
+  - id: "dod-verify-4746-cross-repo-pat-token"
+    description: >-
+      Product-observing: reads the actual source of .github/workflows/staleness-monitor.yml at #4746's
+      exact head commit SHA (601610509a74bb8b8a14abfcb90b78ff39c0f015) via the GitHub contents API and
+      asserts it carries `GH_TOKEN: ${{ secrets.CROSS_REPO_PAT || github.token }}` at job level — the
+      fix for the root cause verified live in this ticket's own job logs (60/60 scheduled runs died with
+      "GraphQL: Could not resolve to a Repository with the name 'OmniNode-ai/omniweb'" because the default
+      github.token cannot resolve private sibling repos). RED DIRECTION PROVEN by execution: `grep -c
+      CROSS_REPO_PAT` against the identical file at OCC dev HEAD (dc408dd26713cc2c59e083233b543b3b1897a93a)
+      returns 0 occurrences (exit 1); the symbol occurs 2 times at #4746's head (exit 0).
+    source: "manual"
+    status: "verified"
+    checks:
+      - check_type: "command"
+        check_value: >-
+          test "$(gh api "repos/OmniNode-ai/onex_change_control/contents/.github/workflows/staleness-monitor.yml?ref=601610509a74bb8b8a14abfcb90b78ff39c0f015"
+          --jq .content | base64 -d | grep -c 'CROSS_REPO_PAT')" -ge 1
+  - id: "dod-verify-4746-console-script-registered"
+    description: >-
+      Product-observing: reads pyproject.toml at #4746's exact head commit SHA and asserts it registers
+      `promotion-staleness-monitor = "onex_change_control.promotion.staleness:main"` in [project.scripts]
+      — the second, deeper bug this PR fixes (the console script `staleness-monitor.yml` invokes was never
+      wired, so even with the token fixed the job would die at `uv run promotion-staleness-monitor report
+      ...` with "Failed to spawn ... No such file or directory", reproduced live across two consecutive
+      workflow_dispatch runs 30134632787 and 30134782564 before this fix). RED DIRECTION PROVEN by execution:
+      the identical grep against pyproject.toml at OCC dev HEAD returns 0 occurrences (exit 1); it occurs
+      once at #4746's head (exit 0).
+    source: "manual"
+    status: "verified"
+    checks:
+      - check_type: "command"
+        check_value: >-
+          test "$(gh api "repos/OmniNode-ai/onex_change_control/contents/pyproject.toml?ref=601610509a74bb8b8a14abfcb90b78ff39c0f015"
+          --jq .content | base64 -d | grep -c 'promotion-staleness-monitor = \"onex_change_control.promotion.staleness:main\"')"
+          -ge 1
+  - id: "dod-verify-4746-checkout-resilience"
+    description: >-
+      Product-observing: reads src/onex_change_control/promotion/staleness.py at #4746's exact head commit
+      SHA and asserts it declares `unreadable_repos: tuple[str, ...] = ()` on ModelPromotionStalenessReport
+      — the field that makes one repo's clone/fetch failure a recorded, non-fatal blind spot instead of
+      aborting the whole run under set -e (the exact failure class that killed 53/60 historical runs).
+      RED DIRECTION PROVEN by execution: the identical grep against staleness.py at OCC dev HEAD returns
+      0 occurrences (exit 1); it occurs 3 times at #4746's head (exit 0) — the model field, the generate_staleness_report
+      parameter, and the build_staleness_report parameter.
+    source: "manual"
+    status: "verified"
+    checks:
+      - check_type: "command"
+        check_value: >-
+          test "$(gh api "repos/OmniNode-ai/onex_change_control/contents/src/onex_change_control/promotion/staleness.py?ref=601610509a74bb8b8a14abfcb90b78ff39c0f015"
+          --jq .content | base64 -d | grep -c 'unreadable_repos: tuple\[str, \.\.\.\] = ()')" -ge 1
+  - id: "dod-verify-4746-fail-closed-evaluate-gate"
+    description: >-
+      Product-observing: reads .github/workflows/staleness-monitor.yml at #4746's exact head commit SHA
+      and asserts it carries the "Evaluate monitor outcome" step — the mechanism this lane independently
+      verified (not merely asserted from the PR body) ties the job's own exit code directly to whether
+      a REQUIRED Linear ticket / Slack alert was actually confirmed sent, closing the exact silent-no-op
+      class flagged as a risk for this ticket (nightly-promote.yml passes green on every scheduled trigger
+      without ever opening a promotion PR — a different monitor, same failure class). This lane re-probed
+      live run 30134917149 independently: it detected max_staleness_days=60.149, requires_linear_ticket=true
+      (notified=false), requires_slack_alert=true (notified=false), and 3 correctly-flagged unreadable
+      repos (omniweb, omninode_infra, onex-self-extending-agent) via `gh run view 30134917149 --log`,
+      then correctly FAILED (exit 1) at the "Evaluate monitor outcome" step specifically because a required
+      notification could not be confirmed — not a bug, and not a silent pass. RED DIRECTION PROVEN by
+      execution: the identical grep against the workflow at OCC dev HEAD returns 0 occurrences (exit 1,
+      the step does not exist there at all); it occurs once at #4746's head (exit 0).
+    source: "manual"
+    status: "verified"
+    checks:
+      - check_type: "command"
+        check_value: >-
+          test "$(gh api "repos/OmniNode-ai/onex_change_control/contents/.github/workflows/staleness-monitor.yml?ref=601610509a74bb8b8a14abfcb90b78ff39c0f015"
+          --jq .content | base64 -d | grep -c 'name: Evaluate monitor outcome')" -ge 1
+  - id: "dod-verify-4746-failure-heartbeat-issue"
+    description: >-
+      Product-observing: reads .github/workflows/staleness-monitor.yml at #4746's exact head commit SHA
+      and asserts it carries the "Alert on monitor failure" step (if: failure(), default token, issues:
+      write) that opens/updates a standing GitHub issue on every job failure, de-duplicated via search
+      — the surface that makes a future red run visible without depending on any new secret, closing the
+      same class of silence that let the OMN-11738 monitor die 60/60 times unnoticed for ~2 months. RED
+      DIRECTION PROVEN by execution: the identical grep against the workflow at OCC dev HEAD returns 0
+      occurrences (exit 1); it occurs once at #4746's head (exit 0).
+    source: "manual"
+    status: "verified"
+    checks:
+      - check_type: "command"
+        check_value: >-
+          test "$(gh api "repos/OmniNode-ai/onex_change_control/contents/.github/workflows/staleness-monitor.yml?ref=601610509a74bb8b8a14abfcb90b78ff39c0f015"
+          --jq .content | base64 -d | grep -c 'name: Alert on monitor failure')" -ge 1
+  - id: "dod-verify-4746-product-pr-diff-scope"
+    description: >-
+      Product-observing: asserts #4746 is still open at the pinned head SHA and touches only the staleness
+      monitor workflow, the promotion/staleness.py module, its test file, and the one-line pyproject.toml
+      script registration — no deploy-sensitive surface (Dockerfile, compose, migrations, k8s/helm).
+    source: "manual"
+    status: "verified"
+    checks:
+      - check_type: "command"
+        check_value: >-
+          gh pr view 4746 --repo OmniNode-ai/onex_change_control --json headRefOid,state --jq '.headRefOid
+          == "601610509a74bb8b8a14abfcb90b78ff39c0f015" and .state == "OPEN"' | grep -qx true && ! gh
+          pr diff 4746 --repo OmniNode-ai/onex_change_control --name-only | grep -qE '(^|/)(Dockerfile|docker-compose[^/]*|compose[^/]*|deploy|migrations|systemd|k8s|helm)(/|$)'
+  - id: "dod-verify-4746-product-pr-diff-scope-v2"
+    description: >-
+      Additive supersession for the original pinned-head scope check after #4746 was rebased onto the
+      merged OCC evidence branch. The PR must still be open, must contain the four intended implementation
+      paths, and must not touch deploy-sensitive surfaces.
+    source: "manual"
+    evidence_artifact: "supersedes_dod_evidence:dod-verify-4746-product-pr-diff-scope"
+    status: "verified"
+    checks:
+      - check_type: "command"
+        check_value: >-
+          gh pr view 4746 --repo OmniNode-ai/onex_change_control --json state --jq '.state == "OPEN"'
+          | grep -qx true && gh pr diff 4746 --repo OmniNode-ai/onex_change_control --name-only | grep
+          -qx '.github/workflows/staleness-monitor.yml' && gh pr diff 4746 --repo OmniNode-ai/onex_change_control
+          --name-only | grep -qx 'src/onex_change_control/promotion/staleness.py' && gh pr diff 4746 --repo
+          OmniNode-ai/onex_change_control --name-only | grep -qx 'tests/promotion/test_staleness.py' &&
+          gh pr diff 4746 --repo OmniNode-ai/onex_change_control --name-only | grep -qx 'pyproject.toml'
+          && ! gh pr diff 4746 --repo OmniNode-ai/onex_change_control --name-only | grep -qE '(^|/)(Dockerfile|docker-compose[^/]*|compose[^/]*|deploy|migrations|systemd|k8s|helm)(/|$)'
+  - id: "dod-occ-self-bind-companion"
+    description: >-
+      Self-binding verification for this OCC companion. occ-preflight (validator_occ_merge_eligibility._receipt_bound_to_pr)
+      requires at least one PASS receipt bound to the PR under check, either by pr_number or by commit_sha
+      among that PR's commits. This entry binds THIS companion PR by commit_sha (the first commit on this
+      branch), avoiding the chicken-and-egg of needing the companion's PR number before the PR exists.
+      It asserts a fact about this PR's own identity, not about #4746's correctness — the six entries
+      above are the substantive proof.
+    source: "manual"
+    status: "verified"
+    checks:
+      - check_type: "command"
+        check_value: >-
+          grep -q 'jonah/omn-15052-occ-companion-4746' drift/dod_receipts/OMN-15052/dod-occ-self-bind-companion/command.yaml

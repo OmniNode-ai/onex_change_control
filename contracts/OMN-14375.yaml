@@ -1,0 +1,146 @@
+---
+schema_version: "1.0.0"
+ticket_id: "OMN-14375"
+title: "feat(OMN-14375): pr_state projection — WS-L GitHub-state fan-in producer"
+summary: >-
+  omnibase_infra PR #2262 adds node_pr_state_projection_compute (subscribes to onex.evt.github.pr-status.v1
+  and emits a ModelPayloadPrStateUpsert intent) and node_pr_state_write_effect (UPSERTs the intent into
+  the new public.pr_state latest-known-state table via ON CONFLICT DO UPDATE), plus migration 091_pr_state.sql,
+  topic enum entries, service_kernel.py DispatchResultApplier wiring, and an intent_effects bridge. This
+  is the WS-L fan-in producer backing the OMN-14374 structured-only pr_state read skill.
+is_seam_ticket: true
+interface_change: true
+interfaces_touched:
+  - "public_api"
+emergency_bypass:
+  enabled: false
+  justification: ""
+  follow_up_ticket_id: ""
+dod_evidence:
+  - id: "occ-self-bind-pr-11694"
+    description: "OCC companion PR #11694 — self-bind for OMN-14375 (OMN-14650)."
+    source: "generated"
+    checks:
+      - check_type: "command"
+        check_value: "gh pr view 11694 --repo OmniNode-ai/onex_change_control --json number,state"
+  - id: "dod-omnibase-infra-pr-2262-head-b134fc47"
+    description: >-
+      Independent adversarial verification of omnibase_infra PR #2262 at head b134fc473aa7a4e32d7c99a67fb4a6d88fe91fdd.
+      Read the full diff (28 files: migration, 2 new nodes, topic enums, service_kernel wiring, intent_effects
+      bridge, unit + integration tests). Checked out the branch in an isolated worktree, ran the full
+      focused suite (19 unit + 3 integration auto-wiring gate tests) green, then performed two RED->GREEN
+      mutation proofs: (1) neutered the repo/pr_number required-field guard in HandlerPrStateProjection._require_str
+      -- the corresponding test failed as expected (DID NOT RAISE), confirming the guard is real and test-covered;
+      (2) forced was_insert=True unconditionally in HandlerPrStateUpsert.upsert -- the test_refreshed_pr_is_update
+      test failed as expected, confirming the RETURNING (xmax = 0) insert-vs-update detection is real
+      and test-covered. Both mutations were reverted and the suite reconfirmed green (22/22) with a clean
+      worktree. ruff check and ruff format --check passed on all touched source. CI on the live PR shows
+      all reds classify as occ-preflight dependency cascade (missing Evidence-Source), not real product
+      failures -- confirmed by reading the actual failed-job logs, not just the check rollup.
+    source: "manual"
+    status: "verified"
+    checks:
+      - check_type: "command"
+        check_value: >-
+          grep -q '^status: PASS$' drift/dod_receipts/OMN-14375/dod-omnibase-infra-pr-2262-head-b134fc47/command.yaml
+          && grep -q '^pr_number: 2262$' drift/dod_receipts/OMN-14375/dod-omnibase-infra-pr-2262-head-b134fc47/command.yaml
+          && grep -q 'b134fc473aa7a4e32d7c99a67fb4a6d88fe91fdd' drift/dod_receipts/OMN-14375/dod-omnibase-infra-pr-2262-head-b134fc47/command.yaml
+  - id: "dod-deploy-assessment-head-b134fc47"
+    description: >-
+      Deploy-surface assessment for omnibase_infra PR #2262 head b134fc473aa7a4e32d7c99a67fb4a6d88fe91fdd:
+      the diff adds a new forward migration (091_pr_state.sql, additive CREATE TABLE IF NOT EXISTS / CREATE
+      INDEX IF NOT EXISTS, no destructive DDL) plus two new declarative nodes registered via pyproject.toml
+      entry points and a new DispatchResultApplier branch in service_kernel.py gated on an existing env
+      var (build_loop_dsn / OMNIBASE_INFRA_DB_URL) that already gates the neighboring build_loop applier.
+      It does not perform a live deploy or restart, does not mutate running runtime configuration, and
+      does not touch .201. The migration only applies on the next runtime deploy cycle through the existing
+      migration-runner path.
+    source: "manual"
+    status: "verified"
+    checks:
+      - check_type: "command"
+        check_value: >-
+          grep -q '^status: PASS$' drift/dod_receipts/OMN-14375/dod-deploy-assessment-head-b134fc47/command.yaml
+          && grep -qi 'no live deploy' drift/dod_receipts/OMN-14375/dod-deploy-assessment-head-b134fc47/command.yaml
+  - id: "dod-OmniNode-ai-omninode_infra-pr-1723"
+    description: "PR #1723 on OmniNode-ai/omninode_infra — Evidence-Source autobind."
+    source: "generated"
+    checks:
+      - check_type: "command"
+        check_value: "gh pr view 1723 --repo OmniNode-ai/omninode_infra --json number,state"
+  - id: "dod-OmniNode-ai-omninode_infra-pr-1723-ci"
+    description: "PR #1723 on OmniNode-ai/omninode_infra — product diff scope check (OMN-14425)."
+    source: "generated"
+    checks:
+      - check_type: "command"
+        check_value: "gh pr view 1723 --repo OmniNode-ai/omninode_infra --json files"
+  - id: "dod-occ-diff-derived-behavior-proof-pr-1723"
+    description: "PR #1723 on OmniNode-ai/omninode_infra — diff-derived behavior proof (OMN-16434)."
+    source: "generated"
+    evidence_artifact: "supersedes_dod_evidence:dod-OmniNode-ai-omninode_infra-pr-1723"
+    checks:
+      - check_type: "test_passes"
+        check_value: |-
+          uv run pytest docker/onex-api/tests/test_customer_operation_security_declarations.py docker/onex-api/tests/test_gateway_routes.py docker/onex-api/tests/test_github_webhook.py docker/onex-api/tests/test_kafka_topic_provisioner.py -q
+        cwd: "${OMNI_HOME}/omninode_infra"
+  - id: "dod-occ-self-commit"
+    description: >-
+      OCC self-binding: this onex_change_control branch carries the OMN-14375 central contract and PASS
+      receipts for omnibase_infra PR #2262 head b134fc473aa7a4e32d7c99a67fb4a6d88fe91fdd. The receipt
+      binds the first evidence commit for occ-preflight eligibility before the OCC PR number exists.
+    source: "manual"
+    status: "verified"
+    checks:
+      - check_type: "command"
+        check_value: >-
+          grep -q '^status: PASS$' drift/dod_receipts/OMN-14375/dod-occ-self-commit/command.yaml && grep
+          -q 'jonah/omn-14375-occ-infra-2262' drift/dod_receipts/OMN-14375/dod-occ-self-commit/command.yaml
+  - id: "dod-OmniNode-ai-omnibase_infra-pr-4227"
+    description: "PR #4227 on OmniNode-ai/omnibase_infra — Evidence-Source autobind."
+    source: "generated"
+    checks:
+      - check_type: "command"
+        check_value: |-
+          gh api repos/OmniNode-ai/omnibase_infra/contents/src/omnibase_infra/nodes/node_github_webhook_ingress_effect/handlers/handler_github_webhook_ingress.py?ref=4102119f4b52368b13ec34eba6ddbb66eb74c887 --jq '.content' | base64 -d | grep -c 'def load_summary_check_names'
+  - id: "occ-self-bind-pr-11693"
+    description: "OCC companion PR #11693 — self-bind for OMN-14375 (OMN-14650)."
+    source: "generated"
+    checks:
+      - check_type: "command"
+        check_value: "gh pr view 11693 --repo OmniNode-ai/onex_change_control --json number,state"
+  - id: "dod-OmniNode-ai-omnibase_infra-pr-4227-ci"
+    description: "PR #4227 on OmniNode-ai/omnibase_infra — product diff scope check (OMN-14425)."
+    source: "generated"
+    checks:
+      - check_type: "command"
+        check_value: "gh pr view 4227 --repo OmniNode-ai/omnibase_infra --json files"
+  - id: "dod-occ-diff-derived-behavior-proof-pr-4227"
+    description: "PR #4227 on OmniNode-ai/omnibase_infra — diff-derived behavior proof (OMN-16434)."
+    source: "generated"
+    checks:
+      - check_type: "test_passes"
+        check_value: |-
+          uv run pytest tests/ci/test_env_parity.py tests/unit/nodes/node_bus_forwarder_effect/test_provisioning_sync_omn17201.py tests/unit/nodes/node_github_webhook_ingress_effect/test_door_to_ingress_seam.py tests/unit/nodes/node_github_webhook_ingress_effect/test_handler_github_webhook_ingress.py -q
+        cwd: "${OMNI_HOME}/omnibase_infra"
+  - id: "dod-verify-2262-product-observing-repair"
+    description: >-
+      OMN-14436 REPAIR — appended, nothing mutated. Every pre-existing entry in this contract is INERT:
+      it greps this repo's own receipt store, which the DoD runner could not see past because --workspace
+      pointed at the onex_change_control clone rather than the product. That was a platform wiring defect,
+      not an authoring failure — with the runner mis-pointed, NO other kind of check could have executed.
+      This entry adds the product-observing evidence that was impossible to write before. It asserts the
+      pr_state topic is registered in the generated topic enum, read from omnibase_infra#2262's exact
+      head SHA (b134fc473aa7a4e32d7c99a67fb4a6d88fe91fdd) via the GitHub contents API. OMN-14375 ships
+      a pr_state projection whose whole purpose is to consume a GitHub-state fan-in topic. If the topic
+      is not registered in the generated enum, nothing can publish to it and the projection is dead on
+      arrival — so the topic registration, not the migration file's existence, is the load-bearing fact.
+      RED DIRECTION PROVEN by execution: the symbol occurs at #2262's head and ZERO times at omnibase_infra
+      dev, so the identical command exits 1 at dev and at a bogus SHA, and exits 0 only at a ref where
+      #2262's code genuinely exists.
+    source: "manual"
+    status: "verified"
+    checks:
+      - check_type: "command"
+        check_value: >-
+          test "$(gh api "repos/OmniNode-ai/omnibase_infra/contents/src/omnibase_infra/enums/generated/enum_omnibase_infra_topic.py?ref=b134fc473aa7a4e32d7c99a67fb4a6d88fe91fdd"
+          --jq .content | base64 -d | grep -c 'PR_STATE')" -ge 1 #magic___^_^___line

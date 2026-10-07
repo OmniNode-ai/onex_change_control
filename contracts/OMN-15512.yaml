@@ -1,0 +1,77 @@
+---
+schema_version: "1.0.0"
+ticket_id: "OMN-15512"
+title: "OCC companion for OmniNode-ai/omnibase_infra#2576 (boot attach-readiness rides the existing runtime-manifest
+  event + projection)"
+summary: >
+  Evidence companion binding OMN-15512 to OmniNode-ai/omnibase_infra PR #2576 at head 5776e7da99c20c8e5c1edda673d35c9f56ae2a5f.
+  The PR folds the boot attach-readiness aggregate (ModelRuntimeAttachReadiness, previously a service_kernel
+  local variable consumed by exactly one logger.info) onto the EXISTING onex.evt.omnibase-infra.runtime-manifest-published.v1
+  event and the runtime_manifests projection, so the NOT-READY blocker set is durably queryable instead
+  of reachable only via `docker logs | grep NOT-READY`. Authored by the independent adversarial verifier
+  for the foxier25-disposition-0730 build lane, not by the implementer (memory feedback_no_self_authored_evidence).
+is_seam_ticket: false
+interface_change: false
+interfaces_touched: []
+evidence_requirements:
+  - kind: "ci"
+    description: "PR #2576 CI checks on OmniNode-ai/omnibase_infra"
+    command: "gh pr checks 2576 --repo OmniNode-ai/omnibase_infra"
+emergency_bypass:
+  enabled: false
+  justification: ""
+  follow_up_ticket_id: ""
+dod_evidence:
+  - id: "dod-OmniNode-ai-omnibase_infra-pr-2576"
+    description: >
+      The publish seam exists: `async def publish_runtime_manifest` is present in src/omnibase_infra/runtime/manifest_builder.py
+      at PR #2576's exact head 5776e7da99c20c8e5c1edda673d35c9f56ae2a5f. This is the function the kernel
+      calls at step 9.8, so it is the artifact that runs, not a surrogate. Falsifiable: the same read
+      at the merge-base 27478af41693d81c29fb8d4a86329db32e397efb returns zero matches (grep exit 1) —
+      before this PR the kernel inlined the build+publish and there was no drivable seam.
+    source: "generated"
+    checks:
+      - check_type: "command"
+        check_value: >-
+          gh api repos/OmniNode-ai/omnibase_infra/contents/src/omnibase_infra/runtime/manifest_builder.py?ref=5776e7da99c20c8e5c1edda673d35c9f56ae2a5f
+          --jq '.content' | base64 -d | grep -c 'async def publish_runtime_manifest'
+  - id: "dod-attach-readiness-projection-columns"
+    description: >
+      The durable projection half exists: migration docker/migrations/forward/095_add_attach_readiness_to_runtime_manifests.sql
+      adds attach_not_ready_contracts (JSONB blocker set) to the runtime_manifests table at PR #2576's
+      exact head. Falsifiable: the same path at the merge-base 27478af41693d81c29fb8d4a86329db32e397efb
+      returns HTTP 404 — the migration does not exist there. NOTE (honest scope): this proves the migration
+      is authored, NOT that it has run. Migration 095 has never been applied on any lane; no row carries
+      these columns yet. The live SQL readback is owed on the next sanctioned dev deploy and is explicitly
+      not claimed here.
+    source: "generated"
+    checks:
+      - check_type: "command"
+        check_value: >-
+          gh api repos/OmniNode-ai/omnibase_infra/contents/docker/migrations/forward/095_add_attach_readiness_to_runtime_manifests.sql?ref=5776e7da99c20c8e5c1edda673d35c9f56ae2a5f
+          --jq '.content' | base64 -d | grep -c 'ADD COLUMN IF NOT EXISTS attach_not_ready_contracts'
+  - id: "dod-regression-test-drives-real-publish-seam"
+    description: >
+      The regression test drives the real publish path rather than a unit test on ModelRuntimeAttachReadiness.from_results:
+      tests/integration/runtime/test_attach_readiness_publish_seam.py imports the production publish_runtime_manifest
+      from omnibase_infra.runtime.manifest_builder and asserts on the envelope captured off a recording
+      bus. This is the OMN-15512 AC4 requirement (a unit test on the aggregate alone does NOT satisfy
+      it, because the defect was that the aggregate never left service_kernel). Falsifiable: the same
+      path at the merge-base 27478af41693d81c29fb8d4a86329db32e397efb returns HTTP 404 — the test does
+      not exist there.
+    source: "generated"
+    checks:
+      - check_type: "command"
+        check_value: >-
+          gh api repos/OmniNode-ai/omnibase_infra/contents/tests/integration/runtime/test_attach_readiness_publish_seam.py?ref=5776e7da99c20c8e5c1edda673d35c9f56ae2a5f
+          --jq '.content' | base64 -d | grep -c 'from omnibase_infra.runtime.manifest_builder import publish_runtime_manifest'
+  - id: "occ-self-bind-pr-5658"
+    description: >
+      Self-bind: this OCC companion PR #5658 is the evidence source cited by omnibase_infra#2576's Evidence-Source
+      line. Satisfies occ-preflight invariant I3 (OCC's own PRs validate contracts and receipts from the
+      PR's in-tree checkout) by giving OMN-15512 a receipt bound to this OCC PR number.
+    source: "generated"
+    checks:
+      - check_type: "command"
+        check_value: >-
+          gh pr view 5658 --repo OmniNode-ai/onex_change_control --json number,state

@@ -1,0 +1,73 @@
+---
+schema_version: "1.0.0"
+ticket_id: "OMN-13817"
+title: "feat(OMN-13817): fail-closed durable-evidence gate on node_linear_triage close path"
+summary: >-
+  Close-batch wf_1628d9a5 flipped implementation tickets Backlog->Done with no durable evidence (startedAt=null,
+  zero attachments, zero PRs, sub-second bulk close), corrupting the Linear board as a completion signal.
+  omnimarket PR #1554 adds a pure-logic ClosePolicyGate (node_linear_triage/services/close_evidence_gate.py)
+  and routes every save_issue(state="Done") in node_linear_triage through a single _mark_done chokepoint
+  that enforces it: a Done flip is refused unless it carries a recognized durable evidence kind (merged
+  implementing PR, superseding sibling PR, all-children-done roll-up, or a tracked OCC receipt) with a
+  non-empty detail. A no-evidence close — the wf_1628d9a5 signature — raises CloseEvidenceRefusedError
+  before any Linear mutation. Compile-only node logic + tests; no runtime deploy, no .201 mutation, no
+  Linear writes performed by this PR.
+is_seam_ticket: false
+interface_change: false
+interfaces_touched: []
+emergency_bypass:
+  enabled: false
+  justification: ""
+  follow_up_ticket_id: ""
+dod_evidence:
+  - id: "dod-001"
+    description: >-
+      Focused close-evidence-gate tests pass — pure-gate ALLOW per durable kind / REFUSE no-evidence,
+      _mark_done chokepoint never writes Done without evidence, and a dry-run of the wf_1628d9a5 batch
+      refuses every no-evidence close with zero Done writes (13 tests) in omnimarket PR #1554. Real probe
+      command: env -u PYTHONPATH uv run pytest tests/nodes/node_linear_triage/test_omn_13817_close_evidence_gate.py
+      -v.
+    source: "manual"
+    checks:
+      - check_type: "command"
+        check_value: "grep -q '^status: PASS$' drift/dod_receipts/OMN-13817/dod-001/command.yaml"
+  - id: "dod-002"
+    description: >-
+      node_linear_triage ruff check + mypy --strict pass locally on the change in omnimarket PR #1554.
+      Real probe command: env -u PYTHONPATH uv run ruff check src/omnimarket/nodes/node_linear_triage
+      tests/nodes/node_linear_triage && env -u PYTHONPATH uv run mypy src/omnimarket/nodes/node_linear_triage
+      --strict.
+    source: "manual"
+    checks:
+      - check_type: "command"
+        check_value: "grep -q '^status: PASS$' drift/dod_receipts/OMN-13817/dod-002/command.yaml"
+  - id: "dod-003-deploy-readiness"
+    description: >-
+      Local import readiness smoke (deploy-readiness proxy): the close_evidence_gate module imports cleanly.
+      This compile-only PR performed no live deploy, runtime restart, .201 mutation, or Linear write.
+      Real probe command: env -u PYTHONPATH uv run python -c "from omnimarket.nodes.node_linear_triage.services.close_evidence_gate
+      import enforce_close_evidence, EnumCloseEvidenceKind, evaluate_close_evidence; print('close-evidence-gate
+      deploy readiness smoke ok')".
+    source: "manual"
+    checks:
+      - check_type: "command"
+        check_value: "grep -q '^status: PASS$' drift/dod_receipts/OMN-13817/dod-003-deploy-readiness/command.yaml"
+  - id: "dod-occ-self"
+    description: >-
+      Self-binding OCC receipt: this onex_change_control PR carries the OMN-13817 contract and the dod-001
+      / dod-002 / dod-003-deploy-readiness receipts consumed by omnimarket PR #1554 (deploy-gate + Receipt
+      Gate).
+    source: "generated"
+    checks:
+      - check_type: "command"
+        check_value: "grep -q '^status: PASS$' drift/dod_receipts/OMN-13817/dod-occ-self/command.yaml"
+  - id: "dod-market-pr-1554"
+    description: >-
+      Consuming-PR binding: omnimarket PR #1554 carries the node_linear_triage close-evidence gate (close_evidence_gate
+      service + _mark_done chokepoint + 13 tests). Binds the OMN-13817 evidence to the omnimarket PR so
+      the omnimarket Receipt Gate + OCC eligibility clear pr_ticket_mismatch. Real probe: gh pr view 1554
+      --repo OmniNode-ai/omnimarket --json number,state,headRefOid,title.
+    source: "manual"
+    checks:
+      - check_type: "command"
+        check_value: "grep -q '^status: PASS$' drift/dod_receipts/OMN-13817/dod-market-pr-1554/command.yaml"

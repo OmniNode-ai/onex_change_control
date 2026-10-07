@@ -1,0 +1,72 @@
+---
+schema_version: "1.0.0"
+ticket_id: "OMN-13613"
+title: "WS-C Phase 3 prerequisite: Shared Experiment Result Contract (core shared models)"
+summary: >
+  Phase-3 prerequisite of the SEA -> canonical migration (epic OMN-13604). Builds the single canonical
+  experiment-telemetry contract that all three Phase-3 experiment orchestrators emit. No experiment node
+  invents its own result schema. Homed in omnibase_core shared models because the three downstream orchestrators
+  (OMN-13614 / OMN-13615 / OMN-13616) plus omnimarket import it -- >= 2 repos -> core (per feedback_models_in_core_not_market.md).
+  New: EnumExperimentType (entropy / model_eval / regression_test, one member per Phase-3 orchestrator),
+  EnumExperimentStatus (pending / running / completed / failed / cancelled), and ModelExperimentResult
+  with strongly-typed plan-doc fields: experiment_id / run_id / correlation_id (UUID), experiment_type
+  / status (enums), runtime_identity (typed), score (ModelExperimentScore: typed numeric value + scale_max,
+  range-validated), cost (ModelExperimentCost: cost_usd Decimal, non-negative), evidence_ref (ModelExperimentEvidenceRef:
+  evidence UUID + optional sha256 artifact ref). All models frozen (ConfigDict frozen=True, extra=forbid,
+  from_attributes=True); no bare str for typed fields; UUID not str; enums not strings. Value objects
+  split one-class-per-file (repo single-class gate). Pure additive shared-model build: no Plugin* base,
+  no bespoke engine/router/daemon; no topic schema, envelope, or contract-API change; no cross-repo pin
+  bump; no live-lane mutation. TDD: failing contract-derived test written before implementation, then
+  made green; 30 unit tests. Blocks OMN-13614 / OMN-13615 / OMN-13616 until merged.
+is_seam_ticket: false
+interface_change: false
+interfaces_touched: []
+evidence_requirements:
+  - kind: "tests"
+    description: >
+      TDD: a failing contract-derived test was written before implementation (confirmed red: ModuleNotFoundError
+      for omnibase_core.enums.enum_experiment_status), then made green. The 30 unit tests cover field
+      types (UUID identifiers, enum classification/status, typed value objects), frozen behavior on the
+      result and all value objects, value-object validators (score within scale_max, non-negative cost,
+      sha256 artifact-ref format, UUID rejection of non-UUID strings), extra=forbid, and JSON round-trip.
+    command: "uv run pytest tests/unit/models/experiment/ -q"
+emergency_bypass:
+  enabled: false
+  justification: ""
+  follow_up_ticket_id: ""
+dod_evidence:
+  - id: "dod-core-pr-1346"
+    description: >
+      omnibase_core PR #1346 adds the canonical Shared Experiment Result Contract: EnumExperimentType,
+      EnumExperimentStatus, ModelExperimentResult, and its frozen typed value objects (ModelExperimentScore,
+      ModelExperimentCost, ModelExperimentEvidenceRef) in omnibase_core shared models, registered in the
+      enums and models package __init__ exports. Evidence anchor: omnibase_core head commit 7651354e0e668e346124a7c2733b9b7564853268.
+    source: "manual"
+    checks:
+      - check_type: "command"
+        check_value: "grep -q '^status: PASS$' drift/dod_receipts/OMN-13613/dod-core-pr-1346/command.yaml
+          && grep -q '^pr_number: 1346$' drift/dod_receipts/OMN-13613/dod-core-pr-1346/command.yaml &&
+          grep -q 'passed' drift/dod_receipts/OMN-13613/dod-core-pr-1346/command.yaml"
+  - id: "dod-deploy-assessment"
+    description: >
+      Deploy assessment: this is a pure additive shared-model + enum build in omnibase_core with no topic
+      schema, envelope, or contract-API change, no cross-repo pin bump, and no live-lane mutation. The
+      new models are imported by future Phase-3 orchestrators (OMN-13614 / OMN-13615 / OMN-13616) and
+      omnimarket; this PR adds only the shared types. No live deploy is performed by this PR. The receipt
+      check_value carries the deploy keyword for the deploy-gate.
+    source: "manual"
+    checks:
+      - check_type: "command"
+        check_value: "grep -q '^status: PASS$' drift/dod_receipts/OMN-13613/dod-deploy-assessment/command.yaml
+          && grep -q '^pr_number: 1346$' drift/dod_receipts/OMN-13613/dod-deploy-assessment/command.yaml
+          && grep -q 'No live deploy' drift/dod_receipts/OMN-13613/dod-deploy-assessment/command.yaml"
+  - id: "dod-occ-pr-self"
+    description: >
+      Self-binding OCC eligibility receipt for the dev->main promotion PR: this onex_change_control PR
+      carries the OMN-13613 contract and dod receipts, satisfying the receipt-to-PR binding required by
+      validator_occ_merge_eligibility (a PASS receipt whose pr_number binds to this PR).
+    source: "manual"
+    checks:
+      - check_type: "command"
+        check_value: "grep -Eq '^status: \"?PASS\"?$' drift/dod_receipts/OMN-13613/dod-occ-pr-self/command.yaml
+          && grep -Eq '^pr_number: [0-9]+$' drift/dod_receipts/OMN-13613/dod-occ-pr-self/command.yaml"

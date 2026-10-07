@@ -1,0 +1,77 @@
+---
+schema_version: "1.0.0"
+ticket_id: "OMN-16266"
+title: "OCC evidence for OMN-16266"
+summary: >
+  Manual OCC companion for OmniNode-ai/omnibase_core PR #1565 (cap ModelTicketContract.requirements and
+  five sibling list fields to _MAX_LIST_ITEMS=1000, closing a DoS gap where an unbounded requirements
+  list could produce a Kafka-broker-rejecting payload once node_test_generator_compute's ~4x amplification
+  is applied). Records a RED-before/GREEN-after differential as two independently falsifiable single-command
+  source probes over the requirements field specifically, each pinned to an immutable git blob: the pre-fix
+  form (no max_length on the requirements Field) present at the merge-base and absent at head, and the
+  fixed form (max_length=_MAX_LIST_ITEMS on requirements) absent at the merge-base and present at head.
+  Hand-authored rather than waiting on the live occ_companion_emitter / node_occ_companion_effect: the
+  born-path dispatcher (author_occ_companion_9c043f28) failed identically twice for this exact PR (17:38:35Z
+  and 18:02:06Z, both TimeoutExpired -> HandlerDispatchFailureError, both DLQ'd to onex.dlq.omnibase-infra.commands.v1)
+  while the same handler minted a companion for a different PR (omninode_infra#955) successfully in the
+  same window -- a reproducible, PR-specific failure, not a systemic outage, so a third automated attempt
+  was not made (tracked as new evidence on OMN-15447).
+is_seam_ticket: false
+interface_change: false
+interfaces_touched: []
+emergency_bypass:
+  enabled: false
+  justification: ""
+  follow_up_ticket_id: ""
+dod_evidence:
+  - id: "dod-OmniNode-ai-omnibase_core-pr-1565"
+    description: "PR #1565 on OmniNode-ai/omnibase_core — Evidence-Source (hand-authored: the born-path
+      node_occ_companion_effect dispatcher DLQ'd this exact PR's mint request twice identically -- 17:38:35Z
+      and 18:02:06Z, both TimeoutExpired -- while minting a companion for a different PR in the same window,
+      per the operator-authorized hand-authored-companion pattern established on occ#6633/occ#6640/occ#6722)."
+    source: "manual"
+    checks:
+      - check_type: "command"
+        check_value: "gh pr view 1565 --repo OmniNode-ai/omnibase_core --json number,state"
+  - id: "dod-OmniNode-ai-omnibase_core-pr-1565-red-before"
+    description: "RED-before half of the differential (OMN-14051 source-presence pattern, pinned to the
+      immutable merge-base blob a4580b285cb4c4f679572b474619e3b325def4a5): counts occurrences of 'max_length'
+      within 3 lines of the requirements Field declaration in model_ticket_contract.py. Expected 0 at
+      the merge-base -- the pre-fix requirements list had no length cap at all. Falsifiable: if the cap
+      already existed there, this returns >=1 and the receipt is not earned."
+    source: "manual"
+    checks:
+      - check_type: "command"
+        check_value: >-
+          test "$(gh api -H "Accept: application/vnd.github.raw" "repos/OmniNode-ai/omnibase_core/contents/src/omnibase_core/models/ticket/model_ticket_contract.py?ref=a4580b285cb4c4f679572b474619e3b325def4a5"
+          | grep -A3 'requirements: list\[ModelRequirement\]' | grep -c max_length)" -eq 0
+  - id: "dod-OmniNode-ai-omnibase_core-pr-1565-green-after"
+    description: "GREEN-after half of the differential, pinned to the PR's exact head blob e73f888560d386d6be2b95901078856239e134d2:
+      the identical probe against head. Expected 1 -- the requirements Field now carries max_length=_MAX_LIST_ITEMS.
+      Falsifiable and counter-checked: the identical probe against the merge-base blob returns 0, so this
+      is a genuine differential, not a same-state re-read."
+    source: "manual"
+    checks:
+      - check_type: "command"
+        check_value: >-
+          gh api -H "Accept: application/vnd.github.raw" "repos/OmniNode-ai/omnibase_core/contents/src/omnibase_core/models/ticket/model_ticket_contract.py?ref=e73f888560d386d6be2b95901078856239e134d2"
+          | grep -A3 'requirements: list\[ModelRequirement\]' | grep -c max_length
+  - id: "dod-OmniNode-ai-omnibase_core-pr-1565-regr-test"
+    description: "The regression test class exists at the PR head: counts 'class TestListLengthCaps' in
+      tests/unit/models/ticket/test_model_ticket_contract.py at head e73f888560d386d6be2b95901078856239e134d2.
+      Expected 1. Counter-checked against the merge-base, where the class does not exist (0), confirming
+      this is new coverage added by the PR, not pre-existing."
+    source: "manual"
+    checks:
+      - check_type: "command"
+        check_value: >-
+          gh api -H "Accept: application/vnd.github.raw" "repos/OmniNode-ai/omnibase_core/contents/tests/unit/models/ticket/test_model_ticket_contract.py?ref=e73f888560d386d6be2b95901078856239e134d2"
+          | grep -c 'class TestListLengthCaps'
+  - id: "occ-self-bind-pr-6748"
+    description: "Self-bind entry so occ-preflight's merge-eligibility validator finds a PASS receipt
+      bound to this OCC companion PR itself (every other entry above binds to OmniNode-ai/omnibase_core#1565,
+      not to this OCC PR)."
+    source: "manual"
+    checks:
+      - check_type: "command"
+        check_value: "gh pr view 6748 --repo OmniNode-ai/onex_change_control --json number,state"

@@ -1,0 +1,49 @@
+---
+schema_version: "1.0.0"
+ticket_id: "OMN-13145"
+title: "node_integration_sweep_orchestrator: wire onto canonical dispatch + add real Kafka/DB/projection/golden-chain
+  probes"
+summary: >-
+  node_integration_sweep_orchestrator crashed on the canonical dispatch path (onex node / onex run) and
+  only ran three health/CI probes. Three contract-wiring bugs fixed: (1) removed a bogus operation: surface_probes
+  handler_routing entry that pointed the resolver at a non-existent surface_probes class (surface_probes.py
+  exports probe FUNCTIONS, not a ProtocolMessageHandler) and crashed every dispatch at handler instantiation;
+  (2) added event_model to the sweep entry so the runtime coerces the envelope payload into the typed
+  ModelIntegrationSweepOrchestratorRequest before dispatch (same dict-not-typed class as OMN-13141 / OMN-8724),
+  plus a correlation_id field so the frozen request validates against the runtime-injected envelope id
+  under extra='forbid'; (3) added a top-level input_model so the event-driven runtime builds the initial
+  command from the caller's --input payload instead of publishing only {correlation_id} and silently ignoring
+  caller fields. Added real KAFKA (rpk topic+group), DB (psql to_regclass+count over tail tables), PROJECTION
+  (projection-API per topic), and GOLDEN_CHAIN (head->consumer->tail) probes as the orchestrator compute
+  logic, gated on populated config. Added real-dispatch-path tests that drive the node through RuntimeLocal
+  (the harness both bugs hid behind) and verified they FAIL against the pre-fix contract. omnimarket PR
+  #1219.
+is_seam_ticket: false
+interface_change: false
+interfaces_touched: []
+emergency_bypass:
+  enabled: false
+  justification: ""
+  follow_up_ticket_id: ""
+dod_evidence:
+  - id: "dod-dispatch-path-tests"
+    description: >-
+      Real-dispatch-path tests drive the node through RuntimeLocal (contract -> handler_routing -> typed
+      event_model -> handler) and complete green; verified to FAIL against the pre-fix contract.
+    source: "manual"
+    checks:
+      - check_type: "command"
+        check_value: "grep -q '^status: PASS$' drift/dod_receipts/OMN-13145/dod-dispatch-path-tests/command.yaml"
+  - id: "dod-dev-lane-integration-record"
+    description: >-
+      Deploy-class evidence: the fixed sweep ran through onex run against the LIVE dev lane (:8085, v0.38.3),
+      executing the KAFKA/DB/GOLDEN_CHAIN probes via `ssh jonah@192.168.86.201 docker exec omnibase-infra-redpanda
+      rpk ...` and `... docker exec omnibase-infra-postgres psql ...`, and produced the first post-#1982
+      ModelIntegrationRecord (RUNTIME/CONTAINER/CI/KAFKA/PROJECTION pass; DB + GOLDEN_CHAIN correctly
+      FAIL on empty tail tables). The prior run29 PASS is not inherited.
+    source: "manual"
+    checks:
+      - check_type: "command"
+        check_value: >-
+          grep -q 'docker exec' drift/dod_receipts/OMN-13145/dod-dev-lane-integration-record/command.yaml
+          && grep -q '^status: PASS$' drift/dod_receipts/OMN-13145/dod-dev-lane-integration-record/command.yaml

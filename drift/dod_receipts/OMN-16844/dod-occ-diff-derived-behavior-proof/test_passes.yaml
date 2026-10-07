@@ -1,0 +1,97 @@
+---
+schema_version: "1.0.0"
+ticket_id: "OMN-16844"
+evidence_item_id: "dod-occ-diff-derived-behavior-proof"
+check_type: "test_passes"
+check_value: |-
+  uv run pytest tests/unit/event_bus/test_topic_provisioner_rf_policy_omn15395.py -q
+contract_sha256: "sha256:49591651eed8b28425a22e48e1c443bc65cdacf61f5d199d936d51c6939c7e77"
+contract_entry_sha256: "sha256:e3a4e96b9abad0e51c4abb9ff18405d0d33cd2307d85993279466bc70d34e8c0"
+status: PASS
+run_timestamp: "2026-08-28T14:12:00+00:00"
+commit_sha: "568e5f465f68666e12fa702fc0a499cd0535a91a"
+runner: "human-operated pytest run in the OMN-16844 worktree"
+verifier: "omn16844-partition-spec lane"
+probe_command: |-
+  # The checked-out product repo for this run is OmniNode-ai/omnibase_infra, NOT
+  # onex_change_control, so commit_sha below resolves there:
+  #   gh api repos/OmniNode-ai/omnibase_infra/commits/568e5f465f68666e12fa702fc0a499cd0535a91a
+  uv run pytest tests/unit/event_bus/test_topic_provisioner_rf_policy_omn15395.py -q
+probe_stdout: |
+  .................................................................        [100%]
+  65 passed in 29.46s
+actual_output: |
+  PASS: 65 passed, 0 failed, exit 0. The declared behaviour proof was executed
+  at the PR head commit 568e5f465f68666e12fa702fc0a499cd0535a91a in the
+  omnibase_infra worktree, and its exit status was captured explicitly
+  (EXIT=0 written after the command, not read off a pipeline — a piped tail
+  reports the tail's status, not pytest's).
+
+  What the suite proves. Four cases are new in this PR, all RED before the
+  one-line routing change in
+  src/omnibase_infra/event_bus/service_topic_manager.py, in
+  tests/unit/event_bus/test_topic_provisioner_rf_policy_omn15395.py::TestReadinessSpecPassThrough:
+
+    * test_batch_creation_records_the_clamped_creation_spec (AC3) — drives the
+      BATCH path with ONEX_TOPIC_PROVISIONER_MAX_PARTITIONS=1 against a
+      6-partition contract and asserts _created_specs[topic].partitions equals
+      the partition count the NewTopic was actually created with.
+    * test_batch_created_contract_reaches_ready_on_a_capped_lane (AC2) —
+      reproduces the never-converging readiness loop end to end. RED it returns
+      status=not_ready, failures=[partition_mismatch: 'expected 6 partitions,
+      broker reports 1'], attempts=60 — the exact string observed live on the
+      .201 dev lane.
+    * test_both_creation_paths_record_identical_specs (AC4) — pins the batch
+      and single-topic creation sites to the one _creation_spec resolver, so a
+      further consumer of _created_specs cannot reintroduce the divergence.
+    * test_first_boot_and_second_boot_readiness_agree (AC5) — kills the
+      "self-heals on an unrelated restart" asymmetry. RED it asserts
+      False == True: first boot NOT_READY at 60 attempts, second boot READY at
+      1 attempt.
+
+  The remaining 61 cases are the pre-existing OMN-15395 suite and are unchanged
+  by this PR. They are the load-bearing negative controls: the drift-path cap
+  tests and test_genuine_partition_drift_is_still_reported (an UNCAPPED lane
+  still reports partition drift) both still pass, so the fix is not the
+  degenerate "never report a partition mismatch". Nothing in the suite is a
+  surrogate — the only substitution is the aiokafka admin client, the actual
+  network boundary; the contract YAML, ContractTopicExtractor, the replication
+  policy resolution and the NewTopic object are all real.
+
+  Why this receipt was authored by hand rather than minted by the autobind.
+
+  contracts/OMN-16844.yaml declares this evidence item with
+  check_type: "test_passes", but node_occ_companion_compute emitted only
+  dod-occ-diff-derived-behavior-proof/command.yaml. The eligibility validator
+  keys receipts as <ticket>:<evidence_item>:<check_type> and reads
+  <evidence_item>/<check_type>.yaml, so it looked for
+  OMN-16844:dod-occ-diff-derived-behavior-proof:test_passes, found only the
+  :command sibling, and returned reason=missing_receipt (omnibase_infra#2965,
+  occ-preflight / eligibility, job 98865846539). The autobind receipt's own
+  actual_output says the product test run "executes the declared check" while
+  its probe_command is a gh pr view — it asserts the tests pass without having
+  run them.
+
+  This file supplies the declared check actually executed, with its real stdout
+  and its real exit status. Both hashes were recomputed independently rather
+  than copied from the sibling receipt: compute_contract_entry_sha256(contract,
+  "dod-occ-diff-derived-behavior-proof") from
+  omnibase_core.validation.validator_receipt_gate returns
+  sha256:e3a4e96b9abad0e51c4abb9ff18405d0d33cd2307d85993279466bc70d34e8c0, and
+  sha256 of contracts/OMN-16844.yaml returns
+  sha256:49591651eed8b28425a22e48e1c443bc65cdacf61f5d199d936d51c6939c7e77. The
+  entry hash is per evidence item, not per check type, so it is identical
+  across the command and test_passes receipts for this item by construction.
+
+  The command sibling is left in place: nothing here supersedes it, and
+  deleting an autobind artefact to make a gate pass would be the wrong move.
+
+  This is the SECOND consecutive occurrence of the same generator defect —
+  OMN-16838 hit it identically on omninode_infra#1040 (OCC#7403) and patched it
+  by hand for that ticket only. It is a defect in node_occ_companion_compute,
+  not in either ticket's work, and it will recur on every PR whose contract
+  declares a non-command check_type until the generator is fixed. Recorded on
+  OMN-16844 for ticketing against the generator.
+exit_code: 0
+pr_number: 2965
+branch: "auto/omninode-ai-omnibase_infra-pr-2965-occ-autobind"

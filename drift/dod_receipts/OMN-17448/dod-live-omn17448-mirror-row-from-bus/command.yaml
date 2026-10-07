@@ -1,0 +1,36 @@
+---
+schema_version: "1.0.0"
+ticket_id: "OMN-17448"
+evidence_item_id: "dod-live-omn17448-mirror-row-from-bus"
+check_type: "command"
+check_value: |-
+  docker exec omnibase-infra-postgres psql -U postgres -d omnidash_analytics -tAc 'select count(*) from tenant_registry_mirror' | tr -d ' ' | grep -qxE '[1-9][0-9]*'
+status: PASS
+run_timestamp: "2026-09-01T09:37:00Z"
+commit_sha: "fc99c410fffca0aef580c5d3a07e4a493df0bcc7"
+branch: "jonah/omn-17448-live-deploy-probe"
+pr_number: 7941
+runner: "claude-code"
+verifier: "occ-interim-manual-verify"
+contract_entry_sha256: "sha256:405cae290e36b15c706688ccdd4bbb4d37890dccac4c12753443e81481b74ea7"
+probe_command: |-
+  gh api repos/OmniNode-ai/omnibase_infra/commits/fc99c410fffca0aef580c5d3a07e4a493df0bcc7 --jq .sha >/dev/null &&
+  ssh jonah@192.168.86.201 "docker exec omnibase-infra-postgres psql -U postgres -d omnidash_analytics -tAc 'select count(*) from tenant_registry_mirror' | tr -d ' ' | grep -qxE '[1-9][0-9]*'"
+probe_stdout: |-
+  1
+  exit=0
+exit_code: 0
+actual_output: |-
+  PASS: tenant_registry_mirror holds 1 row on the deployed .201 dev lane, written by the standalone
+  writer from a TENANT_CREATED event consumed off onex.tenant.events -- NOT inserted by hand. Row:
+  tenant_slug='beta-omn16976-probe', tenant_uuid=16976000-0000-4000-8000-0000000000aa, status='active',
+  source_event_id=53ab869c-f144-559c-467a-76ef7960370c, observed_at=2026-09-01 08:35:11.022788+00.
+  Provenance: the live bus path, replayed from the topic's retained window (LOG-START-OFFSET 31,
+  LOG-END-OFFSET 38) by the writer's own fresh consumer group on first join. The writer's own log line:
+  "tenant_registry_mirror: beta-omn16976-probe -> 16976000-0000-4000-8000-0000000000aa (status=active)".
+  This row is RETAINED, not cleaned up -- the prior investigation's synthetic row was removed after
+  proof, which is why the relation read 0 rows immediately before this deploy, and it survived the
+  governed refresh onto origin/dev. Before this change the relation sat at 0 rows while its consumer
+  group reported Stable at LAG 0 over well-formed TENANT_CREATED events, so a non-zero count is exactly
+  the fact that was previously unobtainable.
+  runner claude-code != verifier occ-interim-manual-verify.

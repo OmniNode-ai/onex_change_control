@@ -1,0 +1,69 @@
+---
+schema_version: "1.0.0"
+ticket_id: "OMN-17423"
+evidence_item_id: "ac1-live-probe-reverification-2026-09-15"
+check_type: "command"
+check_value: |-
+  curl -sS --fail https://api.linear.app/graphql -H 'Content-Type: application/json'
+  -H "Authorization: ${LINEAR_API_KEY}"
+  --data '{"query":"query{comment(id:\"3b2172d9-3bc0-4e5f-ae65-a8d3d77a61c1\"){body}}"}'
+  | grep -F 'attach_status 200'
+contract_sha256: "sha256:56ac253c8e0be268f309f1fefdb21df23af076119cc6f950d7dd644aa92afa91"
+contract_entry_sha256: "sha256:569d424b989d667161c7e90a18bd587af4c45c1f4ba472de4c80778d2806bb58"
+status: PASS
+# OMN-13024 A-2. The UI gate infers ui_dashboard from any bare curl/wget/httpx in
+# probe_command, because the shape it exists to reject is a direct backend-port hit
+# standing in for proof that a dashboard renders. This probe is not that: it reads a
+# Linear comment over the public GraphQL API, and there is no page, origin or proxy in
+# the claim at all. `backend` is the field the validator provides to say so, and it is a
+# narrower statement than the inference it replaces -- it does not exempt this receipt
+# from any other check.
+evidence_class: backend
+run_timestamp: "2026-09-25T16:07:10Z"
+commit_sha: "41396cc88d4b61006beb034915345dd5882d62ff"
+runner: "claude-opus-5:occ-17423-ac1-mint-11004"
+verifier: "linear-graphql-readback"
+probe_command: |-
+  curl -sS --fail https://api.linear.app/graphql -H 'Content-Type: application/json' \
+    -H "Authorization: ${LINEAR_API_KEY}" \
+    --data '{"query":"query{comment(id:\"3b2172d9-3bc0-4e5f-ae65-a8d3d77a61c1\"){body}}"}' \
+    > /tmp/ac1_probe.json
+  grep -F -c 'attach_status 200' /tmp/ac1_probe.json   # check 1 of the declared item
+  grep -F -c 'VERIFIED clean'    /tmp/ac1_probe.json   # check 2 of the declared item
+probe_stdout: |
+  1
+  1
+actual_output: |
+  PASS: both declared checks of this item return exit 0 against Linear comment
+  3b2172d9-3bc0-4e5f-ae65-a8d3d77a61c1, read live at the run_timestamp above.
+  `grep -F 'attach_status 200'` matches; `grep -F 'VERIFIED clean'` matches. The matched
+  spans, byte-quoted from the comment body:
+    "attach_status 200`, `heartbeat_status 200`, `detach_status 200` - unlike the prior
+     run's 502-at-introspection. Byte-quoted from `omninode-runtime-effects-5997d88dc5-5xmjw`"
+    "VERIFIED clean** - real traversal proof, not a string-match control"
+
+  WHAT THIS RECEIPT CLAIMS, AND WHAT IT DOES NOT. The contract item is AC1 in its rescoped
+  fallback-(c) form, and this receipt records that scope and no more. The 2026-09-15
+  traversal drove a real two-hop mint - tenant broker -> client_credentials against the
+  in-cluster Keycloak -> POST /v1/auth/gateway-token -> attach, heartbeat, detach, all
+  three HTTP 200 against dev.api.omninode.ai - and found ZERO credential fingerprints on
+  every traversed surface. It does NOT claim the RED capture AC1 literally asks for: no
+  such sentinel was ever located in a service log. The rescope was pre-authorised by the
+  2026-09-10 operator ruling (comment c8b0b52a) and the traversal was accepted as closing
+  AC1 in comment 1eb86efa ("Treat AC1 as closed on that evidence").
+
+  WHY THE CHECK READS A RECORD RATHER THAN RE-TRAVERSING. The probative run happened on
+  2026-09-15 against a cluster state that no longer exists; re-running the traversal now
+  would measure a different plane and attribute the result to this item. The durable shape
+  for a fact that was true at one commit is a read of the immutable record of it, which is
+  what both declared checks do - the same reasoning the receipt-grep shape rests on. The
+  second check is the honesty control rather than a duplicate: "VERIFIED clean" is the
+  adversarial reviewer's verdict, not the runner's, so a comment carrying the traversal
+  without an independent verification would fail it while the first check still passed.
+
+  PROVENANCE OF THE EARLIER ATTEMPT, recorded because it is why this item exists twice.
+  The 2026-09-14 run of the same probe was adversarially reviewed and marked NOT VERIFIED
+  (comment 091fa6e9). This item binds the 2026-09-15 re-run, taken after the OMN-16504
+  client-secret restore fixed the Keycloak 401 that had aborted it.
+exit_code: 0
+pr_number: 11004

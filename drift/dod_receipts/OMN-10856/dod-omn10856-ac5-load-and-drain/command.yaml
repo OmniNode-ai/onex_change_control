@@ -1,0 +1,68 @@
+---
+schema_version: "1.0.0"
+ticket_id: OMN-10856
+evidence_item_id: dod-omn10856-ac5-load-and-drain
+check_type: command
+check_value: |-
+  grep -q '^status: PASS$' "$CONTRACT_REPO_DIR/drift/dod_receipts/OMN-10856/dod-omn10856-ac5-load-and-drain/command.yaml"
+contract_sha256: "sha256:83f5d4ef49d797ae481019829cec36aeef61dc7ad06ed49e257c64b6189251cd"
+contract_entry_sha256: "sha256:acb6cbb05c782896d972fef9ca8e74c4180a4086619e4daa41eca04345132ad6"
+status: PASS
+run_timestamp: '2026-09-18T17:42:47Z'
+commit_sha: 4ac73c6c99e4329c5e13f8ad8f99f6376e53df7c
+runner: omn10856-ac5-load-and-drain
+verifier: omn10856-ac5-load-and-drain-verifier
+probe_command: |-
+  # Cross-repo: the harness and its merge commit live in omninode_infra, not in this
+  # repository, so the commit is named in resolvable form for the hardening gate.
+  gh api repos/OmniNode-ai/omninode_infra/commits/4ac73c6c99e4329c5e13f8ad8f99f6376e53df7c --jq .sha
+  # Third mode of the committed harness (omninode_infra#1541, squash 4ac73c6c), run via
+  # `kubectl exec -i` into deploy/omninode-runtime-worker on i-06169517a92b45f86,
+  # KAFKA_RUNTIME_TARGET=msk, using the pod's own IAM-SASL client.
+  python scripts/msk_consumer_group_health_check.py --mode load-and-drain \
+    --topic <topic> --group <group> --publish 10 --bound-seconds 120
+  # Baseline read first with the existing read-only mode across 694 registered consumer groups.
+probe_stdout: |-
+  run  topic                                      group                        base  pub  peak  final  drained   bound  exit
+   1   onex.evt.omnimarket.node-generation-        projection_delegation           0   10    10      0   5.123s    120s   0
+       completed.v1
+   2   onex.evt.omnimarket.node-generation-        projection_delegation           0   10    10      0   5.168s    120s   0
+       completed.v1
+   3   onex.evt.router.health-snapshot.v1          node_routing_orchestrator       0   10    10      0   5.157s    120s   0
+   4   onex.evt.rsd.data-fetched.v1                node_rsd_orchestrator           0   10    10      0   5.148s    120s   0
+
+  # Runs 3 and 4 are the workers profile's own groups: RUNTIME_PROFILE=workers,
+  # ONEX_GROUP_ID=onex-runtime-workers, subscriptions read from discover_contracts() inside the pod.
+  # Two DIFFERENT groups in that profile, so the result is a property of the profile, not of one consumer.
+
+  # POSITIVE CONTROL, every run: observed peak == published (10).
+  # Baseline hygiene: every target had exactly one consuming group at zero lag before publishing.
+  # Ownership read clean in the same pass: one owner per topic, unowned_command_topics: [],
+  # duplicate_owners: {}. All 12 runtime pods 1/1 Running, 0 restarts.
+  # 40 synthetic records exist across three dev topics, each tagged
+  #   "synthetic": true, "purpose": "OMN-10856-AC5-load-and-drain".
+actual_output: |-
+  PASS. Four runs, four drains to zero, every one inside the stated 120s bound with a 45ms spread
+  across the set (5.123 / 5.168 / 5.157 / 5.148s). Both branches of AC5's falsifier are answered.
+
+  FIRST BRANCH -- "no sanctioned load-and-drain proof exists that can be pointed at onex-dev" -- is
+  closed by omninode_infra#1541, merged 2026-09-17T20:48:33Z at squash 4ac73c6c and present on both
+  dev and main, with its own test at tests/scripts/test_msk_load_and_drain_omn10856_ac5.py. The load
+  half is a third MODE of the existing check rather than a second script, so the producer shares the
+  build_aiokafka_auth_kwargs_from_env() wiring with the admin and consumer and there is no second
+  credential path. Before it, the only candidate publish path was `onex delegate --bus kafka`, which
+  refuses at its pre-flight lane probe with ONEX_CORE_041_INVALID_CONFIGURATION; a producer never
+  joins a consumer group, so this path does not depend on that defect or on OMN-15639.
+
+  SECOND BRANCH -- "lag does not return to zero within a stated bound" -- is refuted by the table
+  above, against a bound stated in advance rather than fitted afterwards.
+
+  THE CONTROL is peak == published on every run. A harness that never observed lag rise could report a
+  drain against a topic where the publish silently failed and produce a vacuous zero; lag rose to
+  exactly the published count and returned to zero in all four.
+
+  WHAT THIS DOES NOT CLAIM: a drain proves the group consumed to the log end within the bound, not
+  that the records did any work. OMN-13363 is the precedent -- synthetic events consumed, projected
+  true reported, lag zero, and zero rows written. AC5 claims consumption; consumption is what these
+  runs measure. The harness carries this caveat in its own report, with a test asserting it cannot be
+  dropped silently.

@@ -1,0 +1,181 @@
+---
+schema_version: "1.0.0"
+ticket_id: "OMN-14376"
+title: "fix(OMN-14376): default onex delegate to the system-configured event bus"
+summary: >-
+  omnibase_infra PR #2261 makes ``--bus`` optional on ``onex delegate``. When omitted, ``resolve_default_bus``
+  mirrors the runtime kernel's own probe-then-select precedence (``probe_kafka`` against ``KAFKA_BOOTSTRAP_SERVERS``):
+  HEALTHY/AUTHORITATIVE selects ``kafka`` (so the delegation lands in the shared ``delegation_events``
+  projection), anything weaker gracefully falls back to ``inmemory`` with a WARNING log. The pre-existing
+  usage-error guard (a bare ``--kafka-bootstrap`` without an explicit ``--bus kafka`` is a hard ``ValueError``)
+  is preserved.
+is_seam_ticket: true
+interface_change: true
+interfaces_touched:
+  - "public_api"
+emergency_bypass:
+  enabled: false
+  justification: ""
+  follow_up_ticket_id: ""
+dod_evidence:
+  - id: "dod-omnibase-infra-pr-2261-head-c22182ed"
+    description: >-
+      Independent adversarial verification of omnibase_infra PR #2261 at head c22182edad34454c843e35a7c14175081cc8e8c4.
+      Read the full diff (2 files: cli_delegate.py + its test suite). Checked out the branch in an isolated
+      worktree, ran the full focused suite (39 tests) green, then performed two RED->GREEN mutation proofs:
+      (1) neutered the probe-state branch in resolve_default_bus to always return "kafka" regardless of
+      probe health -- 5 of the 8 targeted tests failed as expected (test_no_bootstrap_short_circuits_to_inmemory,
+      test_unhealthy_broker_falls_back_to_inmemory[DISCOVERED/REACHABLE], test_run_delegate_falls_back_to_inmemory_when_broker_unhealthy,
+      test_run_delegate_defaults_to_inmemory_overrides), confirming the probe-then-select logic is real
+      and test-covered; (2) removed the bare-kafka_bootstrap-without-explicit-bus usage-error guard --
+      the PR's own 2 dedicated tests for this guard still passed (a pre-existing downstream guard in build_backend_overrides
+      catches the "no KAFKA_BOOTSTRAP_SERVERS configured" case redundantly), so a third, hand-written
+      scenario was run directly against run_delegate with KAFKA_BOOTSTRAP_SERVERS set to a DIFFERENT healthy
+      broker than the explicitly-passed kafka_bootstrap and --bus omitted: on the mutated code no error
+      was raised (silent env-broker resolution); on the original code ValueError "only valid with --bus
+      kafka" was raised as documented. This confirms the early guard is real, load-bearing code whose
+      specific purpose (never silently resolve away from an intended explicit bootstrap) is not fully
+      isolated by the PR's own 2 regression tests for the "env unset" case, but the guard itself is correct
+      and necessary -- not a defect, a minor test-coverage note. Both mutations were reverted and the
+      suite reconfirmed green (39/39) with a clean worktree. ruff check and ruff format --check passed.
+      CI on the live PR shows all reds classify as occ-preflight dependency cascade (missing Evidence-Source),
+      not real product failures -- confirmed by reading the actual failed-job logs, not just the check
+      rollup.
+    source: "manual"
+    status: "verified"
+    checks:
+      - check_type: "command"
+        check_value: >-
+          grep -q '^status: PASS$' drift/dod_receipts/OMN-14376/dod-omnibase-infra-pr-2261-head-c22182ed/command.yaml
+          && grep -q '^pr_number: 2261$' drift/dod_receipts/OMN-14376/dod-omnibase-infra-pr-2261-head-c22182ed/command.yaml
+          && grep -q 'c22182edad34454c843e35a7c14175081cc8e8c4' drift/dod_receipts/OMN-14376/dod-omnibase-infra-pr-2261-head-c22182ed/command.yaml
+  - id: "dod-deploy-assessment-head-c22182ed"
+    description: >-
+      Deploy-surface assessment for omnibase_infra PR #2261 head c22182edad34454c843e35a7c14175081cc8e8c4:
+      the diff is limited to a CLI module (``cli_delegate.py``) and its unit test file. It does not register
+      a new service deployment, mutate runtime configuration, perform a deploy or restart, change topics,
+      add a migration, or touch .201. It changes the default behavior of a CLI flag on the next invocation
+      of ``onex delegate`` only.
+    source: "manual"
+    status: "verified"
+    checks:
+      - check_type: "command"
+        check_value: >-
+          grep -q '^status: PASS$' drift/dod_receipts/OMN-14376/dod-deploy-assessment-head-c22182ed/command.yaml
+          && grep -qi 'no live deploy' drift/dod_receipts/OMN-14376/dod-deploy-assessment-head-c22182ed/command.yaml
+  - id: "dod-occ-self-commit"
+    description: >-
+      OCC self-binding: this onex_change_control branch carries the OMN-14376 central contract and PASS
+      receipts for omnibase_infra PR #2261 head c22182edad34454c843e35a7c14175081cc8e8c4. The receipt
+      binds the first evidence commit for occ-preflight eligibility before the OCC PR number exists.
+    source: "manual"
+    status: "verified"
+    checks:
+      - check_type: "command"
+        check_value: >-
+          grep -q '^status: PASS$' drift/dod_receipts/OMN-14376/dod-occ-self-commit/command.yaml && grep
+          -q 'jonah/omn-14376-occ-infra-2261' drift/dod_receipts/OMN-14376/dod-occ-self-commit/command.yaml
+  - id: "dod-verify-2261-product-observing-repair"
+    description: >-
+      OMN-14436 REPAIR — appended, nothing mutated. Every pre-existing entry in this contract is INERT:
+      it greps this repo's own receipt store, which the DoD runner could not see past because --workspace
+      pointed at the onex_change_control clone rather than the product. That was a platform wiring defect,
+      not an authoring failure — with the runner mis-pointed, NO other kind of check could have executed.
+      This entry adds the product-observing evidence that was impossible to write before. It asserts cli_delegate
+      resolves the bus via resolve_default_bus instead of hardcoding inmemory, read from omnibase_infra#2261's
+      exact head SHA (c22182edad34454c843e35a7c14175081cc8e8c4) via the GitHub contents API. OMN-14376
+      is precisely the flip from a hardcoded DEFAULT_BUS=inmemory to the system-configured bus. resolve_default_bus
+      IS the mechanism that performs that resolution — asserting it is asserting the fix, not restating
+      the PR title. RED DIRECTION PROVEN by execution: the symbol occurs at #2261's head and ZERO times
+      at omnibase_infra dev, so the identical command exits 1 at dev and at a bogus SHA, and exits 0 only
+      at a ref where #2261's code genuinely exists.
+    source: "manual"
+    status: "verified"
+    checks:
+      - check_type: "command"
+        check_value: >-
+          test "$(gh api "repos/OmniNode-ai/omnibase_infra/contents/src/omnibase_infra/cli/cli_delegate.py?ref=c22182edad34454c843e35a7c14175081cc8e8c4"
+          --jq .content | base64 -d | grep -c 'resolve_default_bus')" -ge 1 #magic___^_^___line
+  - id: "dod-omnibase-infra-pr-2261-head-56f5ae23"
+    description: >-
+      Rebase-refresh validation for omnibase_infra PR #2261 at head 56f5ae23fa86576fbce548bd6e0c293042dad5dd.
+      The rebase replayed the OMN-14376 system-configured delegate bus change onto current dev after OMN-14397
+      added fresh correlation_id and hard timeout behavior in the same CLI module. The conflict resolution
+      intentionally preserves both mechanisms: resolve_default_bus remains present at the exact product
+      head, and DelegateTimeoutExceededError remains present at the same exact head. Local focused validation
+      passed after resolution: tests/unit/cli/test_cli_delegate.py 43 passed, ruff check and ruff format
+      --check passed for the two changed files, mypy passed for cli_delegate.py, and file-scoped pre-commit
+      passed.
+    source: "manual"
+    status: "verified"
+    checks:
+      - check_type: "command"
+        check_value: >-
+          test "$(gh api "repos/OmniNode-ai/omnibase_infra/contents/src/omnibase_infra/cli/cli_delegate.py?ref=56f5ae23fa86576fbce548bd6e0c293042dad5dd"
+          --jq .content | base64 -d | grep -c 'resolve_default_bus')" -ge 1 && test "$(gh api "repos/OmniNode-ai/omnibase_infra/contents/src/omnibase_infra/cli/cli_delegate.py?ref=56f5ae23fa86576fbce548bd6e0c293042dad5dd"
+          --jq .content | base64 -d | grep -c 'DelegateTimeoutExceededError')" -ge 1
+  - id: "dod-deploy-assessment-head-56f5ae23"
+    description: >-
+      Deploy-surface assessment for omnibase_infra PR #2261 rebased head 56f5ae23fa86576fbce548bd6e0c293042dad5dd:
+      the diff remains limited to src/omnibase_infra/cli/cli_delegate.py and tests/unit/cli/test_cli_delegate.py.
+      No deploy, restart, .201 mutation, runtime config change, topic change, service registration, or
+      migration was performed by this rebase repair.
+    source: "manual"
+    status: "verified"
+    checks:
+      - check_type: "command"
+        check_value: >-
+          test "$(gh pr diff 2261 --repo OmniNode-ai/omnibase_infra --name-only | grep -E '^(src/omnibase_infra/cli/cli_delegate.py|tests/unit/cli/test_cli_delegate.py)$'
+          | wc -l | tr -d ' ')" = "2"
+  - id: "dod-occ-self-pr-4037"
+    description: >-
+      OCC self-binding for onex_change_control PR #4037, the OMN-14376 refresh companion that binds omnibase_infra#2261
+      rebased head 56f5ae23fa86576fbce548bd6e0c293042dad5dd. The check observes GitHub's PR API for this
+      OCC companion branch/base, not this repository's receipt store.
+    source: "manual"
+    status: "verified"
+    checks:
+      - check_type: "command"
+        check_value: >-
+          test "$(gh pr view 4037 --repo OmniNode-ai/onex_change_control --json headRefName,baseRefName
+          --jq '.headRefName + " " + .baseRefName')" = "jonah/omn-14376-refresh-head-56f5ae23 dev"
+  - id: "dod-omnibase-infra-pr-2261-head-bc2e1594"
+    description: >-
+      Rebase-refresh validation for omnibase_infra PR #2261 at head bc2e15944a5e4cf5fe941c947f0bd2b3f8cb5d8d.
+      This head is the prior 56f5ae23 rebase plus a one-line test cleanup removing a duplicate assertion
+      in tests/unit/cli/test_cli_delegate.py. Focused validation remains green: tests/unit/cli/test_cli_delegate.py
+      43 passed, ruff check and ruff format --check passed for the two changed files, and mypy passed
+      for cli_delegate.py.
+    source: "manual"
+    status: "verified"
+    checks:
+      - check_type: "command"
+        check_value: >-
+          test "$(gh api "repos/OmniNode-ai/omnibase_infra/contents/src/omnibase_infra/cli/cli_delegate.py?ref=bc2e15944a5e4cf5fe941c947f0bd2b3f8cb5d8d"
+          --jq .content | base64 -d | grep -c 'resolve_default_bus')" -ge 1 && test "$(gh api "repos/OmniNode-ai/omnibase_infra/contents/src/omnibase_infra/cli/cli_delegate.py?ref=bc2e15944a5e4cf5fe941c947f0bd2b3f8cb5d8d"
+          --jq .content | base64 -d | grep -c 'DelegateTimeoutExceededError')" -ge 1
+  - id: "dod-deploy-assessment-head-bc2e1594"
+    description: >-
+      Deploy-surface assessment for omnibase_infra PR #2261 head bc2e15944a5e4cf5fe941c947f0bd2b3f8cb5d8d:
+      the diff remains limited to src/omnibase_infra/cli/cli_delegate.py and tests/unit/cli/test_cli_delegate.py.
+      No deploy, restart, .201 mutation, runtime config change, topic change, service registration, or
+      migration was performed by this rebase repair.
+    source: "manual"
+    status: "verified"
+    checks:
+      - check_type: "command"
+        check_value: >-
+          test "$(gh pr diff 2261 --repo OmniNode-ai/omnibase_infra --name-only | grep -E '^(src/omnibase_infra/cli/cli_delegate.py|tests/unit/cli/test_cli_delegate.py)$'
+          | wc -l | tr -d ' ')" = "2"
+  - id: "dod-occ-self-pr-4038"
+    description: >-
+      OCC self-binding for onex_change_control PR #4038, the OMN-14376 refresh companion that binds omnibase_infra#2261
+      head bc2e15944a5e4cf5fe941c947f0bd2b3f8cb5d8d. The check observes GitHub's PR API for this OCC companion
+      branch/base, not this repository's receipt store.
+    source: "manual"
+    status: "verified"
+    checks:
+      - check_type: "command"
+        check_value: >-
+          test "$(gh pr view 4038 --repo OmniNode-ai/onex_change_control --json headRefName,baseRefName
+          --jq '.headRefName + " " + .baseRefName')" = "jonah/omn-14376-refresh-head-bc2e1594 dev"

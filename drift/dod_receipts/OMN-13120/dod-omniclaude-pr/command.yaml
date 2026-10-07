@@ -1,0 +1,61 @@
+---
+schema_version: "1.0.0"
+ticket_id: "OMN-13120"
+evidence_item_id: "dod-omniclaude-pr"
+check_type: "command"
+check_value: "uv run pytest tests/scripts/test_check_daemon_venv_skew.py -q"
+contract_sha256: "sha256:6c936252314201189be9e4ef99c5581c27e52c37bc6b6c940aeaacff06f501a8"
+status: PASS
+run_timestamp: "2026-06-14T20:30:00Z"
+commit_sha: "45ec4632f1e72ced45214b30ef982c2ce9f254b0"
+pr_number: 2628
+runner: "worktree-agent-omn-13120-venv-skew-gate"
+verifier: "receipt-gate-local"
+probe_command: >-
+  (1) uv run pytest tests/scripts/test_check_daemon_venv_skew.py -q (13 cases: pin resolution + editable
+  exclusion, malformed-lock fail-fast, no-live-venv PASS, in-sync PASS, lock-drift fail, in-place pin-drift
+  fail, --no-dev superset invariant, main() pass+fail). (2) uv run mypy scripts/check_daemon_venv_skew.py
+  tests/scripts/test_check_daemon_venv_skew.py --strict. (3) bash .pre-commit-hooks/check-daemon-venv-skew.sh
+  against the freshly-rebuilt live daemon venv. (4) KAFKA_BOOTSTRAP_SERVERS=localhost:19092 uv run pytest
+  tests/ -m "not integration and not slow" -q (full non-integration suite).
+probe_stdout: |
+  # (1) New gate unit tests:
+  $ uv run pytest tests/scripts/test_check_daemon_venv_skew.py -q
+  .............                                                            [100%]
+  13 passed in 0.90s
+
+  # (2) mypy --strict on the validator + test:
+  $ uv run mypy scripts/check_daemon_venv_skew.py tests/scripts/test_check_daemon_venv_skew.py --strict
+  Success: no issues found in 2 source files
+
+  # (3) gate against the live daemon venv (rebuilt this session off brew python3.13):
+  $ bash .pre-commit-hooks/check-daemon-venv-skew.sh
+  daemon venv skew gate: PASS (249 canonical pins; live venv in sync or absent)
+
+  # skew detection proven (fabricated in-place pin mismatch against a real lock pin):
+  $ python3 scripts/check_daemon_venv_skew.py uv.lock   # with a mutated wrapt pin in a fake venv
+  ERROR: live daemon venv is SKEWED from canonical pins (1 finding(s)):
+    - shared package 'wrapt' pin drift: live venv has 0.0.1-bogus, lock pins 1.17.3
+  Rebuild the live daemon venv off brew python3.13 (Rule 11):
+      bash scripts/repair-plugin-venv.sh
+  # exit 1
+
+  # (4) full non-integration suite — no regression:
+  $ KAFKA_BOOTSTRAP_SERVERS=localhost:19092 uv run pytest tests/ -m "not integration and not slow" -q
+  10984 passed, 27 skipped, 84 deselected, 35 warnings in 344.49s
+
+  # ruff + pre-commit:
+  $ uv run ruff check scripts/check_daemon_venv_skew.py tests/scripts/test_check_daemon_venv_skew.py
+  All checks passed!
+  $ uv run pre-commit run --files <changed>
+  Reject live daemon venv pin drift vs uv.lock (OMN-13120)................................Passed
+actual_output: >-
+  PASS: omniclaude PR #1759 (branch jonah/omn-13120-venv-skew-gate, base=dev, head 45ec4632f1e72ced45214b30ef982c2ce9f254b0)
+  ships the version-skew gate as BOTH a pre-commit hook (check-daemon-venv-skew) and a required CI status
+  check (daemon-venv-skew-gate.yml). The stdlib-only validator scripts/check_daemon_venv_skew.py compares
+  the live daemon venv (CLAUDE_PLUGIN_DATA/.venv) against the canonical uv.lock pins, catching lock drift
+  (stale .built-from marker hash) and in-place pin drift, while honoring the --no-dev superset invariant
+  (lock-only dev/platform packages are not flagged). 13/13 unit tests pass covering both pass and fail
+  paths; mypy --strict clean; full non-integration suite GREEN (10984 passed); the gate passes against
+  the live daemon venv rebuilt this session off brew python3.13. Verifier (receipt-gate-local) is distinct
+  from the runner (worktree-agent-omn-13120-venv-skew-gate).

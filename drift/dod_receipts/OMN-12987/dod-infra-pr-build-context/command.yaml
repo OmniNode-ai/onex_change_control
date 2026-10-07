@@ -1,0 +1,74 @@
+---
+schema_version: "1.0.0"
+ticket_id: "OMN-12987"
+evidence_item_id: "dod-infra-pr-build-context"
+check_type: "command"
+check_value: "bash -n scripts/deploy-runtime.sh && uv run pytest tests/scripts/test_deploy_runtime_build_context.py
+  -q"
+status: PASS
+run_timestamp: "2026-06-14T05:15:00Z"
+commit_sha: "b90b029d5be76d36199ca30630e98d587285d0bb"
+runner: "worktree-agent-omn-12987-build-context"
+verifier: "receipt-gate-local"
+probe_command: "bash scripts/deploy-runtime.sh --execute --force --restart  # FIXED deploy-runtime.sh,
+  stability-test lane (OMNIBASE_INFRA_COMPOSE_PROJECT=omnibase-infra-stability-test), BUILD_SOURCE=workspace,
+  ALLOW_SIBLING_PIN_DRIFT=1 (forward drift), workspace/sibling-pin-comparison.json removed-then-rsynced
+  by the fix"
+probe_stdout: |
+  # A) THE BUG (pre-fix deploy-runtime.sh): workspace --execute build failed at docker build —
+  #    Dockerfile.runtime COPY workspace/sibling-pin-comparison.json but sync_files() only rsynced
+  #    workspace/sibling-repos/, so the deployed build context lacked the root-level file:
+  #    => "failed to calculate checksum of ref ...:/workspace/sibling-pin-comparison.json: not found"
+  #    (dev compose build masked it: it runs from the repo root where the committed placeholder exists).
+
+  # B) FIXED (this PR), live RE-PROVE on .201 stability-test lane @ 2026-06-14T05:12Z:
+  $ bash scripts/deploy-runtime.sh --execute --force --restart   # FIXED script, fix overlaid from branch
+  [deploy] Syncing runtime build context...
+  [deploy]   > rsync -a workspace/sibling-pin-comparison.json -> deployed       # <-- the fix runs
+  [deploy] Sync complete.
+  #58  [intelligence-api builder 19/29] COPY workspace/sibling-pin-comparison.json /workspace/sibling-pin-comparison.json   # SUCCEEDS
+  #71  [agent-actions-consumer builder 19/29] COPY workspace/sibling-pin-comparison.json /workspace/sibling-pin-comparison.json
+  #115 [intelligence-api builder 19/29] COPY workspace/sibling-pin-comparison.json /workspace/sibling-pin-comparison.json
+  [deploy] Image build complete.       # FULL BUILD SUCCESS — no "failed to calculate checksum ...: not found"
+  # The original blocker is gone: every workspace/ path Dockerfile.runtime COPYs is now in the
+  # deployed build context.
+
+  # C) NEW, UNRELATED failure after the build (deploy did NOT complete a fresh up):
+  [deploy] === Runtime Migration Preflight ===
+  Container omnibase-forward-migration Error response from daemon: Conflict. The container name
+  "/omnibase-forward-migration" is already in use by container b305e1a8352c (project=omnibase-infra, the dev lane).
+  [deploy] WARNING: Restoring previous deployment from backup: .../deployed/0.38.3.bak
+  DEPLOY_EXIT=1
+  # Root cause: docker/docker-compose.infra.yml line 611 hard-codes
+  #   container_name: omnibase-forward-migration   (NOT project-namespaced, unlike omnibase-infra-postgres etc.)
+  # so the dev lane (omnibase-infra) and stability-test lane (omnibase-infra-stability-test) collide on the
+  # same fixed container name. This is a pre-existing compose defect, independent of the build-context fix.
+  # Per "ROLL BACK + report if a NEW failure appears (do not force)" the dev lane's container was NOT
+  # force-removed. The deploy auto-rolled-back to 0.38.3 cleanly.
+
+  # D) Stability lane post-rollback (the target rev was already live from the prior manual-json-copy build):
+  $ curl :18085/health  -> 200  version=0.38.3 status=healthy
+  $ curl :18086/health  -> 200
+  $ docker exec omninode-stability-test-runtime printenv DIAG13118  -> absent (=0); 0 occurrences in logs
+  # rev = dev tip c5130711 (0.38.3); DIAG13118=0; health 200/200. Canonical clone restored clean.
+
+  # E) Static regression + negative control after the fix:
+  $ uv run pytest tests/scripts/test_deploy_runtime_build_context.py -q   -> 7 passed
+  $ uv run pytest tests/scripts/ -q                                       -> 136 passed
+  # New permanent test test_deploy_runtime_stages_every_workspace_copy_source parses Dockerfile.runtime's
+  # COPY-from-workspace paths and asserts deploy-runtime.sh stages each; negative control (rsync removed)
+  # FAILS with the exact missing-path error: ['workspace/sibling-pin-comparison.json'].
+actual_output: >-
+  PASS (build-context fix proven): the FIXED deploy-runtime.sh rsyncs workspace/sibling-pin-comparison.json
+  into the deployed build context, so the workspace-mode docker build now COMPLETES — the original "failed
+  to calculate checksum ...:/workspace/sibling-pin-comparison.json: not found" blocker is gone (live RE-PROVE
+  on .201: build-context rsync ran, all three COPY steps succeeded, "Image build complete"). The clean
+  end-to-end deploy did NOT finish: a NEW, UNRELATED failure (docker-compose.infra.yml line 611 hard-codes
+  a non-namespaced container_name: omnibase-forward-migration, colliding with the running dev lane) tripped
+  the migration preflight; per instruction the dev container was NOT force-removed and the deploy auto-rolled-back.
+  Stability lane remains healthy at dev tip (0.38.3 / c5130711, DIAG13118=0, 18085+18086 = 200). SCOPE:
+  stability-test lane only; no dev/prod/judge mutation; canonical clone restored clean. Follow-up: namespace
+  the forward-migration container_name per compose project (separate ticket).
+exit_code: 0
+contract_sha256: "sha256:868dcd40a879cce47d028283ac5225791739eaffaa154d3e128f3b4ae4030091"
+branch: "jonah/omn-12987-deploy-context-sibling-pin-json"

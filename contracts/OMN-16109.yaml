@@ -1,0 +1,52 @@
+---
+schema_version: "1.0.0"
+ticket_id: "OMN-16109"
+title: "List the omninode_infra 20260816_tenant_event_outbox migration in the OCC boundary inventory"
+summary: >
+  The onex_change_control ci.yml `migration-inventory` job (`uv run check-migration-inventory --repos-root
+  /tmp/repos`) failed repo-wide with UNLISTED_FILE: the omninode_infra migration db/migrations/20260816_tenant_event_outbox.sql
+  (merged in omninode_infra#916, applied to onex-dev via the sanctioned migrate chain) exists on disk
+  but was never added to the omninode_cloud migration set in src/onex_change_control/boundaries/migration_inventory.yaml.
+  Because this job clones every peer repo at its default-branch HEAD and diffs the union against the in-repo
+  inventory, the gap was not scoped to any one PR -- it failed on every non-docs-only onex_change_control
+  PR that reached this job, independent of that PR's own diff. Fixed by adding the missing entry, with
+  `tables: [tenant_event_outbox]` matching the migration's own DDL (a single CREATE TABLE plus a supporting
+  partial index on that same table -- no other tables touched). The full inventory was then swept against
+  fresh peer-repo clones/pulls of each default branch; this was the only drift found, so no other entries
+  were touched.
+is_seam_ticket: false
+interface_change: false
+interfaces_touched: []
+evidence_requirements:
+  - kind: "manual"
+    description: "The OCC boundary inventory lists 20260816_tenant_event_outbox.sql in the omninode_cloud/omninode_infra
+      migration set, and check-migration-inventory exits 0 against a repos-root of freshly-pulled peer
+      default branches."
+    command: "see dod_evidence check_values"
+emergency_bypass:
+  enabled: false
+  justification: ""
+  follow_up_ticket_id: ""
+dod_evidence:
+  - id: "dod-inventory-lists-tenant-event-outbox-migration"
+    description: >-
+      Falsifiable static assertion over the changed source file. Positive anchor asserts the new entry
+      `20260816_tenant_event_outbox.sql` is present under the omninode_infra migration set together with
+      its `tables: [tenant_event_outbox]` line, written fail-closed per the OMN-15391 Rule D sanctioned
+      form: the file is read once into a variable and both greps run against that captured body, so a
+      failed read cannot pass as a false positive. It goes RED if the entry is missing or the tables line
+      is wrong. The complementary red->green proof was run locally against a CI-shaped repos-root containing
+      freshly-pulled/cloned peer default-branch trees (omnibase_infra, omnidash-archived, omniintelligence,
+      omnimemory, omninode_infra, omniclaude, omniweb): check-migration-inventory exited 1 with the exact
+      CI error (`[ERROR] UNLISTED_FILE: omninode_cloud: omninode_infra/db/migrations/20260816_tenant_event_outbox.sql
+      exists on disk but not in inventory`) against the pre-fix inventory, and exited 0 with zero findings
+      against the fixed inventory. The same repos-root was swept for other drift across all six database
+      sections in the inventory; none was found.
+    source: "manual"
+    status: "verified"
+    checks:
+      - check_type: "command"
+        check_value: >-
+          body="$(cat src/onex_change_control/boundaries/migration_inventory.yaml)" && printf '%s' "$body"
+          | grep -qF '20260816_tenant_event_outbox.sql' && printf '%s' "$body" | grep -A1 -F '20260816_tenant_event_outbox.sql'
+          | grep -qF 'tables: [tenant_event_outbox]'

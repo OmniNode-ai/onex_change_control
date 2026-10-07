@@ -1,0 +1,3132 @@
+---
+schema_version: "1.0.0"
+ticket_id: "OMN-13902"
+title: "Cross-repo sibling version-alignment automation — sibling-lock-refresh workflow (canary + fan-out)"
+summary: >-
+  Closes the recurring stale-sibling-lock drift class. Detection existed (sibling-pin guard OMN-12977,
+  orphan-pin gate OMN-13509) but alignment was manual, so drift recurred and blocked work (OMN-13156,
+  OMN-13402, OMN-13814 were one-off repin tickets; the 2026-07-03 R3 stability refresh was blocked by
+  a stale core pin). The fix is a Dependabot-shaped, per-repo scheduled workflow (.github/workflows/sibling-lock-refresh.yml)
+  that runs `uv lock --upgrade-package` for each omninode sibling on a daily schedule (and workflow_dispatch)
+  and opens a bot PR when uv.lock changes. Git/tag-pinned siblings in [tool.uv.sources] are left untouched
+  — `uv lock --upgrade-package` cannot move an immutable rev/tag — so the Dep-Provenance state is preserved
+  automatically with no per-repo tuning. Landed on the omnimemory canary first (PR #400, all gates green
+  incl. Dep Provenance Gate), then fanned out to the other PyPI-range consumers (omniclaude, omniintelligence,
+  omnibase_infra). This is a docs/CI-only change: each PR adds one workflow YAML file, touches no runtime
+  contract, and performs no deploy, restart, image build/push, or live cluster mutation.
+is_seam_ticket: false
+interface_change: false
+interfaces_touched: []
+emergency_bypass:
+  enabled: false
+  justification: ""
+  follow_up_ticket_id: ""
+dod_evidence:
+  - id: "dod-omnimemory-canary-pr-400"
+    description: >-
+      Canary binding: omnimemory PR #400 added .github/workflows/sibling-lock-refresh.yml and merged with
+      all gates green (incl. Dep Provenance Gate), proving the mechanism. The PR body records a local
+      run that refreshed omnibase-core/spi/compat pins in uv.lock while leaving the git-pinned omnibase-infra
+      entry untouched — exactly the stale-lock drift the ticket cites, auto-resolved.
+    source: "manual"
+    checks:
+      - check_type: "command"
+        check_value: "grep -q '^status: PASS$' drift/dod_receipts/OMN-13902/dod-omnimemory-canary-pr-400/command.yaml"
+  - id: "dod-fanout-ci-only"
+    description: >-
+      Deploy-gate evidence: the canary and every fan-out PR add a single .github/workflows CI YAML file
+      only. No runtime contract is touched and no deploy, container restart, docker compose against .201,
+      image build/push, rpk produce, or live cluster/runtime mutation was performed — the workflow itself
+      only opens bot PRs on a schedule, gated by CROSS_REPO_PAT, and merges are human-reviewed.
+    source: "manual"
+    checks:
+      - check_type: "command"
+        check_value: "grep -q '^status: PASS$' drift/dod_receipts/OMN-13902/dod-fanout-ci-only/command.yaml"
+  - id: "dod-omniintelligence-pr-755"
+    description: >-
+      Consuming-PR binding: omniintelligence PR #755 adds .github/workflows/sibling-lock-refresh.yml (the
+      fan-out of the proven omnimemory canary). CI-only workflow file; no runtime contract or deploy.
+    source: "manual"
+    checks:
+      - check_type: "command"
+        check_value: "grep -q '^status: PASS$' drift/dod_receipts/OMN-13902/dod-omniintelligence-pr-755/command.yaml"
+  - id: "dod-omniintelligence-pr-757"
+    description: >-
+      Consuming-PR binding: omniintelligence PR #757 is the sibling-lock-refresh bot output for the OMN-13902
+      workflow, changing only uv.lock sibling pins on the bot branch. Lockfile-only dependency refresh;
+      no runtime contract or deploy.
+    source: "manual"
+    checks:
+      - check_type: "command"
+        check_value: "grep -q '^status: PASS$' drift/dod_receipts/OMN-13902/dod-omniintelligence-pr-757/command.yaml"
+  - id: "dod-omniintelligence-pr-758"
+    description: >-
+      Consuming-PR binding: omniintelligence PR #758 replaces PR #757 on an OMN-13902-named branch so
+      the legacy receipt identity gate can verify the ticket id from the branch ref. It carries the same
+      lockfile-only sibling refresh and performs no runtime contract or deploy work.
+    source: "manual"
+    checks:
+      - check_type: "command"
+        check_value: "grep -q '^status: PASS$' drift/dod_receipts/OMN-13902/dod-omniintelligence-pr-758/command.yaml"
+  - id: "dod-omniintelligence-pr-759"
+    description: >-
+      Consuming-PR binding: omniintelligence PR #759 is the sibling-lock-refresh bot output for OMN-13902
+      after the replacement PR #758 entered the merge queue. It changes only uv.lock CUDA/NVIDIA dependency
+      marker lock metadata on the bot branch and performs no runtime contract or deploy work.
+    source: "manual"
+    checks:
+      - check_type: "command"
+        check_value: "grep -q '^status: PASS$' drift/dod_receipts/OMN-13902/dod-omniintelligence-pr-759/command.yaml"
+  - id: "dod-omniintelligence-pr-761"
+    description: >-
+      Consuming-PR binding: omniintelligence PR #761 is the sibling-lock-refresh bot output for OMN-13902
+      after the PR #758/#760 merge queue lane started. It changes only uv.lock sibling dependency lock
+      metadata on the bot branch and performs no runtime contract or deploy work.
+    source: "manual"
+    checks:
+      - check_type: "command"
+        check_value: "grep -q '^status: PASS$' drift/dod_receipts/OMN-13902/dod-omniintelligence-pr-761/command.yaml"
+  - id: "dod-omniintelligence-pr-773"
+    description: >-
+      Consuming-PR binding: omniintelligence PR #773 replaces superseded PR #765 on an OMN-13902-named
+      branch so receipt-gate identity binding can verify the ticket id from the branch ref. It changes
+      only uv.lock sibling dependency lock metadata on the bot branch, including the omnibase-core registry
+      pin refresh from 0.46.5 to 0.46.6, and performs no runtime contract or deploy work.
+    source: "manual"
+    checks:
+      - check_type: "command"
+        check_value: "grep -q '^status: PASS$' drift/dod_receipts/OMN-13902/dod-omniintelligence-pr-773/command.yaml"
+  - id: "dod-omnibase-infra-pr-2202"
+    description: >-
+      Consuming-PR binding: omnibase_infra PR #2202 adds .github/workflows/sibling-lock-refresh.yml (the
+      fan-out of the proven omnimemory canary). CI-only workflow file; no runtime contract or deploy.
+    source: "manual"
+    checks:
+      - check_type: "command"
+        check_value: "grep -q '^status: PASS$' drift/dod_receipts/OMN-13902/dod-omnibase-infra-pr-2202/command.yaml"
+  - id: "dod-omniclaude-pr-1857"
+    description: >-
+      Consuming-PR binding: omniclaude PR #1857 adds .github/workflows/sibling-lock-refresh.yml (the fan-out
+      of the proven omnimemory canary). CI-only workflow file; no runtime contract or deploy.
+    source: "manual"
+    checks:
+      - check_type: "command"
+        check_value: "grep -q '^status: PASS$' drift/dod_receipts/OMN-13902/dod-omniclaude-pr-1857/command.yaml"
+  - id: "dod-occ-pr-3617"
+    description: >-
+      OCC self-binding: onex_change_control PR #3617 carries the OMN-13902 contract and receipts that
+      the canary omnimemory PR #400 and the fan-out PRs (omniintelligence #755, omnibase_infra #2202,
+      omniclaude #1857) cite via Evidence-Source: OCC#3617. Satisfies this PR's own occ-preflight/receipt-gate
+      binding.
+    source: "generated"
+    checks:
+      - check_type: "command"
+        check_value: "grep -q '^status: PASS$' drift/dod_receipts/OMN-13902/dod-occ-pr-3617/command.yaml"
+  - id: "dod-occ-pr-3646"
+    description: >-
+      OCC self-binding: onex_change_control PR #3646 carries the updated OMN-13902 contract and receipts
+      that bind omniintelligence PR #757 and replacement PR #758 to the central evidence set. Satisfies
+      this PR's own occ-preflight/receipt-gate binding while preserving the prior canary and fan-out receipts.
+    source: "generated"
+    checks:
+      - check_type: "command"
+        check_value: "grep -q '^status: PASS$' drift/dod_receipts/OMN-13902/dod-occ-pr-3646/command.yaml"
+  - id: "dod-occ-pr-3678"
+    description: >-
+      OCC self-binding: onex_change_control PR #3678 carries the updated OMN-13902 contract and receipt
+      that bind omniintelligence PR #759 to the central evidence set. Satisfies this PR's own occ-preflight/receipt-gate
+      binding while preserving the prior canary and fan-out receipts.
+    source: "generated"
+    checks:
+      - check_type: "command"
+        check_value: "grep -q '^status: PASS$' drift/dod_receipts/OMN-13902/dod-occ-pr-3678/command.yaml"
+  - id: "dod-omnibase-infra-pr-2233"
+    description: >-
+      Consuming-PR binding: omnibase_infra PR #2233 is the permanent build-infra fix for the recurring
+      OMN-13902 sibling-pin false-block (latest instance OMN-14138). It changes scripts/runtime_build/check_sibling_lock_pins.py
+      (plus deploy-runtime.sh / stage_workspace.sh callers and the sibling-lock-pins regression tests)
+      so the workspace-build sibling-pin guard treats registry-sourced forward version drift — the OMN-13929
+      post-publish disarm-bump steady state — as PASS while still failing backward/stale-clone drift.
+      CI- and build-tooling change only; no runtime contract, deploy, restart, image build/push, or live
+      cluster mutation.
+    source: "manual"
+    checks:
+      - check_type: "command"
+        check_value: "grep -q '^status: PASS$' drift/dod_receipts/OMN-13902/dod-omnibase-infra-pr-2233/command.yaml"
+  - id: "dod-occ-self"
+    description: >-
+      OCC self-binding: this onex_change_control companion PR carries the OMN-13902 contract entry and
+      receipt that bind omnibase_infra PR #2233 to the central evidence set. Satisfies this PR's own occ-preflight/receipt-gate
+      binding while preserving the prior canary and fan-out receipts.
+    source: "generated"
+    checks:
+      - check_type: "command"
+        check_value: "grep -q '^status: PASS$' drift/dod_receipts/OMN-13902/dod-occ-self/command.yaml"
+  - id: "dod-occ-pr-3704"
+    description: >-
+      OCC supersession binding: onex_change_control PR #3704 appends supersession receipts that rebind
+      legacy OMN-13902 whole-contract receipts to per-entry contract hashes after OCC#3700 appended the
+      omnibase_infra PR #2233 evidence. This preserves append-only receipt history while allowing the
+      active receipt chain to validate the current contract entries for #2233 and this OCC repair PR.
+      Governance evidence only; no runtime contract, deploy, restart, image build/push, or live cluster
+      mutation.
+    source: "generated"
+    checks:
+      - check_type: "command"
+        check_value: "grep -q '^status: PASS$' drift/dod_receipts/OMN-13902/dod-occ-pr-3704/command.yaml"
+  - id: "dod-occ-pr-3724"
+    description: >-
+      OCC self-binding: onex_change_control PR #3724 carries the OMN-13902 contract entry and receipt
+      that bind omniintelligence PR #761 to the central evidence set. Satisfies this PR's own occ-preflight/receipt-gate
+      binding while preserving the prior canary and fan-out receipts.
+    source: "generated"
+    checks:
+      - check_type: "command"
+        check_value: "grep -q '^status: PASS$' drift/dod_receipts/OMN-13902/dod-occ-pr-3724/command.yaml"
+  - id: "dod-occ-pr-3761"
+    description: >-
+      OCC self-binding: onex_change_control PR #3761 carries the OMN-13902 contract entry and receipt
+      that bind omniintelligence PR #773 to the central evidence set. Satisfies this PR's own occ-preflight/receipt-gate
+      binding while preserving the prior canary and fan-out receipts.
+    source: "generated"
+    checks:
+      - check_type: "command"
+        check_value: "grep -q '^status: PASS$' drift/dod_receipts/OMN-13902/dod-occ-pr-3761/command.yaml"
+  - id: "dod-omniintelligence-pr-775"
+    description: >-
+      Consuming-PR binding: omniintelligence PR #775 is the sibling-lock-refresh bot output for OMN-13902
+      after the PR #773 lane. It changes only uv.lock sibling dependency lock metadata on the bot branch
+      and performs no runtime contract, deploy, restart, image push, or live cluster mutation.
+    source: "manual"
+    checks:
+      - check_type: "command"
+        check_value: "grep -q '^status: PASS$' drift/dod_receipts/OMN-13902/dod-omniintelligence-pr-775/command.yaml"
+  - id: "occ-self-bind-pr-11882"
+    description: "OCC companion PR #11882 — self-bind for OMN-13902 (OMN-14650)."
+    source: "generated"
+    checks:
+      - check_type: "command"
+        check_value: "gh pr view 11882 --repo OmniNode-ai/onex_change_control --json number,state"
+  - id: "dod-occ-pr-3799"
+    description: >-
+      OCC self-binding: onex_change_control PR #3799 carries the OMN-13902 contract entry and receipt
+      that bind omniintelligence PR #775 to the central evidence set. Satisfies this PR's own occ-preflight/receipt-gate
+      binding while preserving the prior sibling-lock receipts.
+    source: "generated"
+    checks:
+      - check_type: "command"
+        check_value: "grep -q '^status: PASS$' drift/dod_receipts/OMN-13902/dod-occ-pr-3799/command.yaml"
+  - id: "dod-omniintelligence-pr-776"
+    description: >-
+      Consuming-PR binding: omniintelligence PR #776 replaces PR #775 on an OMN-13902-named branch so
+      receipt-gate identity binding can verify the ticket id from the branch ref. It points at the same
+      sibling-lock-refresh commit as PR #775, changes only uv.lock sibling dependency lock metadata, and
+      performs no runtime contract, deploy, restart, image push, or live cluster mutation.
+    source: "manual"
+    checks:
+      - check_type: "command"
+        check_value: "grep -q '^status: PASS$' drift/dod_receipts/OMN-13902/dod-omniintelligence-pr-776/command.yaml"
+  - id: "dod-occ-pr-3806"
+    description: >-
+      OCC self-binding: onex_change_control PR #3806 carries the OMN-13902 contract entry and receipt
+      that bind replacement omniintelligence PR #776 to the central evidence set after PR #775 failed
+      branch identity binding. Satisfies this PR's own occ-preflight/receipt-gate binding while preserving
+      prior sibling-lock receipts.
+    source: "generated"
+    checks:
+      - check_type: "command"
+        check_value: "grep -q '^status: PASS$' drift/dod_receipts/OMN-13902/dod-occ-pr-3806/command.yaml"
+  - id: "dod-occ-pr-3808"
+    description: >-
+      OCC self-binding: onex_change_control PR #3808 carries append-only supersession receipts that rebind
+      stale OMN-13902 whole-contract hashes after replacement PR #776 and OCC PR #3806 were appended.
+      Satisfies this PR's own occ-preflight/receipt-gate binding without mutating historical receipts.
+    source: "generated"
+    checks:
+      - check_type: "command"
+        check_value: "grep -q '^status: PASS$' drift/dod_receipts/OMN-13902/dod-occ-pr-3808/command.yaml"
+  - id: "dod-omniclaude-pr-1887"
+    description: >-
+      Consuming-PR binding: omniclaude PR #1887 replaces PR #1882 on an OMN-13902-named branch so receipt-gate
+      identity binding can verify the ticket id from the branch ref. It points at the same sibling-lock-refresh
+      commit as PR #1882, changes only uv.lock sibling dependency lock metadata, and performs no runtime
+      contract, deploy, restart, image push, or live cluster mutation.
+    source: "manual"
+    checks:
+      - check_type: "command"
+        check_value: "grep -q '^status: PASS$' drift/dod_receipts/OMN-13902/dod-omniclaude-pr-1887/command.yaml"
+  - id: "occ-self-bind-pr-13020"
+    description: "OCC companion PR #13020 — self-bind for OMN-13902 (OMN-14650)."
+    source: "generated"
+    checks:
+      - check_type: "command"
+        check_value: "gh pr view 13020 --repo OmniNode-ai/onex_change_control --json number,state"
+  - id: "dod-occ-pr-3819"
+    description: >-
+      OCC self-binding: onex_change_control PR #3819 carries the OMN-13902 contract entry and receipt
+      that bind replacement omniclaude PR #1887 to the central evidence set after PR #1882 failed branch
+      identity binding. Satisfies this PR's own occ-preflight/receipt-gate binding while preserving prior
+      sibling-lock receipts.
+    source: "generated"
+    checks:
+      - check_type: "command"
+        check_value: "grep -q '^status: PASS$' drift/dod_receipts/OMN-13902/dod-occ-pr-3819/command.yaml"
+  - id: "dod-omniintelligence-pr-782"
+    description: >-
+      Consuming-PR binding: omniintelligence PR #782 is the sibling-lock-refresh bot output for OMN-13902
+      after the prior PR #776/#773 lane. It changes only uv.lock sibling dependency lock metadata on the
+      bot branch and performs no runtime contract, deploy, restart, image push, or live cluster mutation.
+    source: "manual"
+    checks:
+      - check_type: "command"
+        check_value: "gh pr view ${PR_NUMBER} --repo ${REPO} --json number,headRefOid,headRefName,baseRefName,title,changedFiles,additions,deletions"
+  - id: "dod-occ-pr-4141"
+    description: >-
+      OCC self-binding: onex_change_control PR #4141 carries the OMN-13902 contract entry and receipt
+      that bind omniintelligence PR #782 to the central evidence set. Satisfies this PR's own occ-preflight/receipt-gate
+      binding while preserving prior sibling-lock receipts.
+    source: "generated"
+    checks:
+      - check_type: "command"
+        check_value: "gh pr view ${PR_NUMBER} --repo ${REPO} --json number,headRefOid,headRefName,baseRefName,title,changedFiles,additions,deletions"
+  - id: "dod-omniintelligence-pr-783"
+    description: >-
+      Consuming-PR binding: omniintelligence PR #783 replaces closed PR #782 on an OMN-13902-named branch
+      so receipt-gate identity binding can verify the ticket id from the branch ref. It points at the
+      same sibling-lock-refresh commit as PR #782, changes only uv.lock sibling dependency lock metadata,
+      and performs no runtime contract, deploy, restart, image push, or live cluster mutation.
+    source: "manual"
+    checks:
+      - check_type: "command"
+        check_value: "gh pr view ${PR_NUMBER} --repo ${REPO} --json number,headRefOid,headRefName,baseRefName,title,changedFiles,additions,deletions"
+  - id: "dod-occ-pr-4142"
+    description: >-
+      OCC self-binding: onex_change_control PR #4142 carries the OMN-13902 contract entry and receipt
+      that bind replacement omniintelligence PR #783 to the central evidence set after PR #782 was closed
+      by branch identity repair. Satisfies this PR's own occ-preflight/receipt-gate binding while preserving
+      prior sibling-lock receipts.
+    source: "generated"
+    checks:
+      - check_type: "command"
+        check_value: "gh pr view ${PR_NUMBER} --repo ${REPO} --json number,headRefOid,headRefName,baseRefName,title,changedFiles,additions,deletions"
+  - id: "dod-omniintelligence-pr-789"
+    description: >-
+      Consuming-PR binding: omniintelligence PR #789 replaces PR #788 on an OMN-13902-named branch so
+      receipt-gate identity binding can verify the ticket id from the branch ref. It points at the same
+      sibling-lock-refresh commit as PR #788, changes only uv.lock sibling dependency lock metadata, and
+      performs no runtime contract, deploy, restart, image push, or live cluster mutation.
+    source: "manual"
+    checks:
+      - check_type: "command"
+        check_value: "gh pr view ${PR_NUMBER} --repo ${REPO} --json number,headRefOid,headRefName,baseRefName,title,changedFiles,additions,deletions"
+  - id: "dod-OmniNode-ai-omniintelligence-pr-991"
+    description: "PR #991 on OmniNode-ai/omniintelligence — Evidence-Source autobind."
+    source: "generated"
+    checks:
+      - check_type: "command"
+        check_value: |-
+          gh api repos/OmniNode-ai/omniintelligence/contents/uv.lock?ref=398f89cf2aeabbb8500fe4a5b6349bf16e9f8dad --jq '.content' | base64 -d | grep -cF 'https://files.pythonhosted.org/packages/78/66/b937d1291805a7a2295ac45b531f1aacc67b1e16ea9e65f1dccee8d39403/omnimarket-0.4.282.tar.gz'
+  - id: "dod-OmniNode-ai-omniintelligence-pr-991-ci"
+    description: "PR #991 on OmniNode-ai/omniintelligence — product diff scope check (OMN-14425)."
+    source: "generated"
+    checks:
+      - check_type: "command"
+        check_value: "gh pr view 991 --repo OmniNode-ai/omniintelligence --json files"
+  - id: "dod-occ-evidence-admissibility-validator-pr-991"
+    description: "Hosted OCC evidence admissibility validator (OMN-15247)."
+    source: "generated"
+    checks:
+      - check_type: "command"
+        check_value: "uv run pytest tests/test_evidence_admissibility.py -q"
+        cwd: "${OMNI_HOME}/onex_change_control"
+  - id: "occ-self-bind-pr-4320"
+    description: "OCC PR #4320 exists and binds OMN-13902 evidence for omniintelligence PR #789."
+    source: "manual"
+    checks:
+      - check_type: "command"
+        check_value: "PR_NUMBER=4320; REPO=OmniNode-ai/onex_change_control; gh pr view ${PR_NUMBER} --repo
+          ${REPO} --json number,state,headRefName"
+  - id: "dod-omniintelligence-pr-792"
+    description: >-
+      Consuming-PR binding: omniintelligence PR #792 is the sibling-lock-refresh bot output for OMN-13902
+      after the prior PR #789 lane. It changes only uv.lock sibling dependency lock metadata on the bot
+      branch and performs no runtime contract, deploy, restart, image push, or live cluster mutation.
+    source: "manual"
+    checks:
+      - check_type: "command"
+        check_value: "PRODUCT_PR_NUMBER=792; PRODUCT_REPO=OmniNode-ai/omniintelligence; gh pr view $PRODUCT_PR_NUMBER
+          --repo $PRODUCT_REPO --json number,headRefOid,headRefName,baseRefName,title,changedFiles,additions,deletions"
+  - id: "occ-self-bind-pr-4371"
+    description: "OCC PR #4371 exists and binds OMN-13902 evidence for omniintelligence PR #792."
+    source: "manual"
+    checks:
+      - check_type: "command"
+        check_value: "PR_NUMBER=4371; REPO=OmniNode-ai/onex_change_control; gh pr view ${PR_NUMBER} --repo
+          ${REPO} --json number,state,headRefName"
+  - id: "dod-OmniNode-ai-omniclaude-pr-2490"
+    description: "PR #2490 on OmniNode-ai/omniclaude — Evidence-Source autobind."
+    source: "generated"
+    checks:
+      - check_type: "command"
+        check_value: |-
+          gh api repos/OmniNode-ai/omniclaude/contents/uv.lock?ref=9d19809916ba06960994229baebc207a5eeab8bd --jq '.content' | base64 -d | grep -cF 'https://github.com/OmniNode-ai/omnimarket.git?rev=750808959945ef7e4ddf5e6da5c4faac8caef530'
+  - id: "dod-OmniNode-ai-omniclaude-pr-2490-ci"
+    description: "PR #2490 on OmniNode-ai/omniclaude — product diff scope check (OMN-14425)."
+    source: "generated"
+    checks:
+      - check_type: "command"
+        check_value: "gh pr view 2490 --repo OmniNode-ai/omniclaude --json files"
+  - id: "dod-occ-evidence-admissibility-validator-pr-2490"
+    description: "Hosted OCC evidence admissibility validator (OMN-15247)."
+    source: "generated"
+    checks:
+      - check_type: "command"
+        check_value: "uv run pytest tests/test_evidence_admissibility.py -q"
+        cwd: "${OMNI_HOME}/onex_change_control"
+  - id: "occ-self-bind-pr-4320-rebound"
+    description: "Rebound canonical check for OCC PR #4320 after dev hardening rejected inert PR_NUMBER
+      prefix form."
+    evidence_artifact: "supersedes_dod_evidence:occ-self-bind-pr-4320"
+    source: "manual"
+    checks:
+      - check_type: "command"
+        check_value: "gh pr view 4320 --repo OmniNode-ai/onex_change_control --json number,state,headRefName"
+  - id: "occ-self-bind-pr-4371-rebound"
+    description: "Rebound canonical check for OCC PR #4371 after dev hardening rejected inert PR_NUMBER
+      prefix form."
+    evidence_artifact: "supersedes_dod_evidence:occ-self-bind-pr-4371"
+    source: "manual"
+    checks:
+      - check_type: "command"
+        check_value: "gh pr view 4371 --repo OmniNode-ai/onex_change_control --json number,state,headRefName"
+  - id: "dod-omniintelligence-pr-800-lock-refresh"
+    description: >-
+      Consuming-PR binding: omniintelligence PR #800 is the sibling-lock-refresh bot output for OMN-13902
+      after the prior PR #792 lane. It changes only uv.lock sibling dependency lock metadata on the bot
+      branch and performs no runtime contract, deploy, restart, image push, or live cluster mutation.
+    source: "manual"
+    checks:
+      - check_type: "command"
+        check_value: "PRODUCT_PR_NUMBER=800; PRODUCT_REPO=OmniNode-ai/omniintelligence; gh pr view $PRODUCT_PR_NUMBER
+          --repo $PRODUCT_REPO --json number,headRefOid,headRefName,baseRefName,title,changedFiles,additions,deletions"
+  - id: "occ-self-bind-pr-4599"
+    description: "OCC PR #4599 carries the OMN-13902 evidence for omniintelligence PR #800."
+    source: "manual"
+    checks:
+      - check_type: "command"
+        check_value: "gh pr view 4599 --repo OmniNode-ai/onex_change_control --json number,state,headRefName,headRefOid"
+  - id: "dod-omniintelligence-pr-801-lock-refresh"
+    description: >-
+      Consuming-PR binding: omniintelligence PR #801 replaces closed PR #800 on an OMN-13902-named branch
+      so receipt-gate identity binding can verify the ticket id from the branch ref. It carries the same
+      uv.lock sibling dependency lock metadata refresh, changes only uv.lock, and performs no runtime
+      contract, deploy, restart, image push, or live cluster mutation.
+    source: "manual"
+    checks:
+      - check_type: "command"
+        check_value: "PRODUCT_PR_NUMBER=801; PRODUCT_REPO=OmniNode-ai/omniintelligence; gh pr view $PRODUCT_PR_NUMBER
+          --repo $PRODUCT_REPO --json number,headRefOid,headRefName,baseRefName,title,changedFiles,additions,deletions"
+  - id: "occ-self-bind-pr-4600"
+    description: "OCC PR #4600 carries the OMN-13902 evidence for replacement omniintelligence PR #801."
+    source: "manual"
+    checks:
+      - check_type: "command"
+        check_value: "gh pr view 4600 --repo OmniNode-ai/onex_change_control --json number,state,headRefName,headRefOid"
+  - id: "dod-omniintelligence-pr-804-lock-refresh"
+    description: >-
+      Consuming-PR binding: omniintelligence PR #804 is the sibling-lock-refresh bot output for OMN-13902
+      after the prior PR #801 lane. It changes only uv.lock sibling dependency lock metadata on the bot
+      branch and performs no runtime contract, deploy, restart, image push, or live cluster mutation.
+    source: "manual"
+    checks:
+      - check_type: "command"
+        check_value: "PRODUCT_PR_NUMBER=804; PRODUCT_REPO=OmniNode-ai/omniintelligence; gh pr view $PRODUCT_PR_NUMBER
+          --repo $PRODUCT_REPO --json number,headRefOid,headRefName,baseRefName,title,changedFiles,additions,deletions"
+  - id: "occ-self-bind-pr-4636"
+    description: "OCC PR #4636 carries the OMN-13902 evidence for omniintelligence PR #804."
+    source: "manual"
+    checks:
+      - check_type: "command"
+        check_value: "gh pr view 4636 --repo OmniNode-ai/onex_change_control --json number,state,headRefName,headRefOid"
+  - id: "dod-omniintelligence-pr-806-lock-refresh"
+    description: >-
+      Consuming-PR binding: omniintelligence PR #806 replaces bot PR #804 on an OMN-13902-named branch
+      so receipt-gate identity binding can verify the ticket id from the branch ref. It points at the
+      same sibling-lock-refresh commit as PR #804, changes only uv.lock sibling dependency lock metadata,
+      and performs no runtime contract, deploy, restart, image push, or live cluster mutation.
+    source: "manual"
+    checks:
+      - check_type: "command"
+        check_value: "PRODUCT_PR_NUMBER=806; PRODUCT_REPO=OmniNode-ai/omniintelligence; gh pr view $PRODUCT_PR_NUMBER
+          --repo $PRODUCT_REPO --json number,headRefOid,headRefName,baseRefName,title,changedFiles,additions,deletions"
+  - id: "occ-self-bind-pr-4638"
+    description: "OCC PR #4638 carries the OMN-13902 evidence for replacement omniintelligence PR #806."
+    source: "manual"
+    checks:
+      - check_type: "command"
+        check_value: "gh pr view 4638 --repo OmniNode-ai/onex_change_control --json number,state,headRefName,headRefOid"
+  - id: "dod-omniintelligence-pr-814-lock-refresh"
+    description: >-
+      Consuming-PR binding: omniintelligence PR #814 is the sibling-lock-refresh bot output for OMN-13902
+      after the prior PR #806 lane. It changes only uv.lock sibling dependency lock metadata on the bot
+      branch and performs no runtime contract, deploy, restart, image push, or live cluster mutation.
+    source: "manual"
+    checks:
+      - check_type: "command"
+        check_value: "grep -q '^status: PASS$' drift/dod_receipts/OMN-13902/dod-omniintelligence-pr-814-lock-refresh/command.yaml"
+  - id: "dod-omniintelligence-pr-815-lock-refresh"
+    description: >-
+      Consuming-PR binding: omniintelligence PR #815 replaces closed PR #814 on an OMN-13902-named branch
+      so receipt-gate identity binding can verify the ticket id from the branch ref. It points at the
+      same sibling-lock-refresh commit, changes only uv.lock sibling dependency lock metadata, and performs
+      no runtime contract, deploy, restart, image push, or live cluster mutation.
+    source: "manual"
+    checks:
+      - check_type: "command"
+        check_value: "grep -q '^status: PASS$' drift/dod_receipts/OMN-13902/dod-omniintelligence-pr-815-lock-refresh/command.yaml"
+  - id: "occ-self-bind-pr-4925-omn-13902"
+    description: "OCC PR #4925 carries the OMN-13902 evidence for omniintelligence PR #814."
+    source: "manual"
+    checks:
+      - check_type: "command"
+        check_value: "gh pr view 4925 --repo OmniNode-ai/onex_change_control --json number,state,headRefName,headRefOid"
+  - id: "occ-self-bind-pr-4932-omn-13902"
+    description: "OCC PR #4932 carries the OMN-13902 evidence for replacement omniintelligence PR #815."
+    source: "manual"
+    checks:
+      - check_type: "command"
+        check_value: "gh pr view 4932 --repo OmniNode-ai/onex_change_control --json number,state,headRefName,headRefOid"
+  - id: "omniintelligence-pr-782-r15481"
+    description: "Append-only replacement for dod-omniintelligence-pr-782. The historical entry is immutable
+      and stays byte-intact, but its check_value used the bare ${PR_NUMBER}/${REPO} runner placeholders,
+      which the compliance runner pre-substitutes with ITS OWN pr/repo -- so the item never pinned PR
+      #782 on OmniNode-ai/omniintelligence, and `gh pr view --json` with no assertion exits 0 for any
+      PR that exists (mis-bound AND unfalsifiable). This entry pins the literal PR number and repo and
+      asserts two facts the selector does not determine: the PR is CLOSED (never merged), plus a per-item
+      distinguishing binding. Both checks executed GREEN under `bash -o pipefail -c` at 2026-07-30T09:32:56Z
+      and are RED-proven by mutation (OMN-15481 batch 1)."
+    source: "manual"
+    status: "verified"
+    evidence_artifact: "supersedes_dod_evidence:dod-omniintelligence-pr-782"
+    checks:
+      - check_type: "command"
+        check_value: "gh pr view 782 --repo OmniNode-ai/omniintelligence --json state,mergedAt --jq '.state
+          + \"/\" + (.mergedAt // \"never\")' | grep -cxF 'CLOSED/never' | grep -qx 1"
+      - check_type: "command"
+        check_value: "gh pr view 782 --repo OmniNode-ai/omniintelligence --json headRefOid --jq '.headRefOid'
+          | grep -cxF '197c86ecc032d4f8a87d167247af1cd4de9f0d82' | grep -qx 1"
+  - id: "occ-pr-4141-r15481"
+    description: "Append-only replacement for dod-occ-pr-4141. The historical entry is immutable and stays
+      byte-intact, but its check_value used the bare ${PR_NUMBER}/${REPO} runner placeholders, which the
+      compliance runner pre-substitutes with ITS OWN pr/repo -- so the item never pinned PR #4141 on OmniNode-ai/onex_change_control,
+      and `gh pr view --json` with no assertion exits 0 for any PR that exists (mis-bound AND unfalsifiable).
+      This entry pins the literal PR number and repo and asserts two facts the selector does not determine:
+      the PR is MERGED at bde32831fd8451c92428d450f139cb52ae1f840f, plus a per-item distinguishing binding.
+      Both checks executed GREEN under `bash -o pipefail -c` at 2026-07-30T09:32:56Z and are RED-proven
+      by mutation (OMN-15481 batch 1)."
+    source: "manual"
+    status: "verified"
+    evidence_artifact: "supersedes_dod_evidence:dod-occ-pr-4141"
+    checks:
+      - check_type: "command"
+        check_value: "gh pr view 4141 --repo OmniNode-ai/onex_change_control --json mergeCommit --jq '.mergeCommit.oid'
+          | grep -cxF 'bde32831fd8451c92428d450f139cb52ae1f840f' | grep -qx 1"
+      - check_type: "command"
+        check_value: "gh pr view 4141 --repo OmniNode-ai/onex_change_control --json files --jq '.files[].path'
+          | grep -cxF 'contracts/OMN-13902.yaml' | grep -qx 1"
+  - id: "omniintelligence-pr-783-r15481"
+    description: "Append-only replacement for dod-omniintelligence-pr-783. The historical entry is immutable
+      and stays byte-intact, but its check_value used the bare ${PR_NUMBER}/${REPO} runner placeholders,
+      which the compliance runner pre-substitutes with ITS OWN pr/repo -- so the item never pinned PR
+      #783 on OmniNode-ai/omniintelligence, and `gh pr view --json` with no assertion exits 0 for any
+      PR that exists (mis-bound AND unfalsifiable). This entry pins the literal PR number and repo and
+      asserts two facts the selector does not determine: the PR is MERGED at f5fba3178f820a25eda5c68d68d76cfd1263e88a,
+      plus a per-item distinguishing binding. Both checks executed GREEN under `bash -o pipefail -c` at
+      2026-07-30T09:32:56Z and are RED-proven by mutation (OMN-15481 batch 1)."
+    source: "manual"
+    status: "verified"
+    evidence_artifact: "supersedes_dod_evidence:dod-omniintelligence-pr-783"
+    checks:
+      - check_type: "command"
+        check_value: "gh pr view 783 --repo OmniNode-ai/omniintelligence --json mergeCommit --jq '.mergeCommit.oid'
+          | grep -cxF 'f5fba3178f820a25eda5c68d68d76cfd1263e88a' | grep -qx 1"
+      - check_type: "command"
+        check_value: "gh pr view 783 --repo OmniNode-ai/omniintelligence --json files --jq '.files[].path'
+          | grep -cxF 'uv.lock' | grep -qx 1"
+  - id: "occ-pr-4142-r15481"
+    description: "Append-only replacement for dod-occ-pr-4142. The historical entry is immutable and stays
+      byte-intact, but its check_value used the bare ${PR_NUMBER}/${REPO} runner placeholders, which the
+      compliance runner pre-substitutes with ITS OWN pr/repo -- so the item never pinned PR #4142 on OmniNode-ai/onex_change_control,
+      and `gh pr view --json` with no assertion exits 0 for any PR that exists (mis-bound AND unfalsifiable).
+      This entry pins the literal PR number and repo and asserts two facts the selector does not determine:
+      the PR is MERGED at cb8602188c9d26127c26b4afa8dc965db423fc6e, plus a per-item distinguishing binding.
+      Both checks executed GREEN under `bash -o pipefail -c` at 2026-07-30T09:32:56Z and are RED-proven
+      by mutation (OMN-15481 batch 1)."
+    source: "manual"
+    status: "verified"
+    evidence_artifact: "supersedes_dod_evidence:dod-occ-pr-4142"
+    checks:
+      - check_type: "command"
+        check_value: "gh pr view 4142 --repo OmniNode-ai/onex_change_control --json mergeCommit --jq '.mergeCommit.oid'
+          | grep -cxF 'cb8602188c9d26127c26b4afa8dc965db423fc6e' | grep -qx 1"
+      - check_type: "command"
+        check_value: "gh pr view 4142 --repo OmniNode-ai/onex_change_control --json files --jq '.files[].path'
+          | grep -cxF 'contracts/OMN-13902.yaml' | grep -qx 1"
+  - id: "omniintelligence-pr-789-r15481"
+    description: "Append-only replacement for dod-omniintelligence-pr-789. The historical entry is immutable
+      and stays byte-intact, but its check_value used the bare ${PR_NUMBER}/${REPO} runner placeholders,
+      which the compliance runner pre-substitutes with ITS OWN pr/repo -- so the item never pinned PR
+      #789 on OmniNode-ai/omniintelligence, and `gh pr view --json` with no assertion exits 0 for any
+      PR that exists (mis-bound AND unfalsifiable). This entry pins the literal PR number and repo and
+      asserts two facts the selector does not determine: the PR is MERGED at 031988dcc689420015159b164cde05fdf53f3dae,
+      plus a per-item distinguishing binding. Both checks executed GREEN under `bash -o pipefail -c` at
+      2026-07-30T09:32:56Z and are RED-proven by mutation (OMN-15481 batch 1)."
+    source: "manual"
+    status: "verified"
+    evidence_artifact: "supersedes_dod_evidence:dod-omniintelligence-pr-789"
+    checks:
+      - check_type: "command"
+        check_value: "gh pr view 789 --repo OmniNode-ai/omniintelligence --json mergeCommit --jq '.mergeCommit.oid'
+          | grep -cxF '031988dcc689420015159b164cde05fdf53f3dae' | grep -qx 1"
+      - check_type: "command"
+        check_value: "gh pr view 789 --repo OmniNode-ai/omniintelligence --json files --jq '.files[].path'
+          | grep -cxF 'uv.lock' | grep -qx 1"
+  - id: "dod-omnimemory-pr-421-lock-refresh"
+    description: >-
+      Consuming-PR binding: omnimemory PR #421 is the sibling-lock-refresh bot output for OMN-13902. It
+      changes only uv.lock sibling dependency lock metadata on the bot branch and performs no runtime
+      contract, deploy, restart, image push, or live cluster mutation. This item pins the exact product
+      PR head and base branch and verifies the lockfile-only diff.
+    source: "manual"
+    status: "verified"
+    checks:
+      - check_type: "command"
+        check_value: "gh pr view 421 --repo OmniNode-ai/omnimemory --json headRefOid,baseRefName --jq
+          '.headRefOid + \" \" + .baseRefName' | grep -cxF '8b802a85a9f81208f560bd5afe28fadc6ffae057 dev'
+          | grep -qx 1"
+      - check_type: "command"
+        check_value: "gh pr view 421 --repo OmniNode-ai/omnimemory --json files --jq '.files[].path' |
+          grep -cxF 'uv.lock' | grep -qx 1"
+  - id: "dod-OmniNode-ai-omniclaude-pr-2394"
+    description: "PR #2394 on OmniNode-ai/omniclaude — Evidence-Source autobind."
+    source: "generated"
+    checks:
+      - check_type: "command"
+        check_value: |-
+          gh api repos/OmniNode-ai/omniclaude/contents/uv.lock?ref=bea114e25257e31fa3d7cc5b094227bfbab50e83 --jq '.content' | base64 -d | grep -cF 'https://github.com/OmniNode-ai/omnimarket.git?rev=7352e78592985400851cf4793466130b7e5e0106'
+  - id: "dod-OmniNode-ai-omniclaude-pr-2394-ci"
+    description: "PR #2394 on OmniNode-ai/omniclaude — product diff scope check (OMN-14425)."
+    source: "generated"
+    checks:
+      - check_type: "command"
+        check_value: "gh pr view 2394 --repo OmniNode-ai/omniclaude --json files"
+  - id: "dod-occ-evidence-admissibility-validator-pr-2394"
+    description: "Hosted OCC evidence admissibility validator (OMN-15247)."
+    source: "generated"
+    checks:
+      - check_type: "command"
+        check_value: "uv run pytest tests/test_evidence_admissibility.py -q"
+  - id: "occ-self-bind-pr-11879"
+    description: "OCC companion PR #11879 — self-bind for OMN-13902 (OMN-14650)."
+    source: "generated"
+    checks:
+      - check_type: "command"
+        check_value: "gh pr view 11879 --repo OmniNode-ai/onex_change_control --json number,state"
+  - id: "occ-self-bind-pr-5852"
+    description: "OCC self-binding: onex_change_control PR #5852 carries the OMN-13902 evidence that binds
+      omnimemory PR #421 to the central evidence set."
+    source: "manual"
+    status: "verified"
+    checks:
+      - check_type: "command"
+        check_value: "gh pr view 5852 --repo OmniNode-ai/onex_change_control --json number,state,headRefName
+          --jq '.number == 5852 and .state == \"OPEN\" and .headRefName == \"codex/omn-13902-memory421-occ\"'
+          | grep -qx true"
+  - id: "occ-self-bind-pr-5852-merged-5854"
+    description: "Append-only supersession for occ-self-bind-pr-5852 after onex_change_control PR #5852
+      merged. The original self-bind correctly proved #5852 was open while authored; this item binds the
+      durable post-merge state and merge commit so later OMN-13902 companions do not re-fail on the intentionally
+      changed PR lifecycle state."
+    source: "manual"
+    status: "verified"
+    evidence_artifact: "supersedes_dod_evidence:occ-self-bind-pr-5852"
+    checks:
+      - check_type: "command"
+        check_value: "gh pr view 5852 --repo OmniNode-ai/onex_change_control --json number,state,mergeCommit
+          --jq '.number == 5852 and .state == \"MERGED\" and .mergeCommit.oid == \"3ab2b6b343ccbd8b5182039631359f2afd2fe73c\"'
+          | grep -qx true"
+  - id: "dod-omniclaude-pr-1970-lock-refresh"
+    description: >-
+      Consuming-PR binding: omniclaude PR #1970 is the sibling-lock-refresh bot output for OMN-13902.
+      It changes only uv.lock sibling dependency lock metadata on the bot branch and performs no runtime
+      contract, deploy, restart, image push, or live cluster mutation. This item pins the exact product
+      PR head and base branch and verifies the lockfile-only diff.
+    source: "manual"
+    status: "verified"
+    checks:
+      - check_type: "command"
+        check_value: "gh pr view 1970 --repo OmniNode-ai/omniclaude --json headRefOid,baseRefName --jq
+          '.headRefOid + \" \" + .baseRefName' | grep -cxF 'a95366ffca470db300fcc3fb7541c8eef1a1b5c7 dev'
+          | grep -qx 1"
+      - check_type: "command"
+        check_value: "gh pr view 1970 --repo OmniNode-ai/omniclaude --json files --jq '.files[].path'
+          | grep -cxF 'uv.lock' | grep -qx 1"
+  - id: "occ-self-bind-pr-5854"
+    description: "OCC self-binding: onex_change_control PR #5854 carries the OMN-13902 evidence that binds
+      omniclaude PR #1970 to the central evidence set."
+    source: "manual"
+    status: "verified"
+    checks:
+      - check_type: "command"
+        check_value: "gh pr view 5854 --repo OmniNode-ai/onex_change_control --json number,state,headRefName
+          --jq '.number == 5854 and .state == \"OPEN\" and .headRefName == \"codex/omn-13902-claude1970-occ\"'
+          | grep -qx true"
+  - id: "occ-self-bind-pr-5854-merged-5857"
+    description: "Append-only supersession for occ-self-bind-pr-5854 after onex_change_control PR #5854
+      merged. The original self-bind correctly proved #5854 was open while authored; this item binds the
+      durable post-merge state and merge commit so later OMN-13902 companions do not re-fail on the intentionally
+      changed PR lifecycle state."
+    source: "manual"
+    status: "verified"
+    evidence_artifact: "supersedes_dod_evidence:occ-self-bind-pr-5854"
+    checks:
+      - check_type: "command"
+        check_value: "gh pr view 5854 --repo OmniNode-ai/onex_change_control --json number,state,mergeCommit
+          --jq '.number == 5854 and .state == \"MERGED\" and .mergeCommit.oid == \"2590298b3801cdeb699a4b1c4e9f2de07a4e238c\"'
+          | grep -qx true"
+  - id: "dod-omniclaude-pr-1972-lock-refresh"
+    description: >-
+      Consuming-PR binding: omniclaude PR #1972 replaces bot-branch PR #1970 on an OMN-13902-named branch
+      so receipt-gate identity binding can verify the ticket id from the branch ref. It points at the
+      same sibling-lock-refresh commit as PR #1970, changes only uv.lock sibling dependency lock metadata,
+      and performs no runtime contract, deploy, restart, image push, or live cluster mutation.
+    source: "manual"
+    status: "verified"
+    checks:
+      - check_type: "command"
+        check_value: "gh pr view 1972 --repo OmniNode-ai/omniclaude --json headRefOid,baseRefName --jq
+          '.headRefOid + \" \" + .baseRefName' | grep -cxF 'a95366ffca470db300fcc3fb7541c8eef1a1b5c7 dev'
+          | grep -qx 1"
+      - check_type: "command"
+        check_value: "gh pr view 1972 --repo OmniNode-ai/omniclaude --json files --jq '.files[].path'
+          | grep -cxF 'uv.lock' | grep -qx 1"
+  - id: "occ-self-bind-pr-5857"
+    description: "OCC self-binding: onex_change_control PR #5857 carries the OMN-13902 evidence that binds
+      replacement omniclaude PR #1972 to the central evidence set after PR #1970 failed branch identity
+      binding."
+    source: "manual"
+    status: "verified"
+    checks:
+      - check_type: "command"
+        check_value: "gh pr view 5857 --repo OmniNode-ai/onex_change_control --json number,state,headRefName
+          --jq '.number == 5857 and .state == \"OPEN\" and .headRefName == \"codex/omn-13902-claude1972-occ\"'
+          | grep -qx true"
+  - id: "occ-self-bind-pr-5857-merged-5950"
+    description: >-
+      Append-only supersession for occ-self-bind-pr-5857 after onex_change_control PR #5857 merged. The
+      original self-bind correctly proved #5857 was open while authored; this item binds the durable post-merge
+      state and merge commit so later OMN-13902 companions do not re-fail on the intentionally changed
+      PR lifecycle state.
+    source: "manual"
+    status: "verified"
+    evidence_artifact: "supersedes_dod_evidence:occ-self-bind-pr-5857"
+    checks:
+      - check_type: "command"
+        check_value: "gh pr view 5857 --repo OmniNode-ai/onex_change_control --json number,state,mergeCommit
+          --jq '.number == 5857 and .state == \"MERGED\" and .mergeCommit.oid == \"f5f5e7a5204fb1cefafd185ac798f202537a0754\"'
+          | grep -qx true"
+  - id: "dod-omnimemory-pr-424-lock-refresh"
+    description: >-
+      Consuming-PR binding: omnimemory PR #424 is the sibling-lock-refresh bot output for OMN-13902, changing
+      only uv.lock sibling dependency lock metadata on the bot branch. Lockfile-only dependency refresh;
+      no runtime contract, deploy, restart, image push, or live cluster mutation.
+    source: "manual"
+    status: "verified"
+    checks:
+      - check_type: "command"
+        check_value: "gh pr view 424 --repo OmniNode-ai/omnimemory --json headRefOid,baseRefName --jq
+          '.headRefOid + \" \" + .baseRefName' | grep -cxF '9d1897d06e4053444d0c7ca600c2f048217ae5db dev'
+          | grep -qx 1"
+      - check_type: "command"
+        check_value: "gh pr view 424 --repo OmniNode-ai/omnimemory --json files --jq '.files[].path' |
+          grep -cxF 'uv.lock' | grep -qx 1"
+  - id: "occ-self-bind-pr-5950"
+    description: "OCC self-binding: onex_change_control PR #5950 carries the OMN-13902 evidence that binds
+      omnimemory PR #424 to the central evidence set."
+    source: "manual"
+    status: "verified"
+    checks:
+      - check_type: "command"
+        check_value: "gh pr view 5950 --repo OmniNode-ai/onex_change_control --json number,state,isDraft,headRefName,files
+          --jq '.number == 5950 and .state == \"OPEN\" and .isDraft == false and .headRefName == \"codex/omn-13902-omnimemory-424\"
+          and ([.files[].path] | index(\"contracts/OMN-13902.yaml\") and index(\"drift/dod_receipts/OMN-13902/dod-omnimemory-pr-424-lock-refresh/command.yaml\")
+          and index(\"drift/dod_receipts/OMN-13902/occ-self-bind-pr-5857-merged-5950/command.yaml\") and
+          index(\"drift/dod_receipts/OMN-13902/occ-self-bind-pr-5950/command.yaml\"))' | grep -qx true"
+  - id: "dod-omnibase-infra-pr-2625-lock-refresh"
+    description: >-
+      Consuming-PR binding: omnibase_infra PR #2625 is the sibling-lock-refresh bot output for OMN-13902,
+      changing uv.lock sibling dependency metadata plus the runner image identity lock regenerated after
+      the lock refresh changed shared environment inputs. Dependency/build-lane metadata only; no runtime
+      contract, deploy, restart, image push, or live cluster mutation.
+    source: "manual"
+    status: "verified"
+    checks:
+      - check_type: "command"
+        check_value: "gh pr view 2625 --repo OmniNode-ai/omnibase_infra --json headRefOid,baseRefName
+          --jq '.headRefOid + \" \" + .baseRefName' | grep -cxF 'ea73c883b70da55812f090004badfd325956b075
+          dev' | grep -qx 1"
+      - check_type: "command"
+        check_value: "gh pr view 2625 --repo OmniNode-ai/omnibase_infra --json files --jq '[.files[].path]
+          | sort | join(\",\")' | grep -cxF 'docker/runners/runner-image.lock.json,uv.lock' | grep -qx
+          1"
+  - id: "dod-omniclaude-pr-1973-lock-refresh"
+    description: >-
+      Consuming-PR binding: omniclaude PR #1973 is the sibling-lock-refresh bot output for OMN-13902,
+      changing only uv.lock sibling dependency lock metadata on the bot branch. Lockfile-only dependency
+      refresh; no runtime contract, deploy, restart, image push, or live cluster mutation.
+    source: "manual"
+    status: "verified"
+    checks:
+      - check_type: "command"
+        check_value: "gh pr view 1973 --repo OmniNode-ai/omniclaude --json headRefOid,baseRefName --jq
+          '.headRefOid + \" \" + .baseRefName' | grep -cxF 'fbc9c8af18eb104d93524abe368543ae604f25c8 dev'
+          | grep -qx 1"
+      - check_type: "command"
+        check_value: "gh pr view 1973 --repo OmniNode-ai/omniclaude --json files --jq '.files[].path'
+          | grep -cxF 'uv.lock' | grep -qx 1"
+  - id: "occ-self-bind-pr-5952"
+    description: >-
+      OCC self-binding: onex_change_control PR #5952 carries the OMN-13902 evidence that binds omnibase_infra
+      PR #2625 and omniclaude PR #1973 to the central evidence set.
+    source: "manual"
+    status: "verified"
+    checks:
+      - check_type: "command"
+        check_value: "gh pr view 5952 --repo OmniNode-ai/onex_change_control --json number,state,isDraft,headRefName,files
+          --jq '.number == 5952 and .state == \"OPEN\" and .isDraft == false and .headRefName == \"codex/omn-13902-infra2625-claude1973-occ\"
+          and ([.files[].path] | index(\"contracts/OMN-13902.yaml\") and index(\"drift/dod_receipts/OMN-13902/dod-omnibase-infra-pr-2625-lock-refresh/command.yaml\")
+          and index(\"drift/dod_receipts/OMN-13902/dod-omniclaude-pr-1973-lock-refresh/command.yaml\")
+          and index(\"drift/dod_receipts/OMN-13902/occ-self-bind-pr-5952/command.yaml\"))' | grep -qx
+          true"
+  - id: "occ-self-bind-pr-5954"
+    description: "Binds OMN-13902 to OCC companion PR #5954 (self-bind)."
+    source: "generated"
+    checks:
+      - check_type: "command"
+        check_value: "gh pr view 5954 --repo OmniNode-ai/onex_change_control --json number,state"
+  - id: "occ-self-bind-pr-5955"
+    description: "Binds OMN-13902 to OCC companion PR #5955 (self-bind)."
+    source: "generated"
+    checks:
+      - check_type: "command"
+        check_value: "gh pr view 5955 --repo OmniNode-ai/onex_change_control --json number,state"
+  - id: "dod-omnibase-infra-pr-2767-lock-refresh"
+    description: >-
+      omnibase_infra PR #2767 (chore(deps): refresh omninode sibling locks [bot], branch bot/sibling-lock-refresh-20260817063513)
+      — daily sibling-lock-refresh bot PR touching only uv.lock. Receipt-gate cluster remediation 2026-08-18:
+      bot PRs authored via CROSS_REPO_PAT are not covered by the dependency-bot author exemption (they
+      carry the human PAT owner's GitHub identity, not an allowlisted bot login), so they require the
+      same per-PR evidence binding as any other PR.
+    source: "generated"
+    checks:
+      - check_type: "command"
+        check_value: "gh pr view 2767 --repo OmniNode-ai/omnibase_infra --json number,state,headRefName,files"
+  - id: "dod-omnibase-infra-pr-2779-lock-refresh"
+    description: >-
+      omnibase_infra PR #2779 (chore(deps): refresh omninode sibling locks [bot], branch bot/sibling-lock-refresh-20260818063527)
+      — daily sibling-lock-refresh bot PR touching only uv.lock. Same class as PR #2767 above.
+    source: "generated"
+    checks:
+      - check_type: "command"
+        check_value: "gh pr view 2779 --repo OmniNode-ai/omnibase_infra --json number,state,headRefName,files"
+  - id: "occ-self-bind-pr-6647"
+    description: "Binds OMN-13902 to OCC companion PR #6647 (self-bind)."
+    source: "generated"
+    checks:
+      - check_type: "command"
+        check_value: "gh pr view 6647 --repo OmniNode-ai/onex_change_control --json number,state"
+  - id: "dod-OmniNode-ai-omniclaude-pr-2020"
+    description: "PR #2020 on OmniNode-ai/omniclaude — Evidence-Source autobind."
+    source: "generated"
+    checks:
+      - check_type: "command"
+        check_value: |-
+          gh api repos/OmniNode-ai/omniclaude/contents/uv.lock?ref=76604a03072ee673e7c41ab87489c122f52c435a --jq '.content' | base64 -d | grep -cF 'https://files.pythonhosted.org/packages/de/41/6cbdcf9142d00fe82836fbb51e503e58088575cf7a0fe1dbff6695bf0840/cryptography-50.0.0.tar.gz'
+  - id: "dod-OmniNode-ai-omniclaude-pr-2020-ci"
+    description: "PR #2020 on OmniNode-ai/omniclaude — product diff scope check (OMN-14425)."
+    source: "generated"
+    checks:
+      - check_type: "command"
+        check_value: "gh pr view 2020 --repo OmniNode-ai/omniclaude --json files"
+  - id: "occ-self-bind-pr-6963"
+    description: "OCC companion PR #6963 — self-bind for OMN-13902 (OMN-14650)."
+    source: "generated"
+    checks:
+      - check_type: "command"
+        check_value: "gh pr view 6963 --repo OmniNode-ai/onex_change_control --json number,state"
+  - id: "dod-OmniNode-ai-omniintelligence-pr-835"
+    description: "PR #835 on OmniNode-ai/omniintelligence — Evidence-Source autobind."
+    source: "generated"
+    checks:
+      - check_type: "command"
+        check_value: |-
+          gh api repos/OmniNode-ai/omniintelligence/contents/uv.lock?ref=9545bda2a0c4e597bf38799f483a669a641f247a --jq '.content' | base64 -d | grep -cF 'https://files.pythonhosted.org/packages/de/41/6cbdcf9142d00fe82836fbb51e503e58088575cf7a0fe1dbff6695bf0840/cryptography-50.0.0.tar.gz'
+  - id: "dod-OmniNode-ai-omniintelligence-pr-835-ci"
+    description: "PR #835 on OmniNode-ai/omniintelligence — product diff scope check (OMN-14425)."
+    source: "generated"
+    checks:
+      - check_type: "command"
+        check_value: "gh pr view 835 --repo OmniNode-ai/omniintelligence --json files"
+  - id: "occ-self-bind-pr-6964"
+    description: "OCC companion PR #6964 — self-bind for OMN-13902 (OMN-14650)."
+    source: "generated"
+    checks:
+      - check_type: "command"
+        check_value: "gh pr view 6964 --repo OmniNode-ai/onex_change_control --json number,state"
+  - id: "dod-OmniNode-ai-omniclaude-pr-2024"
+    description: "PR #2024 on OmniNode-ai/omniclaude — Evidence-Source autobind."
+    source: "generated"
+    checks:
+      - check_type: "command"
+        check_value: |-
+          gh api repos/OmniNode-ai/omniclaude/contents/uv.lock?ref=889d5652f1b5c5dc0f79fa4151d543ffd7a4fef1 --jq '.content' | base64 -d | grep -cF 'https://files.pythonhosted.org/packages/af/f6/37a9b7f3b2e3473f36a50ae36da2414eb6ad15040229ec8f947e04ff69e2/omnibase_spi-0.23.2.tar.gz'
+  - id: "dod-OmniNode-ai-omniclaude-pr-2024-ci"
+    description: "PR #2024 on OmniNode-ai/omniclaude — product diff scope check (OMN-14425)."
+    source: "generated"
+    checks:
+      - check_type: "command"
+        check_value: "gh pr view 2024 --repo OmniNode-ai/omniclaude --json files"
+  - id: "occ-self-bind-pr-6965"
+    description: "OCC companion PR #6965 — self-bind for OMN-13902 (OMN-14650)."
+    source: "generated"
+    checks:
+      - check_type: "command"
+        check_value: "gh pr view 6965 --repo OmniNode-ai/onex_change_control --json number,state"
+  - id: "dod-OmniNode-ai-omniintelligence-pr-838"
+    description: "PR #838 on OmniNode-ai/omniintelligence — Evidence-Source autobind."
+    source: "generated"
+    checks:
+      - check_type: "command"
+        check_value: |-
+          gh api repos/OmniNode-ai/omniintelligence/contents/uv.lock?ref=9545bda2a0c4e597bf38799f483a669a641f247a --jq '.content' | base64 -d | grep -cF 'https://files.pythonhosted.org/packages/de/41/6cbdcf9142d00fe82836fbb51e503e58088575cf7a0fe1dbff6695bf0840/cryptography-50.0.0.tar.gz'
+  - id: "dod-OmniNode-ai-omniintelligence-pr-838-ci"
+    description: "PR #838 on OmniNode-ai/omniintelligence — product diff scope check (OMN-14425)."
+    source: "generated"
+    checks:
+      - check_type: "command"
+        check_value: "gh pr view 838 --repo OmniNode-ai/omniintelligence --json files"
+  - id: "occ-self-bind-pr-6966"
+    description: "OCC companion PR #6966 — self-bind for OMN-13902 (OMN-14650)."
+    source: "generated"
+    checks:
+      - check_type: "command"
+        check_value: "gh pr view 6966 --repo OmniNode-ai/onex_change_control --json number,state"
+  - id: "dod-OmniNode-ai-omniclaude-pr-2037"
+    description: "PR #2037 on OmniNode-ai/omniclaude — Evidence-Source autobind."
+    source: "generated"
+    checks:
+      - check_type: "command"
+        check_value: |-
+          gh api repos/OmniNode-ai/omniclaude/contents/uv.lock?ref=facb466181af120f76e318f977bc9e74bf38d58b --jq '.content' | base64 -d | grep -cF 'https://files.pythonhosted.org/packages/52/b2/de9610eea72fb24f54dd5682eeafebf126e9783b492d4216be25b07923ba/omnibase_core-0.46.12.tar.gz'
+  - id: "dod-OmniNode-ai-omniclaude-pr-2473"
+    description: "PR #2473 on OmniNode-ai/omniclaude — Evidence-Source autobind."
+    source: "generated"
+    checks:
+      - check_type: "command"
+        check_value: |-
+          gh api repos/OmniNode-ai/omniclaude/contents/uv.lock?ref=dc5bdb71809e22c780bac99a47737085cb223991 --jq '.content' | base64 -d | grep -cF 'https://github.com/OmniNode-ai/omnimarket.git?rev=b7caffcd037333e82841257f5e0944592114c5cb'
+  - id: "occ-self-bind-pr-13021"
+    description: "OCC companion PR #13021 — self-bind for OMN-13902 (OMN-14650)."
+    source: "generated"
+    checks:
+      - check_type: "command"
+        check_value: "gh pr view 13021 --repo OmniNode-ai/onex_change_control --json number,state"
+  - id: "dod-OmniNode-ai-omniclaude-pr-2473-ci"
+    description: "PR #2473 on OmniNode-ai/omniclaude — product diff scope check (OMN-14425)."
+    source: "generated"
+    checks:
+      - check_type: "command"
+        check_value: "gh pr view 2473 --repo OmniNode-ai/omniclaude --json files"
+  - id: "dod-occ-evidence-admissibility-validator-pr-2473"
+    description: "Hosted OCC evidence admissibility validator (OMN-15247)."
+    source: "generated"
+    checks:
+      - check_type: "command"
+        check_value: "uv run pytest tests/test_evidence_admissibility.py -q"
+        cwd: "${OMNI_HOME}/onex_change_control"
+  - id: "dod-OmniNode-ai-omniclaude-pr-2037-ci"
+    description: "PR #2037 on OmniNode-ai/omniclaude — product diff scope check (OMN-14425)."
+    source: "generated"
+    checks:
+      - check_type: "command"
+        check_value: "gh pr view 2037 --repo OmniNode-ai/omniclaude --json files"
+  - id: "occ-self-bind-pr-7062"
+    description: "OCC companion PR #7062 — self-bind for OMN-13902 (OMN-14650)."
+    source: "generated"
+    checks:
+      - check_type: "command"
+        check_value: "gh pr view 7062 --repo OmniNode-ai/onex_change_control --json number,state"
+  - id: "dod-OmniNode-ai-omniintelligence-pr-842"
+    description: "PR #842 on OmniNode-ai/omniintelligence — Evidence-Source autobind."
+    source: "generated"
+    checks:
+      - check_type: "command"
+        check_value: |-
+          gh api repos/OmniNode-ai/omniintelligence/contents/uv.lock?ref=7a13671355a0caa3aa1f8ddbad8eccece0c6e6f6 --jq '.content' | base64 -d | grep -cF 'https://files.pythonhosted.org/packages/52/b2/de9610eea72fb24f54dd5682eeafebf126e9783b492d4216be25b07923ba/omnibase_core-0.46.12.tar.gz'
+  - id: "dod-OmniNode-ai-omniintelligence-pr-842-ci"
+    description: "PR #842 on OmniNode-ai/omniintelligence — product diff scope check (OMN-14425)."
+    source: "generated"
+    checks:
+      - check_type: "command"
+        check_value: "gh pr view 842 --repo OmniNode-ai/omniintelligence --json files"
+  - id: "occ-self-bind-pr-7063"
+    description: "OCC companion PR #7063 — self-bind for OMN-13902 (OMN-14650)."
+    source: "generated"
+    checks:
+      - check_type: "command"
+        check_value: "gh pr view 7063 --repo OmniNode-ai/onex_change_control --json number,state"
+  - id: "dod-OmniNode-ai-omniintelligence-pr-840"
+    description: >-
+      Consuming-PR binding: omniintelligence PR #840 is a Dependabot actions-group update for OMN-13902,
+      replacing actions/create-github-app-token v1 with the pinned v3.2.0 commit in the CI, release, and
+      sibling-lock-refresh workflows. Workflow dependency-pin update only; no runtime contract, deploy,
+      restart, image push, or live cluster mutation.
+    source: "generated"
+    checks:
+      - check_type: "command"
+        check_value: |-
+          for p in .github/workflows/ci.yml .github/workflows/release.yml .github/workflows/sibling-lock-refresh.yml; do gh api "repos/OmniNode-ai/omniintelligence/contents/$p?ref=293ff65d1c6df33ac2c8604519b25940e7085a9a" --jq '.content' | base64 -d | grep -cF 'actions/create-github-app-token@bcd2ba49218906704ab6c1aa796996da409d3eb1 # v3.2.0'; done
+  - id: "dod-OmniNode-ai-omniintelligence-pr-840-ci"
+    description: "PR #840 on OmniNode-ai/omniintelligence — product diff scope check (OMN-14425)."
+    source: "generated"
+    checks:
+      - check_type: "command"
+        check_value: "gh pr view 840 --repo OmniNode-ai/omniintelligence --json files"
+  - id: "occ-self-bind-pr-7069"
+    description: "OCC companion PR #7069 — self-bind for OMN-13902 (OMN-14650)."
+    source: "generated"
+    checks:
+      - check_type: "command"
+        check_value: "gh pr view 7069 --repo OmniNode-ai/onex_change_control --json number,state"
+  - id: "occ-self-bind-pr-11720"
+    description: "OCC companion PR #11720 — self-bind for OMN-13902 (OMN-14650)."
+    source: "generated"
+    checks:
+      - check_type: "command"
+        check_value: "gh pr view 11720 --repo OmniNode-ai/onex_change_control --json number,state"
+  - id: "dod-OmniNode-ai-omniclaude-pr-2039"
+    description: "PR #2039 on OmniNode-ai/omniclaude — Evidence-Source autobind."
+    source: "generated"
+    checks:
+      - check_type: "command"
+        check_value: |-
+          gh api repos/OmniNode-ai/omniclaude/contents/uv.lock?ref=04d0046812ed45f4b21cb3799e5ddfb3fbf8f138 --jq '.content' | base64 -d | grep -cF 'https://files.pythonhosted.org/packages/52/b2/de9610eea72fb24f54dd5682eeafebf126e9783b492d4216be25b07923ba/omnibase_core-0.46.12.tar.gz'
+  - id: "dod-OmniNode-ai-omniclaude-pr-2039-ci"
+    description: "PR #2039 on OmniNode-ai/omniclaude — product diff scope check (OMN-14425)."
+    source: "generated"
+    checks:
+      - check_type: "command"
+        check_value: "gh pr view 2039 --repo OmniNode-ai/omniclaude --json files"
+  - id: "occ-self-bind-pr-7079"
+    description: "OCC companion PR #7079 — self-bind for OMN-13902 (OMN-14650)."
+    source: "generated"
+    checks:
+      - check_type: "command"
+        check_value: "gh pr view 7079 --repo OmniNode-ai/onex_change_control --json number,state"
+  - id: "dod-OmniNode-ai-omnimemory-pr-444"
+    description: "PR #444 on OmniNode-ai/omnimemory — Evidence-Source autobind."
+    source: "generated"
+    checks:
+      - check_type: "command"
+        check_value: |-
+          gh api repos/OmniNode-ai/omnimemory/contents/uv.lock?ref=3fc1ffdf28f000886da140837f0fb014c6cafd6b --jq '.content' | base64 -d | grep -cF 'https://files.pythonhosted.org/packages/2e/ea/35107c3afc238835f6feb75d759e652893add85950f5905a084c957c766c/omnibase_infra-0.38.10.tar.gz'
+  - id: "dod-OmniNode-ai-omnimemory-pr-444-ci"
+    description: "PR #444 on OmniNode-ai/omnimemory — product diff scope check (OMN-14425)."
+    source: "generated"
+    checks:
+      - check_type: "command"
+        check_value: "gh pr view 444 --repo OmniNode-ai/omnimemory --json files"
+  - id: "occ-self-bind-pr-7154"
+    description: "OCC companion PR #7154 — self-bind for OMN-13902 (OMN-14650)."
+    source: "generated"
+    checks:
+      - check_type: "command"
+        check_value: "gh pr view 7154 --repo OmniNode-ai/onex_change_control --json number,state"
+  - id: "dod-OmniNode-ai-omniintelligence-pr-847"
+    description: "PR #847 on OmniNode-ai/omniintelligence — Evidence-Source autobind."
+    source: "generated"
+    checks:
+      - check_type: "command"
+        check_value: |-
+          gh api repos/OmniNode-ai/omniintelligence/contents/uv.lock?ref=cad116d79ee743a272fcffda90f9121ff2835ef0 --jq '.content' | base64 -d | grep -cF 'https://files.pythonhosted.org/packages/2e/ea/35107c3afc238835f6feb75d759e652893add85950f5905a084c957c766c/omnibase_infra-0.38.10.tar.gz'
+  - id: "dod-OmniNode-ai-omniintelligence-pr-847-ci"
+    description: "PR #847 on OmniNode-ai/omniintelligence — product diff scope check (OMN-14425)."
+    source: "generated"
+    checks:
+      - check_type: "command"
+        check_value: "gh pr view 847 --repo OmniNode-ai/omniintelligence --json files"
+  - id: "occ-self-bind-pr-7155"
+    description: "OCC companion PR #7155 — self-bind for OMN-13902 (OMN-14650)."
+    source: "generated"
+    checks:
+      - check_type: "command"
+        check_value: "gh pr view 7155 --repo OmniNode-ai/onex_change_control --json number,state"
+  - id: "dod-OmniNode-ai-omniintelligence-pr-855"
+    description: "PR #855 on OmniNode-ai/omniintelligence — Evidence-Source autobind."
+    source: "generated"
+    checks:
+      - check_type: "command"
+        check_value: |-
+          gh api repos/OmniNode-ai/omniintelligence/contents/uv.lock?ref=ddf0dae631e5485173ccb51dade5f00fc6ffccbf --jq '.content' | base64 -d | grep -cF 'https://files.pythonhosted.org/packages/2e/ea/35107c3afc238835f6feb75d759e652893add85950f5905a084c957c766c/omnibase_infra-0.38.10.tar.gz'
+  - id: "dod-OmniNode-ai-omniintelligence-pr-855-ci"
+    description: "PR #855 on OmniNode-ai/omniintelligence — product diff scope check (OMN-14425)."
+    source: "generated"
+    checks:
+      - check_type: "command"
+        check_value: "gh pr view 855 --repo OmniNode-ai/omniintelligence --json files"
+  - id: "occ-self-bind-pr-7275"
+    description: "OCC companion PR #7275 — self-bind for OMN-13902 (OMN-14650)."
+    source: "generated"
+    checks:
+      - check_type: "command"
+        check_value: "gh pr view 7275 --repo OmniNode-ai/onex_change_control --json number,state"
+  - id: "dod-OmniNode-ai-omnibase_core-pr-1605"
+    description: >-
+      PR #1605 on OmniNode-ai/omnibase_core fixes the receipt-gate workflow so downstream PRs pass the
+      actual PR commit SHAs into central receipt verification instead of evaluating zero commits. Workflow/test-only
+      repair; no runtime contract, deploy, restart, image push, or live cluster mutation.
+    source: "generated"
+    checks:
+      - check_type: "command"
+        check_value: "gh pr view 1605 --repo OmniNode-ai/omnibase_core --json number,headRefOid,headRefName,baseRefName,title,files"
+  - id: "dod-OmniNode-ai-omnibase_core-pr-1605-ci"
+    description: "PR #1605 on OmniNode-ai/omnibase_core — product diff scope check (OMN-14425)."
+    source: "generated"
+    checks:
+      - check_type: "command"
+        check_value: "gh pr view 1605 --repo OmniNode-ai/omnibase_core --json files"
+  - id: "occ-self-bind-pr-7321"
+    description: "OCC companion PR #7321 — self-bind for OMN-13902 (OMN-14650)."
+    source: "generated"
+    checks:
+      - check_type: "command"
+        check_value: "gh pr view 7321 --repo OmniNode-ai/onex_change_control --json number,state"
+  - id: "occ-self-bind-pr-12876"
+    description: "OCC companion PR #12876 — self-bind for OMN-13902 (OMN-14650)."
+    source: "generated"
+    checks:
+      - check_type: "command"
+        check_value: "gh pr view 12876 --repo OmniNode-ai/onex_change_control --json number,state"
+  - id: "dod-OmniNode-ai-omniintelligence-pr-858"
+    description: "PR #858 on OmniNode-ai/omniintelligence — Evidence-Source autobind."
+    source: "generated"
+    checks:
+      - check_type: "command"
+        check_value: |-
+          gh api repos/OmniNode-ai/omniintelligence/contents/uv.lock?ref=6f0c5cf94dae3355bc0cc407003cac6d8a8a23a9 --jq '.content' | base64 -d | grep -cF 'https://files.pythonhosted.org/packages/2e/ea/35107c3afc238835f6feb75d759e652893add85950f5905a084c957c766c/omnibase_infra-0.38.10.tar.gz'
+  - id: "dod-OmniNode-ai-omniintelligence-pr-858-ci"
+    description: "PR #858 on OmniNode-ai/omniintelligence — product diff scope check (OMN-14425)."
+    source: "generated"
+    checks:
+      - check_type: "command"
+        check_value: "gh pr view 858 --repo OmniNode-ai/omniintelligence --json files"
+  - id: "occ-self-bind-pr-7373"
+    description: "OCC companion PR #7373 — self-bind for OMN-13902 (OMN-14650)."
+    source: "generated"
+    checks:
+      - check_type: "command"
+        check_value: "gh pr view 7373 --repo OmniNode-ai/onex_change_control --json number,state"
+  - id: "dod-OmniNode-ai-omniintelligence-pr-859"
+    description: "PR #859 on OmniNode-ai/omniintelligence — Evidence-Source autobind."
+    source: "generated"
+    checks:
+      - check_type: "command"
+        check_value: |-
+          gh api repos/OmniNode-ai/omniintelligence/contents/uv.lock?ref=74d9a6b1845dae7efeec931b9ec14dbf65c52b42 --jq '.content' | base64 -d | grep -cF 'https://files.pythonhosted.org/packages/41/91/0c2657164ac78a3297c219d9eecf22dc8c2a32d3330b1b4294cfa0163d8c/omnibase_infra-0.38.11.tar.gz'
+  - id: "dod-OmniNode-ai-omniintelligence-pr-859-ci"
+    description: "PR #859 on OmniNode-ai/omniintelligence — product diff scope check (OMN-14425)."
+    source: "generated"
+    checks:
+      - check_type: "command"
+        check_value: "gh pr view 859 --repo OmniNode-ai/omniintelligence --json files"
+  - id: "occ-self-bind-pr-7374"
+    description: "OCC companion PR #7374 — self-bind for OMN-13902 (OMN-14650)."
+    source: "generated"
+    checks:
+      - check_type: "command"
+        check_value: |-
+          gh pr view 7374 --repo OmniNode-ai/onex_change_control --json number,state,headRefName,files --jq 'def hasfile($path): any(.files[]; .path == $path); if .number == 7374 and .state == "OPEN" and .headRefName == "jonah/omn-13902-omniintelligence-859-infra-bump" and hasfile("contracts/OMN-13902.yaml") and hasfile("drift/dod_receipts/OMN-13902/dod-OmniNode-ai-omniintelligence-pr-859/command.yaml") and hasfile("drift/dod_receipts/OMN-13902/dod-OmniNode-ai-omniintelligence-pr-859-ci/command.yaml") and hasfile("drift/dod_receipts/OMN-13902/occ-self-bind-pr-7374/command.yaml") then "PASS: OCC self-bind for OMN-13902 (OCC#7374)." else error("OCC#7374 self-bind evidence mismatch") end'
+  - id: "dod-OmniNode-ai-omniintelligence-pr-860"
+    description: "PR #860 on OmniNode-ai/omniintelligence — Evidence-Source autobind."
+    source: "generated"
+    checks:
+      - check_type: "command"
+        check_value: |-
+          gh api repos/OmniNode-ai/omniintelligence/contents/uv.lock?ref=74d9a6b1845dae7efeec931b9ec14dbf65c52b42 --jq '.content' | base64 -d | grep -cF 'https://files.pythonhosted.org/packages/41/91/0c2657164ac78a3297c219d9eecf22dc8c2a32d3330b1b4294cfa0163d8c/omnibase_infra-0.38.11.tar.gz'
+  - id: "dod-OmniNode-ai-omniintelligence-pr-860-ci"
+    description: "PR #860 on OmniNode-ai/omniintelligence — product diff scope check (OMN-14425)."
+    source: "generated"
+    checks:
+      - check_type: "command"
+        check_value: "gh pr view 860 --repo OmniNode-ai/omniintelligence --json files"
+  - id: "occ-self-bind-pr-12218"
+    description: "OCC companion PR #12218 — self-bind for OMN-13902 (OMN-14650)."
+    source: "generated"
+    checks:
+      - check_type: "command"
+        check_value: "gh pr view 12218 --repo OmniNode-ai/onex_change_control --json number,state"
+  - id: "occ-self-bind-pr-7380"
+    description: "OCC companion PR #7380 — self-bind for OMN-13902 (OMN-14650)."
+    source: "generated"
+    checks:
+      - check_type: "command"
+        check_value: "gh pr view 7380 --repo OmniNode-ai/onex_change_control --json number,state"
+  - id: "dod-OmniNode-ai-omnimemory-pr-455"
+    description: "PR #455 on OmniNode-ai/omnimemory — Evidence-Source autobind."
+    source: "generated"
+    checks:
+      - check_type: "command"
+        check_value: |-
+          gh api repos/OmniNode-ai/omnimemory/contents/uv.lock?ref=3ce4d656fde952997187f068ff5bae19b0c98f55 --jq '.content' | base64 -d | grep -cF 'https://files.pythonhosted.org/packages/41/91/0c2657164ac78a3297c219d9eecf22dc8c2a32d3330b1b4294cfa0163d8c/omnibase_infra-0.38.11.tar.gz'
+  - id: "dod-OmniNode-ai-omnimemory-pr-455-ci"
+    description: "PR #455 on OmniNode-ai/omnimemory — product diff scope check (OMN-14425)."
+    source: "generated"
+    checks:
+      - check_type: "command"
+        check_value: "gh pr view 455 --repo OmniNode-ai/omnimemory --json files"
+  - id: "occ-self-bind-pr-7388"
+    description: "OCC companion PR #7388 — self-bind for OMN-13902 (OMN-14650)."
+    source: "generated"
+    checks:
+      - check_type: "command"
+        check_value: "gh pr view 7388 --repo OmniNode-ai/onex_change_control --json number,state"
+  - id: "dod-OmniNode-ai-omnimemory-pr-456"
+    description: "PR #456 on OmniNode-ai/omnimemory — Evidence-Source autobind."
+    source: "generated"
+    checks:
+      - check_type: "command"
+        check_value: |-
+          gh api repos/OmniNode-ai/omnimemory/contents/uv.lock?ref=877f4a14906eb06438d84330df80d42b167a4c49 --jq '.content' | base64 -d | grep -cF 'https://files.pythonhosted.org/packages/41/91/0c2657164ac78a3297c219d9eecf22dc8c2a32d3330b1b4294cfa0163d8c/omnibase_infra-0.38.11.tar.gz'
+  - id: "dod-OmniNode-ai-omniclaude-pr-2413"
+    description: "PR #2413 on OmniNode-ai/omniclaude — Evidence-Source autobind."
+    source: "generated"
+    checks:
+      - check_type: "command"
+        check_value: |-
+          gh api repos/OmniNode-ai/omniclaude/contents/uv.lock?ref=608e79d2c6cc4b31c43824e29cd6735986346f7c --jq '.content' | base64 -d | grep -cF 'https://github.com/OmniNode-ai/omnimarket.git?rev=fbc9b1ad39f66341edbcb07452f03bdb70b3dfb9'
+  - id: "dod-OmniNode-ai-omniclaude-pr-2413-ci"
+    description: "PR #2413 on OmniNode-ai/omniclaude — product diff scope check (OMN-14425)."
+    source: "generated"
+    checks:
+      - check_type: "command"
+        check_value: "gh pr view 2413 --repo OmniNode-ai/omniclaude --json files"
+  - id: "dod-occ-evidence-admissibility-validator-pr-2413"
+    description: "Hosted OCC evidence admissibility validator (OMN-15247)."
+    source: "generated"
+    checks:
+      - check_type: "command"
+        check_value: "uv run pytest tests/test_evidence_admissibility.py -q"
+  - id: "dod-OmniNode-ai-omnimemory-pr-456-ci"
+    description: "PR #456 on OmniNode-ai/omnimemory — product diff scope check (OMN-14425)."
+    source: "generated"
+    checks:
+      - check_type: "command"
+        check_value: "gh pr view 456 --repo OmniNode-ai/omnimemory --json files"
+  - id: "occ-self-bind-pr-7394"
+    description: "OCC companion PR #7394 — self-bind for OMN-13902 (OMN-14650)."
+    source: "generated"
+    checks:
+      - check_type: "command"
+        check_value: "gh pr view 7394 --repo OmniNode-ai/onex_change_control --json number,state"
+  - id: "dod-OmniNode-ai-omniclaude-pr-2077"
+    description: "PR #2077 on OmniNode-ai/omniclaude — Evidence-Source autobind."
+    source: "generated"
+    checks:
+      - check_type: "command"
+        check_value: |-
+          gh api repos/OmniNode-ai/omniclaude/contents/uv.lock?ref=1d05e12209ab82ed0a72f1fbbfc7794418f85a27 --jq '.content' | base64 -d | grep -cF 'https://files.pythonhosted.org/packages/4b/e9/7d82fcdff342ea590898d843257236ce1d2cae8e25c9f160429d80316d2d/omnibase_core-0.47.1.tar.gz'
+  - id: "dod-OmniNode-ai-omniclaude-pr-2519"
+    description: "PR #2519 on OmniNode-ai/omniclaude — Evidence-Source autobind."
+    source: "generated"
+    checks:
+      - check_type: "command"
+        check_value: |-
+          gh api repos/OmniNode-ai/omniclaude/contents/uv.lock?ref=bbc4b0f32eca0ded6bca435559b143dae576320b --jq '.content' | base64 -d | grep -cF 'https://github.com/OmniNode-ai/omnimarket.git?rev=0c3748bb3c194ebe386cd9576b2c152bf6eab8c5'
+  - id: "dod-OmniNode-ai-omniclaude-pr-2519-ci"
+    description: "PR #2519 on OmniNode-ai/omniclaude — product diff scope check (OMN-14425)."
+    source: "generated"
+    checks:
+      - check_type: "command"
+        check_value: "gh pr view 2519 --repo OmniNode-ai/omniclaude --json files"
+  - id: "dod-occ-evidence-admissibility-validator-pr-2519"
+    description: "Hosted OCC evidence admissibility validator (OMN-15247)."
+    source: "generated"
+    checks:
+      - check_type: "command"
+        check_value: "uv run pytest tests/test_evidence_admissibility.py -q"
+        cwd: "${OMNI_HOME}/onex_change_control"
+  - id: "dod-OmniNode-ai-omniclaude-pr-2077-ci"
+    description: "PR #2077 on OmniNode-ai/omniclaude — product diff scope check (OMN-14425)."
+    source: "generated"
+    checks:
+      - check_type: "command"
+        check_value: "gh pr view 2077 --repo OmniNode-ai/omniclaude --json files"
+  - id: "occ-self-bind-pr-7644"
+    description: "OCC companion PR #7644 — self-bind for OMN-13902 (OMN-14650)."
+    source: "generated"
+    checks:
+      - check_type: "command"
+        check_value: "gh pr view 7644 --repo OmniNode-ai/onex_change_control --json number,state"
+  - id: "dod-OmniNode-ai-omniintelligence-pr-870"
+    description: "PR #870 on OmniNode-ai/omniintelligence — Evidence-Source autobind."
+    source: "generated"
+    checks:
+      - check_type: "command"
+        check_value: |-
+          gh api repos/OmniNode-ai/omniintelligence/contents/uv.lock?ref=240784287e27622bd9cf65b4935f8a1115f92615 --jq '.content' | base64 -d | grep -cF 'https://files.pythonhosted.org/packages/4b/e9/7d82fcdff342ea590898d843257236ce1d2cae8e25c9f160429d80316d2d/omnibase_core-0.47.1.tar.gz'
+  - id: "dod-OmniNode-ai-omniintelligence-pr-870-ci"
+    description: "PR #870 on OmniNode-ai/omniintelligence — product diff scope check (OMN-14425)."
+    source: "generated"
+    checks:
+      - check_type: "command"
+        check_value: "gh pr view 870 --repo OmniNode-ai/omniintelligence --json files"
+  - id: "dod-OmniNode-ai-omniclaude-pr-2430"
+    description: "PR #2430 on OmniNode-ai/omniclaude — Evidence-Source autobind."
+    source: "generated"
+    checks:
+      - check_type: "command"
+        check_value: |-
+          gh api repos/OmniNode-ai/omniclaude/contents/uv.lock?ref=4efb4f68617dc50255552d8a0744995d6bc55379 --jq '.content' | base64 -d | grep -cF 'https://github.com/OmniNode-ai/omnimarket.git?rev=532ec1f538348ec510b4e6bcf39ca71846598d71'
+  - id: "dod-OmniNode-ai-omniclaude-pr-2430-ci"
+    description: "PR #2430 on OmniNode-ai/omniclaude — product diff scope check (OMN-14425)."
+    source: "generated"
+    checks:
+      - check_type: "command"
+        check_value: "gh pr view 2430 --repo OmniNode-ai/omniclaude --json files"
+  - id: "occ-self-bind-pr-12289"
+    description: "OCC companion PR #12289 — self-bind for OMN-13902 (OMN-14650)."
+    source: "generated"
+    checks:
+      - check_type: "command"
+        check_value: "gh pr view 12289 --repo OmniNode-ai/onex_change_control --json number,state"
+  - id: "dod-occ-evidence-admissibility-validator-pr-2430"
+    description: "Hosted OCC evidence admissibility validator (OMN-15247)."
+    source: "generated"
+    checks:
+      - check_type: "command"
+        check_value: "uv run pytest tests/test_evidence_admissibility.py -q"
+  - id: "occ-self-bind-pr-7643"
+    description: "OCC companion PR #7643 — self-bind for OMN-13902 (OMN-14650)."
+    source: "generated"
+    checks:
+      - check_type: "command"
+        check_value: "gh pr view 7643 --repo OmniNode-ai/onex_change_control --json number,state"
+  - id: "dod-OmniNode-ai-omnimemory-pr-463"
+    description: "PR #463 on OmniNode-ai/omnimemory — Evidence-Source autobind."
+    source: "generated"
+    checks:
+      - check_type: "command"
+        check_value: |-
+          gh api repos/OmniNode-ai/omnimemory/contents/uv.lock?ref=9f807d1c431a3c3ea80ccf707ea7aebc7a2f8bb6 --jq '.content' | base64 -d | grep -cF 'https://files.pythonhosted.org/packages/4b/e9/7d82fcdff342ea590898d843257236ce1d2cae8e25c9f160429d80316d2d/omnibase_core-0.47.1.tar.gz'
+  - id: "dod-OmniNode-ai-omnimemory-pr-463-ci"
+    description: "PR #463 on OmniNode-ai/omnimemory — product diff scope check (OMN-14425)."
+    source: "generated"
+    checks:
+      - check_type: "command"
+        check_value: "gh pr view 463 --repo OmniNode-ai/omnimemory --json files"
+  - id: "occ-self-bind-pr-7642"
+    description: "OCC companion PR #7642 — self-bind for OMN-13902 (OMN-14650)."
+    source: "generated"
+    checks:
+      - check_type: "command"
+        check_value: "gh pr view 7642 --repo OmniNode-ai/onex_change_control --json number,state"
+  - id: "dod-OmniNode-ai-omnibase_core-pr-1622"
+    description: >-
+      PR #1622 on OmniNode-ai/omnibase_core repairs the reusable receipt-gate workflow so the PR commit
+      text snapshot is passed into validator_receipt_gate_cli. This lets a bot-created sibling-lock PR
+      bind a later manual Evidence-Ticket through a ticket-bearing commit message when the original branch
+      name predates the ticket. Workflow/test-only repair; no runtime contract, deploy, restart, image
+      push, or live cluster mutation.
+    source: "generated"
+    checks:
+      - check_type: "command"
+        check_value: "gh pr view 1622 --repo OmniNode-ai/omnibase_core --json number,headRefOid,headRefName,baseRefName,title,files"
+  - id: "dod-OmniNode-ai-omniclaude-pr-2556"
+    description: "PR #2556 on OmniNode-ai/omniclaude — Evidence-Source autobind."
+    source: "generated"
+    checks:
+      - check_type: "command"
+        check_value: |-
+          gh api repos/OmniNode-ai/omniclaude/contents/uv.lock?ref=ebc7e49191c64eacfa6deffc150bfa39eb220a4a --jq '.content' | base64 -d | grep -cF 'https://github.com/OmniNode-ai/omnimarket.git?rev=7ce728c23cec3c2415dbc86b441b2d2140a2e218'
+  - id: "dod-OmniNode-ai-omniclaude-pr-2556-ci"
+    description: "PR #2556 on OmniNode-ai/omniclaude — product diff scope check (OMN-14425)."
+    source: "generated"
+    checks:
+      - check_type: "command"
+        check_value: "gh pr view 2556 --repo OmniNode-ai/omniclaude --json files"
+  - id: "dod-occ-evidence-admissibility-validator-pr-2556"
+    description: "Hosted OCC evidence admissibility validator (OMN-15247)."
+    source: "generated"
+    checks:
+      - check_type: "command"
+        check_value: "uv run pytest tests/test_evidence_admissibility.py -q"
+        cwd: "${OMNI_HOME}/onex_change_control"
+  - id: "dod-OmniNode-ai-omnibase_core-pr-1622-ci"
+    description: "PR #1622 on OmniNode-ai/omnibase_core — product diff scope check (OMN-14425)."
+    source: "generated"
+    checks:
+      - check_type: "command"
+        check_value: "gh pr view 1622 --repo OmniNode-ai/omnibase_core --json files"
+  - id: "occ-self-bind-pr-7650"
+    description: >-
+      OCC self-binding receipt for PR #7650, the in-repo evidence PR carrying the OMN-13902 contract append
+      for OmniNode-ai/omnibase_core#1622. Binds OMN-13902 to the OCC PR by pr_number so eligibility can
+      resolve a PASS receipt for the evidence PR itself.
+    source: "generated"
+    checks:
+      - check_type: "command"
+        check_value: "gh pr view 7650 --repo OmniNode-ai/onex_change_control --json number,state,headRefName"
+  - id: "dod-OmniNode-ai-omniclaude-pr-2091"
+    description: "PR #2091 on OmniNode-ai/omniclaude — Evidence-Source autobind."
+    source: "generated"
+    checks:
+      - check_type: "command"
+        check_value: |-
+          gh api repos/OmniNode-ai/omniclaude/contents/uv.lock?ref=7d0d0670a5c4e7674bcf6f24e6ba77609ef4be30 --jq '.content' | base64 -d | grep -cF 'https://files.pythonhosted.org/packages/00/25/d5c188306604293fe76078ff6db0cb42ff1029403d2f3d23ed9bc4d91788/omnibase_infra-0.38.15.tar.gz'
+  - id: "dod-OmniNode-ai-omniclaude-pr-2444"
+    description: "PR #2444 on OmniNode-ai/omniclaude — Evidence-Source autobind."
+    source: "generated"
+    checks:
+      - check_type: "command"
+        check_value: |-
+          gh api repos/OmniNode-ai/omniclaude/contents/uv.lock?ref=a894c362f41d4887cb959585d0e44551f2fa6cc5 --jq '.content' | base64 -d | grep -cF 'https://github.com/OmniNode-ai/omnimarket.git?rev=3668f7dd1e28deca71fbb0abfbad1956a401ab3e'
+  - id: "dod-OmniNode-ai-omniclaude-pr-2444-ci"
+    description: "PR #2444 on OmniNode-ai/omniclaude — product diff scope check (OMN-14425)."
+    source: "generated"
+    checks:
+      - check_type: "command"
+        check_value: "gh pr view 2444 --repo OmniNode-ai/omniclaude --json files"
+  - id: "dod-occ-evidence-admissibility-validator-pr-2444"
+    description: "Hosted OCC evidence admissibility validator (OMN-15247)."
+    source: "generated"
+    checks:
+      - check_type: "command"
+        check_value: "uv run pytest tests/test_evidence_admissibility.py -q"
+  - id: "dod-OmniNode-ai-omniclaude-pr-2091-ci"
+    description: "PR #2091 on OmniNode-ai/omniclaude — product diff scope check (OMN-14425)."
+    source: "generated"
+    checks:
+      - check_type: "command"
+        check_value: "gh pr view 2091 --repo OmniNode-ai/omniclaude --json files"
+  - id: "occ-self-bind-pr-12078"
+    description: "OCC companion PR #12078 — self-bind for OMN-13902 (OMN-14650)."
+    source: "generated"
+    checks:
+      - check_type: "command"
+        check_value: "gh pr view 12078 --repo OmniNode-ai/onex_change_control --json number,state"
+  - id: "occ-self-bind-pr-7809"
+    description: "OCC companion PR #7809 — self-bind for OMN-13902 (OMN-14650)."
+    source: "generated"
+    checks:
+      - check_type: "command"
+        check_value: "gh pr view 7809 --repo OmniNode-ai/onex_change_control --json number,state"
+  - id: "dod-OmniNode-ai-omniintelligence-pr-873"
+    description: "PR #873 on OmniNode-ai/omniintelligence — Evidence-Source autobind."
+    source: "generated"
+    checks:
+      - check_type: "command"
+        check_value: |-
+          gh api repos/OmniNode-ai/omniintelligence/contents/uv.lock?ref=31a68971b34de16c921c2f15420ec248f6abdda9 --jq '.content' | base64 -d | grep -cF 'https://files.pythonhosted.org/packages/00/25/d5c188306604293fe76078ff6db0cb42ff1029403d2f3d23ed9bc4d91788/omnibase_infra-0.38.15.tar.gz'
+  - id: "dod-OmniNode-ai-omniintelligence-pr-873-ci"
+    description: "PR #873 on OmniNode-ai/omniintelligence — product diff scope check (OMN-14425)."
+    source: "generated"
+    checks:
+      - check_type: "command"
+        check_value: "gh pr view 873 --repo OmniNode-ai/omniintelligence --json files"
+  - id: "occ-self-bind-pr-7810"
+    description: "OCC companion PR #7810 — self-bind for OMN-13902 (OMN-14650)."
+    source: "generated"
+    checks:
+      - check_type: "command"
+        check_value: "gh pr view 7810 --repo OmniNode-ai/onex_change_control --json number,state"
+  - id: "dod-omniclaude-2091-registry-sync"
+    description: >-
+      PR #2091 on OmniNode-ai/omniclaude at head acf8693c9725473311832b2fefa07ae2ebfbd850 syncs the hook
+      emit wrapper with the work.obligation event family emitted by current omnimarket daemon registries.
+      Content-bound proof checks that the final head contains supported work.obligation entries and the
+      pre-wrapper-sync head does not.
+    source: "generated"
+    checks:
+      - check_type: "command"
+        check_value: |-
+          gh api 'repos/OmniNode-ai/omniclaude/contents/plugins/onex/hooks/lib/emit_client_wrapper.py?ref=acf8693c9725473311832b2fefa07ae2ebfbd850' --jq '.content' | base64 -d | grep -cF 'work.obligation.'
+  - id: "occ-self-bind-pr-12513"
+    description: "OCC companion PR #12513 — self-bind for OMN-13902 (OMN-14650)."
+    source: "generated"
+    checks:
+      - check_type: "command"
+        check_value: "gh pr view 12513 --repo OmniNode-ai/onex_change_control --json number,state"
+  - id: "dod-omniclaude-2091-allowlist"
+    description: >-
+      PR #2091 on OmniNode-ai/omniclaude at head acf8693c9725473311832b2fefa07ae2ebfbd850 governs the
+      newly registered work-obligation hook topics in src/omniclaude/hooks/topic_allowlist.yaml. Content-bound
+      proof checks that the final head contains the five work-obligation allowlist entries and the prior
+      registry-sync head does not.
+    source: "generated"
+    checks:
+      - check_type: "command"
+        check_value: |-
+          gh api 'repos/OmniNode-ai/omniclaude/contents/src/omniclaude/hooks/topic_allowlist.yaml?ref=acf8693c9725473311832b2fefa07ae2ebfbd850' --jq '.content' | base64 -d | grep -cF 'work-obligation'
+  - id: "dod-omniclaude-2091-files"
+    description: "PR #2091 on OmniNode-ai/omniclaude — refreshed product diff scope check for registry-sync
+      and topic-allowlist head (OMN-14425)."
+    source: "generated"
+    checks:
+      - check_type: "command"
+        check_value: "gh pr view 2091 --repo OmniNode-ai/omniclaude --json files"
+  - id: "occ-self-bind-pr-7814"
+    description: >-
+      OCC companion PR #7814 self-binds the OMN-13902 contract append carrying refreshed evidence for
+      OmniNode-ai/omniclaude#2091 at final registry-sync and topic-allowlist head acf8693c9725473311832b2fefa07ae2ebfbd850.
+    source: "generated"
+    checks:
+      - check_type: "command"
+        check_value: "gh pr view 7814 --repo OmniNode-ai/onex_change_control --json number,state,headRefName"
+  - id: "dod-omniclaude-2092-registry-sync"
+    description: >-
+      Replacement PR #2092 on OmniNode-ai/omniclaude at head acf8693c9725473311832b2fefa07ae2ebfbd850
+      syncs the hook emit wrapper with the work.obligation event family emitted by current omnimarket
+      daemon registries. Content-bound proof checks that the final head contains supported work.obligation
+      entries and the pre-wrapper-sync head does not.
+    source: "generated"
+    checks:
+      - check_type: "command"
+        check_value: |-
+          gh api 'repos/OmniNode-ai/omniclaude/contents/plugins/onex/hooks/lib/emit_client_wrapper.py?ref=acf8693c9725473311832b2fefa07ae2ebfbd850' --jq '.content' | base64 -d | grep -cF 'work.obligation.'
+  - id: "dod-omniclaude-2092-allowlist"
+    description: >-
+      Replacement PR #2092 on OmniNode-ai/omniclaude at head acf8693c9725473311832b2fefa07ae2ebfbd850
+      governs the newly registered work-obligation hook topics in src/omniclaude/hooks/topic_allowlist.yaml.
+      Content-bound proof checks that the final head contains the five work-obligation allowlist entries
+      and the prior registry-sync head does not.
+    source: "generated"
+    checks:
+      - check_type: "command"
+        check_value: |-
+          gh api 'repos/OmniNode-ai/omniclaude/contents/src/omniclaude/hooks/topic_allowlist.yaml?ref=acf8693c9725473311832b2fefa07ae2ebfbd850' --jq '.content' | base64 -d | grep -cF 'work-obligation'
+  - id: "dod-omniclaude-2092-files"
+    description: "Replacement PR #2092 on OmniNode-ai/omniclaude — product diff scope check for registry-sync
+      and topic-allowlist head (OMN-14425)."
+    source: "generated"
+    checks:
+      - check_type: "command"
+        check_value: "gh pr view 2092 --repo OmniNode-ai/omniclaude --json files"
+  - id: "occ-self-bind-pr-7817"
+    description: >-
+      OCC companion PR #7817 self-binds the OMN-13902 contract append carrying evidence for replacement
+      OmniNode-ai/omniclaude#2092 at final registry-sync and topic-allowlist head acf8693c9725473311832b2fefa07ae2ebfbd850.
+    source: "generated"
+    checks:
+      - check_type: "command"
+        check_value: "gh pr view 7817 --repo OmniNode-ai/onex_change_control --json number,state,headRefName"
+  - id: "dod-OmniNode-ai-omniclaude-pr-2101"
+    description: "PR #2101 on OmniNode-ai/omniclaude — Evidence-Source autobind."
+    source: "generated"
+    checks:
+      - check_type: "command"
+        check_value: |-
+          gh api repos/OmniNode-ai/omniclaude/contents/uv.lock?ref=0dcce27c1d58e3f6b58aaf65a419605da6bc5c11 --jq '.content' | base64 -d | grep -cF 'https://files.pythonhosted.org/packages/48/06/6a875f50df7c34515746ce977f6fc85f1e179cb6b3a4bec184659ab9db32/omnibase_core-0.47.2.tar.gz'
+  - id: "dod-OmniNode-ai-omniclaude-pr-2101-ci"
+    description: "PR #2101 on OmniNode-ai/omniclaude — product diff scope check (OMN-14425)."
+    source: "generated"
+    checks:
+      - check_type: "command"
+        check_value: "gh pr view 2101 --repo OmniNode-ai/omniclaude --json files"
+  - id: "occ-self-bind-pr-8048"
+    description: "OCC companion PR #8048 — self-bind for OMN-13902 (OMN-14650)."
+    source: "generated"
+    checks:
+      - check_type: "command"
+        check_value: "gh pr view 8048 --repo OmniNode-ai/onex_change_control --json number,state"
+  - id: "dod-OmniNode-ai-omnimemory-pr-474"
+    description: "PR #474 on OmniNode-ai/omnimemory — Evidence-Source autobind."
+    source: "generated"
+    checks:
+      - check_type: "command"
+        check_value: |-
+          gh api repos/OmniNode-ai/omnimemory/contents/uv.lock?ref=2afccd651035bc608c471652a337d80d03f6b54e --jq '.content' | base64 -d | grep -cF 'https://files.pythonhosted.org/packages/48/06/6a875f50df7c34515746ce977f6fc85f1e179cb6b3a4bec184659ab9db32/omnibase_core-0.47.2.tar.gz'
+  - id: "occ-self-bind-pr-12079"
+    description: "OCC companion PR #12079 — self-bind for OMN-13902 (OMN-14650)."
+    source: "generated"
+    checks:
+      - check_type: "command"
+        check_value: "gh pr view 12079 --repo OmniNode-ai/onex_change_control --json number,state"
+  - id: "dod-OmniNode-ai-omnimemory-pr-474-ci"
+    description: "PR #474 on OmniNode-ai/omnimemory — product diff scope check (OMN-14425)."
+    source: "generated"
+    checks:
+      - check_type: "command"
+        check_value: "gh pr view 474 --repo OmniNode-ai/omnimemory --json files"
+  - id: "occ-self-bind-pr-8047"
+    description: "OCC companion PR #8047 — self-bind for OMN-13902 (OMN-14650)."
+    source: "generated"
+    checks:
+      - check_type: "command"
+        check_value: "gh pr view 8047 --repo OmniNode-ai/onex_change_control --json number,state"
+  - id: "dod-OmniNode-ai-omniintelligence-pr-880"
+    description: "PR #880 on OmniNode-ai/omniintelligence — Evidence-Source autobind."
+    source: "generated"
+    checks:
+      - check_type: "command"
+        check_value: |-
+          gh api repos/OmniNode-ai/omniintelligence/contents/uv.lock?ref=a321909af99b5d3dd6e1f46d2f4c2987ea3c5d90 --jq '.content' | base64 -d | grep -cF 'https://files.pythonhosted.org/packages/48/06/6a875f50df7c34515746ce977f6fc85f1e179cb6b3a4bec184659ab9db32/omnibase_core-0.47.2.tar.gz'
+  - id: "dod-OmniNode-ai-omniintelligence-pr-880-ci"
+    description: "PR #880 on OmniNode-ai/omniintelligence — product diff scope check (OMN-14425)."
+    source: "generated"
+    checks:
+      - check_type: "command"
+        check_value: "gh pr view 880 --repo OmniNode-ai/omniintelligence --json files"
+  - id: "occ-self-bind-pr-8049"
+    description: "OCC companion PR #8049 — self-bind for OMN-13902 (OMN-14650)."
+    source: "generated"
+    checks:
+      - check_type: "command"
+        check_value: "gh pr view 8049 --repo OmniNode-ai/onex_change_control --json number,state"
+  - id: "dod-OmniNode-ai-omnimemory-pr-475"
+    description: "PR #475 on OmniNode-ai/omnimemory — Evidence-Source autobind."
+    source: "generated"
+    checks:
+      - check_type: "command"
+        check_value: |-
+          gh api repos/OmniNode-ai/omnimemory/contents/uv.lock?ref=d191de606612ac160428eaada85d6bd3b2913bd1 --jq '.content' | base64 -d | grep -cF 'https://files.pythonhosted.org/packages/4e/ed/5f8539c5866817cef7e8b5643bc74b2e3b6106b16bf7f8d2e62c819286b9/omnibase_compat-0.5.7.tar.gz'
+  - id: "dod-OmniNode-ai-omnimemory-pr-475-ci"
+    description: "PR #475 on OmniNode-ai/omnimemory — product diff scope check (OMN-14425)."
+    source: "generated"
+    checks:
+      - check_type: "command"
+        check_value: "gh pr view 475 --repo OmniNode-ai/omnimemory --json files"
+  - id: "occ-self-bind-pr-8169"
+    description: "OCC companion PR #8169 — self-bind for OMN-13902 (OMN-14650)."
+    source: "generated"
+    checks:
+      - check_type: "command"
+        check_value: "gh pr view 8169 --repo OmniNode-ai/onex_change_control --json number,state"
+  - id: "dod-OmniNode-ai-omniclaude-pr-2113"
+    description: "PR #2113 on OmniNode-ai/omniclaude — Evidence-Source autobind."
+    source: "generated"
+    checks:
+      - check_type: "command"
+        check_value: |-
+          gh api repos/OmniNode-ai/omniclaude/contents/uv.lock?ref=26682f852118be5d1f9c210beef82e5d6eefc820 --jq '.content' | base64 -d | grep -cF 'https://files.pythonhosted.org/packages/c1/a1/0f146ad359c192b571127776bb6f5174533b7ac6a51470d80a3fde2252de/omnibase_core-0.47.3.tar.gz'
+  - id: "dod-OmniNode-ai-omniclaude-pr-2113-ci"
+    description: "PR #2113 on OmniNode-ai/omniclaude — product diff scope check (OMN-14425)."
+    source: "generated"
+    checks:
+      - check_type: "command"
+        check_value: "gh pr view 2113 --repo OmniNode-ai/omniclaude --json files"
+  - id: "occ-self-bind-pr-8351"
+    description: "OCC companion PR #8351 — self-bind for OMN-13902 (OMN-14650)."
+    source: "generated"
+    checks:
+      - check_type: "command"
+        check_value: "gh pr view 8351 --repo OmniNode-ai/onex_change_control --json number,state"
+  - id: "dod-OmniNode-ai-omniintelligence-pr-883"
+    description: "PR #883 on OmniNode-ai/omniintelligence — Evidence-Source autobind."
+    source: "generated"
+    checks:
+      - check_type: "command"
+        check_value: |-
+          gh api repos/OmniNode-ai/omniintelligence/contents/uv.lock?ref=f6c89e654c2167d555c0e026462448afcb4e10b6 --jq '.content' | base64 -d | grep -cF 'https://files.pythonhosted.org/packages/c1/a1/0f146ad359c192b571127776bb6f5174533b7ac6a51470d80a3fde2252de/omnibase_core-0.47.3.tar.gz'
+  - id: "dod-OmniNode-ai-omniintelligence-pr-883-ci"
+    description: "PR #883 on OmniNode-ai/omniintelligence — product diff scope check (OMN-14425)."
+    source: "generated"
+    checks:
+      - check_type: "command"
+        check_value: "gh pr view 883 --repo OmniNode-ai/omniintelligence --json files"
+  - id: "occ-self-bind-pr-8352"
+    description: "OCC companion PR #8352 — self-bind for OMN-13902 (OMN-14650)."
+    source: "generated"
+    checks:
+      - check_type: "command"
+        check_value: "gh pr view 8352 --repo OmniNode-ai/onex_change_control --json number,state"
+  - id: "dod-OmniNode-ai-omnimemory-pr-476"
+    description: "PR #476 on OmniNode-ai/omnimemory — Evidence-Source autobind."
+    source: "generated"
+    checks:
+      - check_type: "command"
+        check_value: |-
+          gh api repos/OmniNode-ai/omnimemory/contents/uv.lock?ref=13208b219825c87a70488d0ad9eac97101f21e4f --jq '.content' | base64 -d | grep -cF 'https://files.pythonhosted.org/packages/c1/a1/0f146ad359c192b571127776bb6f5174533b7ac6a51470d80a3fde2252de/omnibase_core-0.47.3.tar.gz'
+  - id: "dod-OmniNode-ai-omnimemory-pr-476-ci"
+    description: "PR #476 on OmniNode-ai/omnimemory — product diff scope check (OMN-14425)."
+    source: "generated"
+    checks:
+      - check_type: "command"
+        check_value: "gh pr view 476 --repo OmniNode-ai/omnimemory --json files"
+  - id: "occ-self-bind-pr-8350"
+    description: "OCC companion PR #8350 — self-bind for OMN-13902 (OMN-14650)."
+    source: "generated"
+    checks:
+      - check_type: "command"
+        check_value: "gh pr view 8350 --repo OmniNode-ai/onex_change_control --json number,state"
+  - id: "dod-OmniNode-ai-omniintelligence-pr-886"
+    description: "PR #886 on OmniNode-ai/omniintelligence — Evidence-Source autobind."
+    source: "generated"
+    checks:
+      - check_type: "command"
+        check_value: |-
+          gh api repos/OmniNode-ai/omniintelligence/contents/uv.lock?ref=ef4c3824b76fa90148f0ec9da025a4d2c7c8f68d --jq '.content' | base64 -d | grep -cF 'https://files.pythonhosted.org/packages/2d/5f/e0fe688743fbd2b24e8662d276ae42ad1a2ea78d08850df8d706cce5013d/cramjam-2.12.1.tar.gz'
+  - id: "dod-OmniNode-ai-omniintelligence-pr-886-ci"
+    description: "PR #886 on OmniNode-ai/omniintelligence — product diff scope check (OMN-14425)."
+    source: "generated"
+    checks:
+      - check_type: "command"
+        check_value: "gh pr view 886 --repo OmniNode-ai/omniintelligence --json files"
+  - id: "occ-self-bind-pr-11718"
+    description: "OCC companion PR #11718 — self-bind for OMN-13902 (OMN-14650)."
+    source: "generated"
+    checks:
+      - check_type: "command"
+        check_value: "gh pr view 11718 --repo OmniNode-ai/onex_change_control --json number,state"
+  - id: "occ-self-bind-pr-8564"
+    description: "OCC companion PR #8564 — self-bind for OMN-13902 (OMN-14650)."
+    source: "generated"
+    checks:
+      - check_type: "command"
+        check_value: "gh pr view 8564 --repo OmniNode-ai/onex_change_control --json number,state"
+  - id: "dod-OmniNode-ai-omniclaude-pr-2120"
+    description: "PR #2120 on OmniNode-ai/omniclaude — Evidence-Source autobind."
+    source: "generated"
+    checks:
+      - check_type: "command"
+        check_value: |-
+          gh api repos/OmniNode-ai/omniclaude/contents/uv.lock?ref=36158721d618c3937856abf034a4c6ce51941e82 --jq '.content' | base64 -d | grep -cF 'https://files.pythonhosted.org/packages/2d/5f/e0fe688743fbd2b24e8662d276ae42ad1a2ea78d08850df8d706cce5013d/cramjam-2.12.1.tar.gz'
+  - id: "dod-OmniNode-ai-omniclaude-pr-2120-ci"
+    description: "PR #2120 on OmniNode-ai/omniclaude — product diff scope check (OMN-14425)."
+    source: "generated"
+    checks:
+      - check_type: "command"
+        check_value: "gh pr view 2120 --repo OmniNode-ai/omniclaude --json files"
+  - id: "occ-self-bind-pr-8563"
+    description: "OCC companion PR #8563 — self-bind for OMN-13902 (OMN-14650)."
+    source: "generated"
+    checks:
+      - check_type: "command"
+        check_value: "gh pr view 8563 --repo OmniNode-ai/onex_change_control --json number,state"
+  - id: "dod-OmniNode-ai-omnimemory-pr-480"
+    description: "PR #480 on OmniNode-ai/omnimemory — Evidence-Source autobind."
+    source: "generated"
+    checks:
+      - check_type: "command"
+        check_value: |-
+          gh api repos/OmniNode-ai/omnimemory/contents/uv.lock?ref=cbe9f1840abb1374c6c4fecc020f5d8f4dfd757e --jq '.content' | base64 -d | grep -cF 'https://files.pythonhosted.org/packages/2d/5f/e0fe688743fbd2b24e8662d276ae42ad1a2ea78d08850df8d706cce5013d/cramjam-2.12.1.tar.gz'
+  - id: "dod-OmniNode-ai-omnimemory-pr-480-ci"
+    description: "PR #480 on OmniNode-ai/omnimemory — product diff scope check (OMN-14425)."
+    source: "generated"
+    checks:
+      - check_type: "command"
+        check_value: "gh pr view 480 --repo OmniNode-ai/omnimemory --json files"
+  - id: "occ-self-bind-pr-8562"
+    description: "OCC companion PR #8562 — self-bind for OMN-13902 (OMN-14650)."
+    source: "generated"
+    checks:
+      - check_type: "command"
+        check_value: "gh pr view 8562 --repo OmniNode-ai/onex_change_control --json number,state"
+  - id: "dod-OmniNode-ai-omniclaude-pr-2125"
+    description: "PR #2125 on OmniNode-ai/omniclaude — Evidence-Source autobind."
+    source: "generated"
+    checks:
+      - check_type: "command"
+        check_value: |-
+          gh api repos/OmniNode-ai/omniclaude/contents/uv.lock?ref=afcb122db570d425a67ab6803ec0128581457374 --jq '.content' | base64 -d | grep -cF 'https://files.pythonhosted.org/packages/18/de/c55325504ab02e21123fc0a9b399d95c5181a5c116e53dd1a3c01a791530/omnibase_infra-0.38.21.tar.gz'
+  - id: "dod-OmniNode-ai-omniclaude-pr-2125-ci"
+    description: "PR #2125 on OmniNode-ai/omniclaude — product diff scope check (OMN-14425)."
+    source: "generated"
+    checks:
+      - check_type: "command"
+        check_value: "gh pr view 2125 --repo OmniNode-ai/omniclaude --json files"
+  - id: "occ-self-bind-pr-8642"
+    description: "OCC companion PR #8642 — self-bind for OMN-13902 (OMN-14650)."
+    source: "generated"
+    checks:
+      - check_type: "command"
+        check_value: "gh pr view 8642 --repo OmniNode-ai/onex_change_control --json number,state"
+  - id: "dod-OmniNode-ai-omniintelligence-pr-890"
+    description: "PR #890 on OmniNode-ai/omniintelligence — Evidence-Source autobind."
+    source: "generated"
+    checks:
+      - check_type: "command"
+        check_value: |-
+          gh api repos/OmniNode-ai/omniintelligence/contents/uv.lock?ref=850b213e3f4bc1e065c6685c9f741a28884451c4 --jq '.content' | base64 -d | grep -cF 'https://files.pythonhosted.org/packages/18/de/c55325504ab02e21123fc0a9b399d95c5181a5c116e53dd1a3c01a791530/omnibase_infra-0.38.21.tar.gz'
+  - id: "dod-OmniNode-ai-omniintelligence-pr-890-ci"
+    description: "PR #890 on OmniNode-ai/omniintelligence — product diff scope check (OMN-14425)."
+    source: "generated"
+    checks:
+      - check_type: "command"
+        check_value: "gh pr view 890 --repo OmniNode-ai/omniintelligence --json files"
+  - id: "occ-self-bind-pr-8643"
+    description: "OCC companion PR #8643 — self-bind for OMN-13902 (OMN-14650)."
+    source: "generated"
+    checks:
+      - check_type: "command"
+        check_value: "gh pr view 8643 --repo OmniNode-ai/onex_change_control --json number,state"
+  - id: "dod-OmniNode-ai-omniclaude-pr-2134"
+    description: "PR #2134 on OmniNode-ai/omniclaude — Evidence-Source autobind."
+    source: "generated"
+    checks:
+      - check_type: "command"
+        check_value: |-
+          gh api repos/OmniNode-ai/omniclaude/contents/uv.lock?ref=a96f93365da9cafa7603f63cc564e03ae73a6c43 --jq '.content' | base64 -d | grep -cF 'https://files.pythonhosted.org/packages/c2/9f/d1a73e3e349ca07c573fbc3dbaf2c7e4b0dffb521f819b18f73915c2e657/omnibase_core-0.47.9.tar.gz'
+  - id: "dod-OmniNode-ai-omniclaude-pr-2134-ci"
+    description: "PR #2134 on OmniNode-ai/omniclaude — product diff scope check (OMN-14425)."
+    source: "generated"
+    checks:
+      - check_type: "command"
+        check_value: "gh pr view 2134 --repo OmniNode-ai/omniclaude --json files"
+  - id: "occ-self-bind-pr-9027"
+    description: "OCC companion PR #9027 — self-bind for OMN-13902 (OMN-14650)."
+    source: "generated"
+    checks:
+      - check_type: "command"
+        check_value: "gh pr view 9027 --repo OmniNode-ai/onex_change_control --json number,state"
+  - id: "dod-OmniNode-ai-omnimemory-pr-490"
+    description: "PR #490 on OmniNode-ai/omnimemory — Evidence-Source autobind."
+    source: "generated"
+    checks:
+      - check_type: "command"
+        check_value: |-
+          gh api repos/OmniNode-ai/omnimemory/contents/uv.lock?ref=78a114c5bd7612ac0f93a218d3be512b374fe4b3 --jq '.content' | base64 -d | grep -cF 'https://files.pythonhosted.org/packages/c2/9f/d1a73e3e349ca07c573fbc3dbaf2c7e4b0dffb521f819b18f73915c2e657/omnibase_core-0.47.9.tar.gz'
+  - id: "dod-OmniNode-ai-omnimemory-pr-490-ci"
+    description: "PR #490 on OmniNode-ai/omnimemory — product diff scope check (OMN-14425)."
+    source: "generated"
+    checks:
+      - check_type: "command"
+        check_value: "gh pr view 490 --repo OmniNode-ai/omnimemory --json files"
+  - id: "occ-self-bind-pr-9026"
+    description: "OCC companion PR #9026 — self-bind for OMN-13902 (OMN-14650)."
+    source: "generated"
+    checks:
+      - check_type: "command"
+        check_value: "gh pr view 9026 --repo OmniNode-ai/onex_change_control --json number,state"
+  - id: "dod-OmniNode-ai-omniintelligence-pr-897"
+    description: "PR #897 on OmniNode-ai/omniintelligence — Evidence-Source autobind."
+    source: "generated"
+    checks:
+      - check_type: "command"
+        check_value: |-
+          gh api repos/OmniNode-ai/omniintelligence/contents/uv.lock?ref=ecd5eae6b8f6f7aac752116392ede18fad05bc6a --jq '.content' | base64 -d | grep -cF 'https://files.pythonhosted.org/packages/04/71/41250140db5e8558f2ebc91007dfcad80d3047da1923b000fb1c9a36ee0e/omnibase_core-0.47.12.tar.gz'
+  - id: "dod-OmniNode-ai-omniintelligence-pr-897-ci"
+    description: "PR #897 on OmniNode-ai/omniintelligence — product diff scope check (OMN-14425)."
+    source: "generated"
+    checks:
+      - check_type: "command"
+        check_value: "gh pr view 897 --repo OmniNode-ai/omniintelligence --json files"
+  - id: "dod-OmniNode-ai-omniintelligence-pr-998"
+    description: "PR #998 on OmniNode-ai/omniintelligence — Evidence-Source autobind."
+    source: "generated"
+    checks:
+      - check_type: "command"
+        check_value: |-
+          gh api repos/OmniNode-ai/omniintelligence/contents/uv.lock?ref=1a969d9614e66507797706296473fb4cb90c8b46 --jq '.content' | base64 -d | grep -cF 'https://files.pythonhosted.org/packages/a3/3a/3c8073463e6ceed0d4250fa7639549ce7a2e84457ce44dc847f7e6da04cf/omnimarket-0.4.288.tar.gz'
+  - id: "dod-OmniNode-ai-omniintelligence-pr-998-ci"
+    description: "PR #998 on OmniNode-ai/omniintelligence — product diff scope check (OMN-14425)."
+    source: "generated"
+    checks:
+      - check_type: "command"
+        check_value: "gh pr view 998 --repo OmniNode-ai/omniintelligence --json files"
+  - id: "dod-occ-evidence-admissibility-validator-pr-998"
+    description: "Hosted OCC evidence admissibility validator (OMN-15247)."
+    source: "generated"
+    checks:
+      - check_type: "command"
+        check_value: "uv run pytest tests/test_evidence_admissibility.py -q"
+        cwd: "${OMNI_HOME}/onex_change_control"
+  - id: "dod-OmniNode-ai-omnimemory-pr-496"
+    description: "PR #496 on OmniNode-ai/omnimemory — Evidence-Source autobind."
+    source: "generated"
+    checks:
+      - check_type: "command"
+        check_value: |-
+          gh api repos/OmniNode-ai/omnimemory/contents/uv.lock?ref=3c25d33b3ff7773d364141f18651a7ca42b0f06a --jq '.content' | base64 -d | grep -cF 'https://files.pythonhosted.org/packages/04/71/41250140db5e8558f2ebc91007dfcad80d3047da1923b000fb1c9a36ee0e/omnibase_core-0.47.12.tar.gz'
+  - id: "dod-OmniNode-ai-omniclaude-pr-2443"
+    description: "PR #2443 on OmniNode-ai/omniclaude — Evidence-Source autobind."
+    source: "generated"
+    checks:
+      - check_type: "command"
+        check_value: |-
+          gh api repos/OmniNode-ai/omniclaude/contents/uv.lock?ref=8e498c27f9fb5ae7c7193044c1b6e0125faec1c1 --jq '.content' | base64 -d | grep -cF 'https://github.com/OmniNode-ai/omnimarket.git?rev=ffa1a13594fb19a43589e43b73821982be7e1e54'
+  - id: "dod-OmniNode-ai-omniclaude-pr-2443-ci"
+    description: "PR #2443 on OmniNode-ai/omniclaude — product diff scope check (OMN-14425)."
+    source: "generated"
+    checks:
+      - check_type: "command"
+        check_value: "gh pr view 2443 --repo OmniNode-ai/omniclaude --json files"
+  - id: "dod-occ-evidence-admissibility-validator-pr-2443"
+    description: "Hosted OCC evidence admissibility validator (OMN-15247)."
+    source: "generated"
+    checks:
+      - check_type: "command"
+        check_value: "uv run pytest tests/test_evidence_admissibility.py -q"
+  - id: "dod-OmniNode-ai-omnimemory-pr-552"
+    description: "PR #552 on OmniNode-ai/omnimemory — Evidence-Source autobind."
+    source: "generated"
+    checks:
+      - check_type: "command"
+        check_value: |-
+          gh api repos/OmniNode-ai/omnimemory/contents/uv.lock?ref=b3eba021c03d7125eb2f8df751e0b2bdf4456d17 --jq '.content' | base64 -d | grep -cF 'https://files.pythonhosted.org/packages/ec/c3/e9f4cc3bc48f9d0afee52b1f8e76a1eb8e20c8e9d89770626429194abc01/omnibase_core-0.47.26.tar.gz'
+  - id: "dod-OmniNode-ai-omnimemory-pr-552-ci"
+    description: "PR #552 on OmniNode-ai/omnimemory — product diff scope check (OMN-14425)."
+    source: "generated"
+    checks:
+      - check_type: "command"
+        check_value: "gh pr view 552 --repo OmniNode-ai/omnimemory --json files"
+  - id: "dod-occ-evidence-admissibility-validator-pr-552"
+    description: "Hosted OCC evidence admissibility validator (OMN-15247)."
+    source: "generated"
+    checks:
+      - check_type: "command"
+        check_value: "uv run pytest tests/test_evidence_admissibility.py -q"
+  - id: "dod-OmniNode-ai-omnimemory-pr-496-ci"
+    description: "PR #496 on OmniNode-ai/omnimemory — product diff scope check (OMN-14425)."
+    source: "generated"
+    checks:
+      - check_type: "command"
+        check_value: "gh pr view 496 --repo OmniNode-ai/omnimemory --json files"
+  - id: "dod-OmniNode-ai-omnimemory-pr-499"
+    description: "PR #499 on OmniNode-ai/omnimemory — Evidence-Source autobind."
+    source: "generated"
+    checks:
+      - check_type: "command"
+        check_value: |-
+          gh api repos/OmniNode-ai/omnimemory/contents/uv.lock?ref=1c18965a8fa8131ad162c98e12a13098d56d114e --jq '.content' | base64 -d | grep -cF 'https://files.pythonhosted.org/packages/d0/bc/3c5f808e026e7176dd09a76903a2e55143cd5941b9fbb51986f5102ea2d7/omnibase_core-0.47.13.tar.gz'
+  - id: "dod-OmniNode-ai-omniclaude-pr-2414"
+    description: "PR #2414 on OmniNode-ai/omniclaude — Evidence-Source autobind."
+    source: "generated"
+    checks:
+      - check_type: "command"
+        check_value: |-
+          gh api repos/OmniNode-ai/omniclaude/contents/uv.lock?ref=17b7db34504e6aa0580d1ed376dfa2fa88765b5b --jq '.content' | base64 -d | grep -cF 'https://github.com/OmniNode-ai/omnimarket.git?rev=e01380bfde111c1ac15e8eae745482cff05f79df'
+  - id: "dod-OmniNode-ai-omniclaude-pr-2414-ci"
+    description: "PR #2414 on OmniNode-ai/omniclaude — product diff scope check (OMN-14425)."
+    source: "generated"
+    checks:
+      - check_type: "command"
+        check_value: "gh pr view 2414 --repo OmniNode-ai/omniclaude --json files"
+  - id: "dod-occ-evidence-admissibility-validator-pr-2414"
+    description: "Hosted OCC evidence admissibility validator (OMN-15247)."
+    source: "generated"
+    checks:
+      - check_type: "command"
+        check_value: "uv run pytest tests/test_evidence_admissibility.py -q"
+  - id: "dod-OmniNode-ai-omnimemory-pr-499-ci"
+    description: "PR #499 on OmniNode-ai/omnimemory — product diff scope check (OMN-14425)."
+    source: "generated"
+    checks:
+      - check_type: "command"
+        check_value: "gh pr view 499 --repo OmniNode-ai/omnimemory --json files"
+  - id: "occ-self-bind-pr-13019"
+    description: "OCC companion PR #13019 — self-bind for OMN-13902 (OMN-14650)."
+    source: "generated"
+    checks:
+      - check_type: "command"
+        check_value: "gh pr view 13019 --repo OmniNode-ai/onex_change_control --json number,state"
+  - id: "occ-self-bind-pr-9478"
+    description: "OCC companion PR #9478 — self-bind for OMN-13902 (OMN-14650)."
+    source: "generated"
+    checks:
+      - check_type: "command"
+        check_value: "gh pr view 9478 --repo OmniNode-ai/onex_change_control --json number,state"
+  - id: "dod-OmniNode-ai-omniintelligence-pr-965"
+    description: "PR #965 on OmniNode-ai/omniintelligence — Evidence-Source autobind."
+    source: "generated"
+    checks:
+      - check_type: "command"
+        check_value: |-
+          gh api repos/OmniNode-ai/omniintelligence/contents/uv.lock?ref=15007f8dce61c0ca7204deea65c13eedc3686413 --jq '.content' | base64 -d | grep -cF 'https://files.pythonhosted.org/packages/ec/c3/e9f4cc3bc48f9d0afee52b1f8e76a1eb8e20c8e9d89770626429194abc01/omnibase_core-0.47.26.tar.gz'
+  - id: "dod-OmniNode-ai-omniintelligence-pr-965-ci"
+    description: "PR #965 on OmniNode-ai/omniintelligence — product diff scope check (OMN-14425)."
+    source: "generated"
+    checks:
+      - check_type: "command"
+        check_value: "gh pr view 965 --repo OmniNode-ai/omniintelligence --json files"
+  - id: "dod-occ-evidence-admissibility-validator-pr-965"
+    description: "Hosted OCC evidence admissibility validator (OMN-15247)."
+    source: "generated"
+    checks:
+      - check_type: "command"
+        check_value: "uv run pytest tests/test_evidence_admissibility.py -q"
+  - id: "dod-OmniNode-ai-omniintelligence-pr-902"
+    description: "PR #902 on OmniNode-ai/omniintelligence — Evidence-Source autobind."
+    source: "generated"
+    checks:
+      - check_type: "command"
+        check_value: |-
+          gh api repos/OmniNode-ai/omniintelligence/contents/uv.lock?ref=8e5dd98bf346462600a74a824d444d49395a32bd --jq '.content' | base64 -d | grep -cF 'https://files.pythonhosted.org/packages/13/ef/cf74c5708c2a2ff04fce7d307a66fd1982a843e4188318bc038cecae8abd/omnibase_core-0.47.14.tar.gz'
+  - id: "dod-OmniNode-ai-omniintelligence-pr-902-ci"
+    description: "PR #902 on OmniNode-ai/omniintelligence — product diff scope check (OMN-14425)."
+    source: "generated"
+    checks:
+      - check_type: "command"
+        check_value: "gh pr view 902 --repo OmniNode-ai/omniintelligence --json files"
+  - id: "occ-self-bind-pr-9617"
+    description: "OCC companion PR #9617 — self-bind for OMN-13902 (OMN-14650)."
+    source: "generated"
+    checks:
+      - check_type: "command"
+        check_value: "gh pr view 9617 --repo OmniNode-ai/onex_change_control --json number,state"
+  - id: "dod-OmniNode-ai-omnimemory-pr-504"
+    description: "PR #504 on OmniNode-ai/omnimemory — Evidence-Source autobind."
+    source: "generated"
+    checks:
+      - check_type: "command"
+        check_value: |-
+          gh api repos/OmniNode-ai/omnimemory/contents/uv.lock?ref=6abc3179f39782b7da1ea1043b48e88b17a1550c --jq '.content' | base64 -d | grep -cF 'https://files.pythonhosted.org/packages/13/ef/cf74c5708c2a2ff04fce7d307a66fd1982a843e4188318bc038cecae8abd/omnibase_core-0.47.14.tar.gz'
+  - id: "dod-OmniNode-ai-omnimemory-pr-504-ci"
+    description: "PR #504 on OmniNode-ai/omnimemory — product diff scope check (OMN-14425)."
+    source: "generated"
+    checks:
+      - check_type: "command"
+        check_value: "gh pr view 504 --repo OmniNode-ai/omnimemory --json files"
+  - id: "dod-OmniNode-ai-omniintelligence-pr-971"
+    description: "PR #971 on OmniNode-ai/omniintelligence — Evidence-Source autobind."
+    source: "generated"
+    checks:
+      - check_type: "command"
+        check_value: |-
+          gh api repos/OmniNode-ai/omniintelligence/contents/uv.lock?ref=fd527c7818b94d1a6f70040ce3295055e1d1d0a3 --jq '.content' | base64 -d | grep -cF 'https://files.pythonhosted.org/packages/e2/8b/f1791a6b7178d24ffd4a2b177c89da7f9f2cae445e7a915880b862b121e5/omnimarket-0.4.270.tar.gz'
+  - id: "dod-OmniNode-ai-omniintelligence-pr-971-ci"
+    description: "PR #971 on OmniNode-ai/omniintelligence — product diff scope check (OMN-14425)."
+    source: "generated"
+    checks:
+      - check_type: "command"
+        check_value: "gh pr view 971 --repo OmniNode-ai/omniintelligence --json files"
+  - id: "dod-occ-evidence-admissibility-validator-pr-971"
+    description: "Hosted OCC evidence admissibility validator (OMN-15247)."
+    source: "generated"
+    checks:
+      - check_type: "command"
+        check_value: "uv run pytest tests/test_evidence_admissibility.py -q"
+        cwd: "${OMNI_HOME}/onex_change_control"
+  - id: "occ-self-bind-pr-9616"
+    description: "OCC companion PR #9616 — self-bind for OMN-13902 (OMN-14650)."
+    source: "generated"
+    checks:
+      - check_type: "command"
+        check_value: "gh pr view 9616 --repo OmniNode-ai/onex_change_control --json number,state"
+  - id: "dod-OmniNode-ai-omniclaude-pr-2188"
+    description: "PR #2188 on OmniNode-ai/omniclaude — Evidence-Source autobind."
+    source: "generated"
+    checks:
+      - check_type: "command"
+        check_value: |-
+          gh api repos/OmniNode-ai/omniclaude/contents/uv.lock?ref=95d3624321c9bab05050acc6f52f6ccc3dbc2f98 --jq '.content' | base64 -d | grep -cF 'https://files.pythonhosted.org/packages/7c/50/3a07ec6b5643d1b118cd92a40326a9cce6a65f9603d9e54273321c1aa9a9/omnibase_infra-0.38.27.tar.gz'
+  - id: "occ-self-bind-pr-12752"
+    description: "OCC companion PR #12752 — self-bind for OMN-13902 (OMN-14650)."
+    source: "generated"
+    checks:
+      - check_type: "command"
+        check_value: "gh pr view 12752 --repo OmniNode-ai/onex_change_control --json number,state"
+  - id: "dod-OmniNode-ai-omniclaude-pr-2188-ci"
+    description: "PR #2188 on OmniNode-ai/omniclaude — product diff scope check (OMN-14425)."
+    source: "generated"
+    checks:
+      - check_type: "command"
+        check_value: "gh pr view 2188 --repo OmniNode-ai/omniclaude --json files"
+  - id: "occ-self-bind-pr-9792"
+    description: "OCC companion PR #9792 — self-bind for OMN-13902 (OMN-14650)."
+    source: "generated"
+    checks:
+      - check_type: "command"
+        check_value: "gh pr view 9792 --repo OmniNode-ai/onex_change_control --json number,state"
+  - id: "dod-OmniNode-ai-omniintelligence-pr-904"
+    description: "PR #904 on OmniNode-ai/omniintelligence — Evidence-Source autobind."
+    source: "generated"
+    checks:
+      - check_type: "command"
+        check_value: |-
+          gh api repos/OmniNode-ai/omniintelligence/contents/uv.lock?ref=49f6cda4e4bbbf9e6070213a7be354784279a849 --jq '.content' | base64 -d | grep -cF 'https://files.pythonhosted.org/packages/23/fb/c207141a901a72d074f23a9624b567e28d89ea9ed8dd572a052759a0f327/omnibase_core-0.47.15.tar.gz'
+  - id: "dod-OmniNode-ai-omniintelligence-pr-904-ci"
+    description: "PR #904 on OmniNode-ai/omniintelligence — product diff scope check (OMN-14425)."
+    source: "generated"
+    checks:
+      - check_type: "command"
+        check_value: "gh pr view 904 --repo OmniNode-ai/omniintelligence --json files"
+  - id: "occ-self-bind-pr-12875"
+    description: "OCC companion PR #12875 — self-bind for OMN-13902 (OMN-14650)."
+    source: "generated"
+    checks:
+      - check_type: "command"
+        check_value: "gh pr view 12875 --repo OmniNode-ai/onex_change_control --json number,state"
+  - id: "occ-self-bind-pr-9793"
+    description: "OCC companion PR #9793 — self-bind for OMN-13902 (OMN-14650)."
+    source: "generated"
+    checks:
+      - check_type: "command"
+        check_value: "gh pr view 9793 --repo OmniNode-ai/onex_change_control --json number,state"
+  - id: "dod-OmniNode-ai-omniintelligence-pr-907"
+    description: "PR #907 on OmniNode-ai/omniintelligence — Evidence-Source autobind."
+    source: "generated"
+    checks:
+      - check_type: "command"
+        check_value: |-
+          gh api repos/OmniNode-ai/omniintelligence/contents/uv.lock?ref=0dd3a53dee19b0ffbf6448eacc231f36b8b7da86 --jq '.content' | base64 -d | grep -cF 'https://files.pythonhosted.org/packages/5b/e9/d8f69336793b3a79f3effda211c13f318030e929e78b0057269a30866664/omnibase_core-0.47.16.tar.gz'
+  - id: "dod-OmniNode-ai-omniintelligence-pr-907-ci"
+    description: "PR #907 on OmniNode-ai/omniintelligence — product diff scope check (OMN-14425)."
+    source: "generated"
+    checks:
+      - check_type: "command"
+        check_value: "gh pr view 907 --repo OmniNode-ai/omniintelligence --json files"
+  - id: "occ-self-bind-pr-9951"
+    description: "OCC companion PR #9951 — self-bind for OMN-13902 (OMN-14650)."
+    source: "generated"
+    checks:
+      - check_type: "command"
+        check_value: "gh pr view 9951 --repo OmniNode-ai/onex_change_control --json number,state"
+  - id: "dod-OmniNode-ai-omnimemory-pr-514"
+    description: "PR #514 on OmniNode-ai/omnimemory — Evidence-Source autobind."
+    source: "generated"
+    checks:
+      - check_type: "command"
+        check_value: |-
+          gh api repos/OmniNode-ai/omnimemory/contents/uv.lock?ref=9966779f2f7bbef8e6c9c3a259a72784df4f8758 --jq '.content' | base64 -d | grep -cF 'https://files.pythonhosted.org/packages/96/12/4a6acb803f99f147c5206b61a7da412dda933cf2ef781f7460d1f1d1d1a2/omnibase_spi-0.23.4.tar.gz'
+  - id: "dod-OmniNode-ai-omnimemory-pr-514-ci"
+    description: "PR #514 on OmniNode-ai/omnimemory — product diff scope check (OMN-14425)."
+    source: "generated"
+    checks:
+      - check_type: "command"
+        check_value: "gh pr view 514 --repo OmniNode-ai/omnimemory --json files"
+  - id: "occ-self-bind-pr-10163"
+    description: "OCC companion PR #10163 — self-bind for OMN-13902 (OMN-14650)."
+    source: "generated"
+    checks:
+      - check_type: "command"
+        check_value: "gh pr view 10163 --repo OmniNode-ai/onex_change_control --json number,state"
+  - id: "dod-OmniNode-ai-omniclaude-pr-2231"
+    description: "PR #2231 on OmniNode-ai/omniclaude — Evidence-Source autobind."
+    source: "generated"
+    checks:
+      - check_type: "command"
+        check_value: |-
+          gh api repos/OmniNode-ai/omniclaude/contents/uv.lock?ref=f1829c17d0901990c57cec494cdec41538b637fd --jq '.content' | base64 -d | grep -cF 'https://files.pythonhosted.org/packages/96/12/4a6acb803f99f147c5206b61a7da412dda933cf2ef781f7460d1f1d1d1a2/omnibase_spi-0.23.4.tar.gz'
+  - id: "dod-OmniNode-ai-omniclaude-pr-2231-ci"
+    description: "PR #2231 on OmniNode-ai/omniclaude — product diff scope check (OMN-14425)."
+    source: "generated"
+    checks:
+      - check_type: "command"
+        check_value: "gh pr view 2231 --repo OmniNode-ai/omniclaude --json files"
+  - id: "occ-self-bind-pr-10164"
+    description: "OCC companion PR #10164 — self-bind for OMN-13902 (OMN-14650)."
+    source: "generated"
+    checks:
+      - check_type: "command"
+        check_value: "gh pr view 10164 --repo OmniNode-ai/onex_change_control --json number,state"
+  - id: "dod-OmniNode-ai-omniintelligence-pr-914"
+    description: "PR #914 on OmniNode-ai/omniintelligence — Evidence-Source autobind."
+    source: "generated"
+    checks:
+      - check_type: "command"
+        check_value: |-
+          gh api repos/OmniNode-ai/omniintelligence/contents/uv.lock?ref=309d66bb02d87ce7b84a0c1401c95929e020db55 --jq '.content' | base64 -d | grep -cF 'https://files.pythonhosted.org/packages/10/8f/a45648c0163b6185140d47f00e8c265a58b8c250ccfd99c902bc5dd171f6/omnibase_core-0.47.17.tar.gz'
+  - id: "dod-OmniNode-ai-omniintelligence-pr-914-ci"
+    description: "PR #914 on OmniNode-ai/omniintelligence — product diff scope check (OMN-14425)."
+    source: "generated"
+    checks:
+      - check_type: "command"
+        check_value: "gh pr view 914 --repo OmniNode-ai/omniintelligence --json files"
+  - id: "dod-OmniNode-ai-omniintelligence-pr-984"
+    description: "PR #984 on OmniNode-ai/omniintelligence — Evidence-Source autobind."
+    source: "generated"
+    checks:
+      - check_type: "command"
+        check_value: |-
+          gh api repos/OmniNode-ai/omniintelligence/contents/uv.lock?ref=340f951c1ec6c81b728d3d5bdd8ae8c9c9c4efa1 --jq '.content' | base64 -d | grep -cF 'https://files.pythonhosted.org/packages/f8/9a/9a0e83093b1f097f74110e3f160a61115477162474049a8c988c39e3df19/omnimarket-0.4.277.tar.gz'
+  - id: "dod-OmniNode-ai-omniintelligence-pr-984-ci"
+    description: "PR #984 on OmniNode-ai/omniintelligence — product diff scope check (OMN-14425)."
+    source: "generated"
+    checks:
+      - check_type: "command"
+        check_value: "gh pr view 984 --repo OmniNode-ai/omniintelligence --json files"
+  - id: "dod-occ-evidence-admissibility-validator-pr-984"
+    description: "Hosted OCC evidence admissibility validator (OMN-15247)."
+    source: "generated"
+    checks:
+      - check_type: "command"
+        check_value: "uv run pytest tests/test_evidence_admissibility.py -q"
+        cwd: "${OMNI_HOME}/onex_change_control"
+  - id: "occ-self-bind-pr-10165"
+    description: "OCC companion PR #10165 — self-bind for OMN-13902 (OMN-14650)."
+    source: "generated"
+    checks:
+      - check_type: "command"
+        check_value: "gh pr view 10165 --repo OmniNode-ai/onex_change_control --json number,state"
+  - id: "dod-OmniNode-ai-omniclaude-pr-2250"
+    description: "PR #2250 on OmniNode-ai/omniclaude — Evidence-Source autobind."
+    source: "generated"
+    checks:
+      - check_type: "command"
+        check_value: |-
+          gh api repos/OmniNode-ai/omniclaude/contents/uv.lock?ref=bc652eac4c124cbb9b456e43e1d35b326ebec62a --jq '.content' | base64 -d | grep -cF 'https://github.com/OmniNode-ai/omnimarket.git?rev=b479bb5b50d04ddb75f1a0d36d662c11bb2dc412'
+  - id: "dod-OmniNode-ai-omniclaude-pr-2250-ci"
+    description: "PR #2250 on OmniNode-ai/omniclaude — product diff scope check (OMN-14425)."
+    source: "generated"
+    checks:
+      - check_type: "command"
+        check_value: "gh pr view 2250 --repo OmniNode-ai/omniclaude --json files"
+  - id: "occ-self-bind-pr-10286"
+    description: "OCC companion PR #10286 — self-bind for OMN-13902 (OMN-14650)."
+    source: "generated"
+    checks:
+      - check_type: "command"
+        check_value: "gh pr view 10286 --repo OmniNode-ai/onex_change_control --json number,state"
+  - id: "dod-OmniNode-ai-omniclaude-pr-2262"
+    description: "PR #2262 on OmniNode-ai/omniclaude — Evidence-Source autobind."
+    source: "generated"
+    checks:
+      - check_type: "command"
+        check_value: |-
+          gh api repos/OmniNode-ai/omniclaude/contents/uv.lock?ref=47a32ae4196aee6e76c0501ec16ea8826800a8ce --jq '.content' | base64 -d | grep -cF 'https://github.com/OmniNode-ai/omnimarket.git?rev=cb203f20269a612483ee4b516654519e79a1a922'
+  - id: "dod-OmniNode-ai-omniclaude-pr-2262-ci"
+    description: "PR #2262 on OmniNode-ai/omniclaude — product diff scope check (OMN-14425)."
+    source: "generated"
+    checks:
+      - check_type: "command"
+        check_value: "gh pr view 2262 --repo OmniNode-ai/omniclaude --json files"
+  - id: "occ-self-bind-pr-10357"
+    description: "OCC companion PR #10357 — self-bind for OMN-13902 (OMN-14650)."
+    source: "generated"
+    checks:
+      - check_type: "command"
+        check_value: "gh pr view 10357 --repo OmniNode-ai/onex_change_control --json number,state"
+  - id: "dod-OmniNode-ai-omniintelligence-pr-919"
+    description: "PR #919 on OmniNode-ai/omniintelligence — Evidence-Source autobind."
+    source: "generated"
+    checks:
+      - check_type: "command"
+        check_value: |-
+          gh api repos/OmniNode-ai/omniintelligence/contents/uv.lock?ref=c0cb6367e409163f36e6e1b550aab914175931b9 --jq '.content' | base64 -d | grep -cF 'https://files.pythonhosted.org/packages/51/99/c9eb22d44c6623d7f4eae9f3ffb11e78a69dd1d688ef7881395bfadf6e9f/omnimarket-0.4.127.tar.gz'
+  - id: "dod-OmniNode-ai-omniintelligence-pr-919-ci"
+    description: "PR #919 on OmniNode-ai/omniintelligence — product diff scope check (OMN-14425)."
+    source: "generated"
+    checks:
+      - check_type: "command"
+        check_value: "gh pr view 919 --repo OmniNode-ai/omniintelligence --json files"
+  - id: "occ-self-bind-pr-10362"
+    description: "OCC companion PR #10362 — self-bind for OMN-13902 (OMN-14650)."
+    source: "generated"
+    checks:
+      - check_type: "command"
+        check_value: "gh pr view 10362 --repo OmniNode-ai/onex_change_control --json number,state"
+  - id: "dod-OmniNode-ai-omniclaude-pr-2266"
+    description: "PR #2266 on OmniNode-ai/omniclaude — Evidence-Source autobind."
+    source: "generated"
+    checks:
+      - check_type: "command"
+        check_value: |-
+          gh api repos/OmniNode-ai/omniclaude/contents/tests/test_git_source_pins.py?ref=8ada775bc36e507d3dc7c5ebccec151dcc0ce39c --jq '.content' | base64 -d | grep -c 'def test_the_refresh_workflow_names_its_ticket_where_the_gate_reads_it'
+  - id: "dod-OmniNode-ai-omniclaude-pr-2266-ci"
+    description: "PR #2266 on OmniNode-ai/omniclaude — product diff scope check (OMN-14425)."
+    source: "generated"
+    checks:
+      - check_type: "command"
+        check_value: "gh pr view 2266 --repo OmniNode-ai/omniclaude --json files"
+  - id: "occ-self-bind-pr-10374"
+    description: "OCC companion PR #10374 — self-bind for OMN-13902 (OMN-14650)."
+    source: "generated"
+    checks:
+      - check_type: "command"
+        check_value: "gh pr view 10374 --repo OmniNode-ai/onex_change_control --json number,state"
+  - id: "dod-OmniNode-ai-omniclaude-pr-2268"
+    description: "PR #2268 on OmniNode-ai/omniclaude — Evidence-Source autobind."
+    source: "generated"
+    checks:
+      - check_type: "command"
+        check_value: |-
+          gh api repos/OmniNode-ai/omniclaude/contents/uv.lock?ref=df9e8f81a9ddd58d683f100152bd374372c74046 --jq '.content' | base64 -d | grep -cF 'https://github.com/OmniNode-ai/omnimarket.git?rev=133dd018a68abe69c3f2ac38953bfee6a09286eb'
+  - id: "dod-OmniNode-ai-omniclaude-pr-2268-ci"
+    description: "PR #2268 on OmniNode-ai/omniclaude — product diff scope check (OMN-14425)."
+    source: "generated"
+    checks:
+      - check_type: "command"
+        check_value: "gh pr view 2268 --repo OmniNode-ai/omniclaude --json files"
+  - id: "occ-self-bind-pr-10387"
+    description: "OCC companion PR #10387 — self-bind for OMN-13902 (OMN-14650)."
+    source: "generated"
+    checks:
+      - check_type: "command"
+        check_value: "gh pr view 10387 --repo OmniNode-ai/onex_change_control --json number,state"
+  - id: "dod-OmniNode-ai-omnimemory-pr-523"
+    description: "PR #523 on OmniNode-ai/omnimemory — Evidence-Source autobind."
+    source: "generated"
+    checks:
+      - check_type: "command"
+        check_value: |-
+          gh api repos/OmniNode-ai/omnimemory/contents/uv.lock?ref=1ec1dcdd426d7bdf3ad3d92c3c2168f540cea6a8 --jq '.content' | base64 -d | grep -cF 'https://files.pythonhosted.org/packages/2b/4f/1ce8fd6681dd4b27a220817451b441edc5b6627884dc46159d74b574abb1/omnibase_core-0.47.18.tar.gz'
+  - id: "occ-self-bind-pr-11827"
+    description: "OCC companion PR #11827 — self-bind for OMN-13902 (OMN-14650)."
+    source: "generated"
+    checks:
+      - check_type: "command"
+        check_value: "gh pr view 11827 --repo OmniNode-ai/onex_change_control --json number,state"
+  - id: "dod-OmniNode-ai-omnimemory-pr-523-ci"
+    description: "PR #523 on OmniNode-ai/omnimemory — product diff scope check (OMN-14425)."
+    source: "generated"
+    checks:
+      - check_type: "command"
+        check_value: "gh pr view 523 --repo OmniNode-ai/omnimemory --json files"
+  - id: "dod-OmniNode-ai-omnimemory-pr-582"
+    description: "PR #582 on OmniNode-ai/omnimemory — Evidence-Source autobind."
+    source: "generated"
+    checks:
+      - check_type: "command"
+        check_value: |-
+          gh api repos/OmniNode-ai/omnimemory/contents/uv.lock?ref=7ff15a7430f2a9724f1de3fadb10b322572178a6 --jq '.content' | base64 -d | grep -cF 'https://files.pythonhosted.org/packages/42/84/0d56e4b4be8536c66f91966c7c4501b0c5d311768da945a5054c4506fe59/omnibase_core-0.47.35.tar.gz'
+  - id: "dod-OmniNode-ai-omnimemory-pr-582-ci"
+    description: "PR #582 on OmniNode-ai/omnimemory — product diff scope check (OMN-14425)."
+    source: "generated"
+    checks:
+      - check_type: "command"
+        check_value: "gh pr view 582 --repo OmniNode-ai/omnimemory --json files"
+  - id: "dod-occ-evidence-admissibility-validator-pr-582"
+    description: "Hosted OCC evidence admissibility validator (OMN-15247)."
+    source: "generated"
+    checks:
+      - check_type: "command"
+        check_value: "uv run pytest tests/test_evidence_admissibility.py -q"
+        cwd: "${OMNI_HOME}/onex_change_control"
+  - id: "dod-OmniNode-ai-omniclaude-pr-2453"
+    description: "PR #2453 on OmniNode-ai/omniclaude — Evidence-Source autobind."
+    source: "generated"
+    checks:
+      - check_type: "command"
+        check_value: |-
+          gh api repos/OmniNode-ai/omniclaude/contents/uv.lock?ref=864a224d3fb204fafe642cd1de0779cbd5adc5c9 --jq '.content' | base64 -d | grep -cF 'https://github.com/OmniNode-ai/omnimarket.git?rev=303aff486dfb02efcbc0e58747e19ac753a39e4d'
+  - id: "dod-OmniNode-ai-omniintelligence-pr-1001"
+    description: "PR #1001 on OmniNode-ai/omniintelligence — Evidence-Source autobind."
+    source: "generated"
+    checks:
+      - check_type: "command"
+        check_value: |-
+          gh api repos/OmniNode-ai/omniintelligence/contents/uv.lock?ref=c085ba92e9b661d78cdce601368296e56105e63d --jq '.content' | base64 -d | grep -cF 'https://files.pythonhosted.org/packages/c3/23/7dccad0ed2bb5e3ed5436f381885b383202a17567586ebb698f5c79d01c4/omnimarket-0.4.300.tar.gz'
+  - id: "dod-OmniNode-ai-omniintelligence-pr-1001-ci"
+    description: "PR #1001 on OmniNode-ai/omniintelligence — product diff scope check (OMN-14425)."
+    source: "generated"
+    checks:
+      - check_type: "command"
+        check_value: "gh pr view 1001 --repo OmniNode-ai/omniintelligence --json files"
+  - id: "dod-occ-evidence-admissibility-validator-pr-1001"
+    description: "Hosted OCC evidence admissibility validator (OMN-15247)."
+    source: "generated"
+    checks:
+      - check_type: "command"
+        check_value: "uv run pytest tests/test_evidence_admissibility.py -q"
+        cwd: "${OMNI_HOME}/onex_change_control"
+  - id: "occ-self-bind-pr-12514"
+    description: "OCC companion PR #12514 — self-bind for OMN-13902 (OMN-14650)."
+    source: "generated"
+    checks:
+      - check_type: "command"
+        check_value: "gh pr view 12514 --repo OmniNode-ai/onex_change_control --json number,state"
+  - id: "dod-OmniNode-ai-omniclaude-pr-2453-ci"
+    description: "PR #2453 on OmniNode-ai/omniclaude — product diff scope check (OMN-14425)."
+    source: "generated"
+    checks:
+      - check_type: "command"
+        check_value: "gh pr view 2453 --repo OmniNode-ai/omniclaude --json files"
+  - id: "dod-occ-evidence-admissibility-validator-pr-2453"
+    description: "Hosted OCC evidence admissibility validator (OMN-15247)."
+    source: "generated"
+    checks:
+      - check_type: "command"
+        check_value: "uv run pytest tests/test_evidence_admissibility.py -q"
+        cwd: "${OMNI_HOME}/onex_change_control"
+  - id: "occ-self-bind-pr-10525"
+    description: "OCC companion PR #10525 — self-bind for OMN-13902 (OMN-14650)."
+    source: "generated"
+    checks:
+      - check_type: "command"
+        check_value: "gh pr view 10525 --repo OmniNode-ai/onex_change_control --json number,state"
+  - id: "dod-OmniNode-ai-omniintelligence-pr-927"
+    description: "PR #927 on OmniNode-ai/omniintelligence — Evidence-Source autobind."
+    source: "generated"
+    checks:
+      - check_type: "command"
+        check_value: |-
+          gh api repos/OmniNode-ai/omniintelligence/contents/uv.lock?ref=90c8a956568e4bdad8b2cebbed04b55993413b06 --jq '.content' | base64 -d | grep -cF 'https://files.pythonhosted.org/packages/cd/4d/1a202ace5be88c45afeb2e33a59c38ced26962d017dc5d6ff12c259b4bdc/omnibase_infra-0.38.35.tar.gz'
+  - id: "dod-OmniNode-ai-omniintelligence-pr-927-ci"
+    description: "PR #927 on OmniNode-ai/omniintelligence — product diff scope check (OMN-14425)."
+    source: "generated"
+    checks:
+      - check_type: "command"
+        check_value: "gh pr view 927 --repo OmniNode-ai/omniintelligence --json files"
+  - id: "occ-self-bind-pr-10527"
+    description: "OCC companion PR #10527 — self-bind for OMN-13902 (OMN-14650)."
+    source: "generated"
+    checks:
+      - check_type: "command"
+        check_value: "gh pr view 10527 --repo OmniNode-ai/onex_change_control --json number,state"
+  - id: "dod-OmniNode-ai-omniclaude-pr-2282"
+    description: "PR #2282 on OmniNode-ai/omniclaude — Evidence-Source autobind."
+    source: "generated"
+    checks:
+      - check_type: "command"
+        check_value: |-
+          gh api repos/OmniNode-ai/omniclaude/contents/uv.lock?ref=361b75623da4f162ad5e32721ed3060b2f853445 --jq '.content' | base64 -d | grep -cF 'https://github.com/OmniNode-ai/omnimarket.git?rev=b216d363c3b0857226ec69926aa8341eaaa60485'
+  - id: "dod-OmniNode-ai-omniclaude-pr-2282-ci"
+    description: "PR #2282 on OmniNode-ai/omniclaude — product diff scope check (OMN-14425)."
+    source: "generated"
+    checks:
+      - check_type: "command"
+        check_value: "gh pr view 2282 --repo OmniNode-ai/omniclaude --json files"
+  - id: "occ-self-bind-pr-10528"
+    description: "OCC companion PR #10528 — self-bind for OMN-13902 (OMN-14650)."
+    source: "generated"
+    checks:
+      - check_type: "command"
+        check_value: "gh pr view 10528 --repo OmniNode-ai/onex_change_control --json number,state"
+  - id: "occ-self-bind-pr-12221"
+    description: "OCC companion PR #12221 — self-bind for OMN-13902 (OMN-14650)."
+    source: "generated"
+    checks:
+      - check_type: "command"
+        check_value: "gh pr view 12221 --repo OmniNode-ai/onex_change_control --json number,state"
+  - id: "dod-OmniNode-ai-omnimemory-pr-526"
+    description: "PR #526 on OmniNode-ai/omnimemory — Evidence-Source autobind."
+    source: "generated"
+    checks:
+      - check_type: "command"
+        check_value: |-
+          gh api repos/OmniNode-ai/omnimemory/contents/uv.lock?ref=cfc162261507a7ceb916d0df2c98d435ec3ae683 --jq '.content' | base64 -d | grep -cF 'https://files.pythonhosted.org/packages/12/c0/7a32a0471896a429350317aac008efa6a23d4d3df5597b5ffaa8bed24e9b/omnibase_core-0.47.20.tar.gz'
+  - id: "dod-OmniNode-ai-omnimemory-pr-526-ci"
+    description: "PR #526 on OmniNode-ai/omnimemory — product diff scope check (OMN-14425)."
+    source: "generated"
+    checks:
+      - check_type: "command"
+        check_value: "gh pr view 526 --repo OmniNode-ai/omnimemory --json files"
+  - id: "dod-occ-evidence-admissibility-validator-pr-526"
+    description: "Hosted OCC evidence admissibility validator (OMN-15247)."
+    source: "generated"
+    checks:
+      - check_type: "command"
+        check_value: "uv run pytest tests/test_evidence_admissibility.py -q"
+  - id: "dod-OmniNode-ai-omniintelligence-pr-931"
+    description: "PR #931 on OmniNode-ai/omniintelligence — Evidence-Source autobind."
+    source: "generated"
+    checks:
+      - check_type: "command"
+        check_value: |-
+          gh api repos/OmniNode-ai/omniintelligence/contents/uv.lock?ref=786f4da076a97a510a1f41e4bacdb3f398c71079 --jq '.content' | base64 -d | grep -cF 'https://files.pythonhosted.org/packages/12/c0/7a32a0471896a429350317aac008efa6a23d4d3df5597b5ffaa8bed24e9b/omnibase_core-0.47.20.tar.gz'
+  - id: "dod-OmniNode-ai-omniintelligence-pr-931-ci"
+    description: "PR #931 on OmniNode-ai/omniintelligence — product diff scope check (OMN-14425)."
+    source: "generated"
+    checks:
+      - check_type: "command"
+        check_value: "gh pr view 931 --repo OmniNode-ai/omniintelligence --json files"
+  - id: "dod-occ-evidence-admissibility-validator-pr-931"
+    description: "Hosted OCC evidence admissibility validator (OMN-15247)."
+    source: "generated"
+    checks:
+      - check_type: "command"
+        check_value: "uv run pytest tests/test_evidence_admissibility.py -q"
+  - id: "occ-self-bind-pr-10636"
+    description: "OCC companion PR #10636 — self-bind for OMN-13902 (OMN-14650)."
+    source: "generated"
+    checks:
+      - check_type: "command"
+        check_value: "gh pr view 10636 --repo OmniNode-ai/onex_change_control --json number,state"
+  - id: "dod-OmniNode-ai-omniclaude-pr-2305"
+    description: "PR #2305 on OmniNode-ai/omniclaude — Evidence-Source autobind."
+    source: "generated"
+    checks:
+      - check_type: "command"
+        check_value: |-
+          gh api repos/OmniNode-ai/omniclaude/contents/uv.lock?ref=2520afcbfd401cbb49aaa11918410c7782c3c914 --jq '.content' | base64 -d | grep -cF 'https://github.com/OmniNode-ai/omnimarket.git?rev=ce11a870db3aa478b9967e72c731835539911187'
+  - id: "occ-self-bind-pr-11953"
+    description: "OCC companion PR #11953 — self-bind for OMN-13902 (OMN-14650)."
+    source: "generated"
+    checks:
+      - check_type: "command"
+        check_value: "gh pr view 11953 --repo OmniNode-ai/onex_change_control --json number,state"
+  - id: "dod-OmniNode-ai-omniclaude-pr-2305-ci"
+    description: "PR #2305 on OmniNode-ai/omniclaude — product diff scope check (OMN-14425)."
+    source: "generated"
+    checks:
+      - check_type: "command"
+        check_value: "gh pr view 2305 --repo OmniNode-ai/omniclaude --json files"
+  - id: "dod-occ-evidence-admissibility-validator-pr-2305"
+    description: "Hosted OCC evidence admissibility validator (OMN-15247)."
+    source: "generated"
+    checks:
+      - check_type: "command"
+        check_value: "uv run pytest tests/test_evidence_admissibility.py -q"
+  - id: "occ-self-bind-pr-10768"
+    description: "OCC companion PR #10768 — self-bind for OMN-13902 (OMN-14650)."
+    source: "generated"
+    checks:
+      - check_type: "command"
+        check_value: "gh pr view 10768 --repo OmniNode-ai/onex_change_control --json number,state"
+  - id: "dod-OmniNode-ai-omniclaude-pr-2306"
+    description: "PR #2306 on OmniNode-ai/omniclaude — Evidence-Source autobind."
+    source: "generated"
+    checks:
+      - check_type: "command"
+        check_value: |-
+          gh api repos/OmniNode-ai/omniclaude/contents/uv.lock?ref=23bf0c59e04f8a925ae70f6f0491dd883b15f5bc --jq '.content' | base64 -d | grep -cF 'https://github.com/OmniNode-ai/omnimarket.git?rev=fb41fdedc57e8fda3a001b394dc286d6910bb983'
+  - id: "dod-OmniNode-ai-omniclaude-pr-2474"
+    description: "PR #2474 on OmniNode-ai/omniclaude — Evidence-Source autobind."
+    source: "generated"
+    checks:
+      - check_type: "command"
+        check_value: |-
+          gh api repos/OmniNode-ai/omniclaude/contents/uv.lock?ref=5d86337afa8e74e91cd71a15336d2e91ed5c7846 --jq '.content' | base64 -d | grep -cF 'https://github.com/OmniNode-ai/omnimarket.git?rev=008a67ed0b1740463e53f262c639b54c04914663'
+  - id: "dod-OmniNode-ai-omniclaude-pr-2474-ci"
+    description: "PR #2474 on OmniNode-ai/omniclaude — product diff scope check (OMN-14425)."
+    source: "generated"
+    checks:
+      - check_type: "command"
+        check_value: "gh pr view 2474 --repo OmniNode-ai/omniclaude --json files"
+  - id: "dod-occ-evidence-admissibility-validator-pr-2474"
+    description: "Hosted OCC evidence admissibility validator (OMN-15247)."
+    source: "generated"
+    checks:
+      - check_type: "command"
+        check_value: "uv run pytest tests/test_evidence_admissibility.py -q"
+        cwd: "${OMNI_HOME}/onex_change_control"
+  - id: "dod-OmniNode-ai-omniclaude-pr-2306-ci"
+    description: "PR #2306 on OmniNode-ai/omniclaude — product diff scope check (OMN-14425)."
+    source: "generated"
+    checks:
+      - check_type: "command"
+        check_value: "gh pr view 2306 --repo OmniNode-ai/omniclaude --json files"
+  - id: "dod-occ-evidence-admissibility-validator-pr-2306"
+    description: "Hosted OCC evidence admissibility validator (OMN-15247)."
+    source: "generated"
+    checks:
+      - check_type: "command"
+        check_value: "uv run pytest tests/test_evidence_admissibility.py -q"
+  - id: "occ-self-bind-pr-10771"
+    description: "OCC companion PR #10771 — self-bind for OMN-13902 (OMN-14650)."
+    source: "generated"
+    checks:
+      - check_type: "command"
+        check_value: "gh pr view 10771 --repo OmniNode-ai/onex_change_control --json number,state"
+  - id: "occ-self-bind-pr-10638"
+    description: "OCC companion PR #10638 — self-bind for OMN-13902 (OMN-14650)."
+    source: "generated"
+    checks:
+      - check_type: "command"
+        check_value: "gh pr view 10638 --repo OmniNode-ai/onex_change_control --json number,state"
+  - id: "dod-OmniNode-ai-omniclaude-pr-2292"
+    description: "PR #2292 on OmniNode-ai/omniclaude — Evidence-Source autobind."
+    source: "generated"
+    checks:
+      - check_type: "command"
+        check_value: |-
+          gh api repos/OmniNode-ai/omniclaude/contents/uv.lock?ref=2e8ff1251b81dbe08fbb679a441db0a878e1a537 --jq '.content' | base64 -d | grep -cF 'https://github.com/OmniNode-ai/omnimarket.git?rev=bf88396baa874574e4b0aa5f6180c391e4c27405'
+  - id: "dod-OmniNode-ai-omniclaude-pr-2292-ci"
+    description: "PR #2292 on OmniNode-ai/omniclaude — product diff scope check (OMN-14425)."
+    source: "generated"
+    checks:
+      - check_type: "command"
+        check_value: "gh pr view 2292 --repo OmniNode-ai/omniclaude --json files"
+  - id: "dod-occ-evidence-admissibility-validator-pr-2292"
+    description: "Hosted OCC evidence admissibility validator (OMN-15247)."
+    source: "generated"
+    checks:
+      - check_type: "command"
+        check_value: "uv run pytest tests/test_evidence_admissibility.py -q"
+  - id: "occ-self-bind-pr-10637"
+    description: "OCC companion PR #10637 — self-bind for OMN-13902 (OMN-14650)."
+    source: "generated"
+    checks:
+      - check_type: "command"
+        check_value: "gh pr view 10637 --repo OmniNode-ai/onex_change_control --json number,state"
+  - id: "dod-OmniNode-ai-omniintelligence-pr-934"
+    description: "PR #934 on OmniNode-ai/omniintelligence — Evidence-Source autobind."
+    source: "generated"
+    checks:
+      - check_type: "command"
+        check_value: |-
+          gh api repos/OmniNode-ai/omniintelligence/contents/uv.lock?ref=07cd9410dceffd3c72a1b1137e82f873d7d68130 --jq '.content' | base64 -d | grep -cF 'https://files.pythonhosted.org/packages/e2/82/9708b44cde94519958703c58b29e0a9c3b52ec253f428e0c9460a35e8ecc/omnibase_infra-0.38.51.tar.gz'
+  - id: "dod-OmniNode-ai-omniintelligence-pr-934-ci"
+    description: "PR #934 on OmniNode-ai/omniintelligence — product diff scope check (OMN-14425)."
+    source: "generated"
+    checks:
+      - check_type: "command"
+        check_value: "gh pr view 934 --repo OmniNode-ai/omniintelligence --json files"
+  - id: "dod-occ-evidence-admissibility-validator-pr-934"
+    description: "Hosted OCC evidence admissibility validator (OMN-15247)."
+    source: "generated"
+    checks:
+      - check_type: "command"
+        check_value: "uv run pytest tests/test_evidence_admissibility.py -q"
+  - id: "occ-self-bind-pr-10777"
+    description: "OCC companion PR #10777 — self-bind for OMN-13902 (OMN-14650)."
+    source: "generated"
+    checks:
+      - check_type: "command"
+        check_value: "gh pr view 10777 --repo OmniNode-ai/onex_change_control --json number,state"
+  - id: "dod-OmniNode-ai-omniclaude-pr-2309"
+    description: "PR #2309 on OmniNode-ai/omniclaude — Evidence-Source autobind."
+    source: "generated"
+    checks:
+      - check_type: "command"
+        check_value: |-
+          gh api repos/OmniNode-ai/omniclaude/contents/uv.lock?ref=bd8de4ae8bb98dc7711d410623bfa406bf094df3 --jq '.content' | base64 -d | grep -cF 'https://files.pythonhosted.org/packages/e2/82/9708b44cde94519958703c58b29e0a9c3b52ec253f428e0c9460a35e8ecc/omnibase_infra-0.38.51.tar.gz'
+  - id: "dod-OmniNode-ai-omniclaude-pr-2548"
+    description: "PR #2548 on OmniNode-ai/omniclaude — Evidence-Source autobind."
+    source: "generated"
+    checks:
+      - check_type: "command"
+        check_value: |-
+          gh api repos/OmniNode-ai/omniclaude/contents/uv.lock?ref=a9e2cf94dbc0197b082e4440f938aeac8a9b8ae2 --jq '.content' | base64 -d | grep -cF 'https://github.com/OmniNode-ai/omnimarket.git?rev=91b8bb1b8c7f35bc502ae1dc126eb95d4916c0ef'
+  - id: "dod-OmniNode-ai-omniclaude-pr-2548-ci"
+    description: "PR #2548 on OmniNode-ai/omniclaude — product diff scope check (OMN-14425)."
+    source: "generated"
+    checks:
+      - check_type: "command"
+        check_value: "gh pr view 2548 --repo OmniNode-ai/omniclaude --json files"
+  - id: "dod-occ-evidence-admissibility-validator-pr-2548"
+    description: "Hosted OCC evidence admissibility validator (OMN-15247)."
+    source: "generated"
+    checks:
+      - check_type: "command"
+        check_value: "uv run pytest tests/test_evidence_admissibility.py -q"
+        cwd: "${OMNI_HOME}/onex_change_control"
+  - id: "dod-OmniNode-ai-omniclaude-pr-2309-ci"
+    description: "PR #2309 on OmniNode-ai/omniclaude — product diff scope check (OMN-14425)."
+    source: "generated"
+    checks:
+      - check_type: "command"
+        check_value: "gh pr view 2309 --repo OmniNode-ai/omniclaude --json files"
+  - id: "dod-occ-evidence-admissibility-validator-pr-2309"
+    description: "Hosted OCC evidence admissibility validator (OMN-15247)."
+    source: "generated"
+    checks:
+      - check_type: "command"
+        check_value: "uv run pytest tests/test_evidence_admissibility.py -q"
+  - id: "occ-self-bind-pr-10778"
+    description: "OCC companion PR #10778 — self-bind for OMN-13902 (OMN-14650)."
+    source: "generated"
+    checks:
+      - check_type: "command"
+        check_value: "gh pr view 10778 --repo OmniNode-ai/onex_change_control --json number,state"
+  - id: "dod-OmniNode-ai-omniintelligence-pr-936"
+    description: "PR #936 on OmniNode-ai/omniintelligence — Evidence-Source autobind."
+    source: "generated"
+    checks:
+      - check_type: "command"
+        check_value: |-
+          gh api repos/OmniNode-ai/omniintelligence/contents/uv.lock?ref=3e1c9923685713c1f9ddc66b0a462633857836d4 --jq '.content' | base64 -d | grep -cF 'https://files.pythonhosted.org/packages/a9/4f/30fa1daef8fda1166cf95659981786718e521d6cb32fcb8f651ce3d32409/omnimarket-0.4.205.tar.gz'
+  - id: "dod-OmniNode-ai-omniintelligence-pr-936-ci"
+    description: "PR #936 on OmniNode-ai/omniintelligence — product diff scope check (OMN-14425)."
+    source: "generated"
+    checks:
+      - check_type: "command"
+        check_value: "gh pr view 936 --repo OmniNode-ai/omniintelligence --json files"
+  - id: "dod-occ-evidence-admissibility-validator-pr-936"
+    description: "Hosted OCC evidence admissibility validator (OMN-15247)."
+    source: "generated"
+    checks:
+      - check_type: "command"
+        check_value: "uv run pytest tests/test_evidence_admissibility.py -q"
+  - id: "occ-self-bind-pr-10899"
+    description: "OCC companion PR #10899 — self-bind for OMN-13902 (OMN-14650)."
+    source: "generated"
+    checks:
+      - check_type: "command"
+        check_value: "gh pr view 10899 --repo OmniNode-ai/onex_change_control --json number,state"
+  - id: "dod-OmniNode-ai-omniclaude-pr-2313"
+    description: "PR #2313 on OmniNode-ai/omniclaude — Evidence-Source autobind."
+    source: "generated"
+    checks:
+      - check_type: "command"
+        check_value: |-
+          gh api repos/OmniNode-ai/omniclaude/contents/uv.lock?ref=db9673c22c6ed87494834f61f195306b7934248e --jq '.content' | base64 -d | grep -cF 'https://github.com/OmniNode-ai/omnimarket.git?rev=fcc374d5908f59ef46886147af63985c208feb62'
+  - id: "occ-self-bind-pr-12751"
+    description: "OCC companion PR #12751 — self-bind for OMN-13902 (OMN-14650)."
+    source: "generated"
+    checks:
+      - check_type: "command"
+        check_value: "gh pr view 12751 --repo OmniNode-ai/onex_change_control --json number,state"
+  - id: "dod-OmniNode-ai-omniclaude-pr-2313-ci"
+    description: "PR #2313 on OmniNode-ai/omniclaude — product diff scope check (OMN-14425)."
+    source: "generated"
+    checks:
+      - check_type: "command"
+        check_value: "gh pr view 2313 --repo OmniNode-ai/omniclaude --json files"
+  - id: "dod-occ-evidence-admissibility-validator-pr-2313"
+    description: "Hosted OCC evidence admissibility validator (OMN-15247)."
+    source: "generated"
+    checks:
+      - check_type: "command"
+        check_value: "uv run pytest tests/test_evidence_admissibility.py -q"
+  - id: "occ-self-bind-pr-10900"
+    description: "OCC companion PR #10900 — self-bind for OMN-13902 (OMN-14650)."
+    source: "generated"
+    checks:
+      - check_type: "command"
+        check_value: "gh pr view 10900 --repo OmniNode-ai/onex_change_control --json number,state"
+  - id: "dod-OmniNode-ai-omniclaude-pr-2324"
+    description: "PR #2324 on OmniNode-ai/omniclaude — Evidence-Source autobind."
+    source: "generated"
+    checks:
+      - check_type: "command"
+        check_value: |-
+          gh api repos/OmniNode-ai/omniclaude/contents/uv.lock?ref=353f9cd9eefc0a0935630da2b47c76e7e107f5f3 --jq '.content' | base64 -d | grep -cF 'https://github.com/OmniNode-ai/omnimarket.git?rev=923b76baef5c013cefb79989f3f7d6626a2ad18c'
+  - id: "dod-OmniNode-ai-omniclaude-pr-2324-ci"
+    description: "PR #2324 on OmniNode-ai/omniclaude — product diff scope check (OMN-14425)."
+    source: "generated"
+    checks:
+      - check_type: "command"
+        check_value: "gh pr view 2324 --repo OmniNode-ai/omniclaude --json files"
+  - id: "dod-occ-evidence-admissibility-validator-pr-2324"
+    description: "Hosted OCC evidence admissibility validator (OMN-15247)."
+    source: "generated"
+    checks:
+      - check_type: "command"
+        check_value: "uv run pytest tests/test_evidence_admissibility.py -q"
+  - id: "occ-self-bind-pr-11023"
+    description: "OCC companion PR #11023 — self-bind for OMN-13902 (OMN-14650)."
+    source: "generated"
+    checks:
+      - check_type: "command"
+        check_value: "gh pr view 11023 --repo OmniNode-ai/onex_change_control --json number,state"
+  - id: "dod-OmniNode-ai-omniintelligence-pr-938"
+    description: "PR #938 on OmniNode-ai/omniintelligence — Evidence-Source autobind."
+    source: "generated"
+    checks:
+      - check_type: "command"
+        check_value: |-
+          gh api repos/OmniNode-ai/omniintelligence/contents/uv.lock?ref=cba8cea983f8655c5280d03758c4a736b1e5a019 --jq '.content' | base64 -d | grep -cF 'https://files.pythonhosted.org/packages/03/65/70b2e26e244a0a1c95bb6b8ba57b6945f54f162fd2fa6f28822118fb05d1/omnimarket-0.4.213.tar.gz'
+  - id: "dod-OmniNode-ai-omniintelligence-pr-938-ci"
+    description: "PR #938 on OmniNode-ai/omniintelligence — product diff scope check (OMN-14425)."
+    source: "generated"
+    checks:
+      - check_type: "command"
+        check_value: "gh pr view 938 --repo OmniNode-ai/omniintelligence --json files"
+  - id: "dod-occ-evidence-admissibility-validator-pr-938"
+    description: "Hosted OCC evidence admissibility validator (OMN-15247)."
+    source: "generated"
+    checks:
+      - check_type: "command"
+        check_value: "uv run pytest tests/test_evidence_admissibility.py -q"
+  - id: "occ-self-bind-pr-11024"
+    description: "OCC companion PR #11024 — self-bind for OMN-13902 (OMN-14650)."
+    source: "generated"
+    checks:
+      - check_type: "command"
+        check_value: "gh pr view 11024 --repo OmniNode-ai/onex_change_control --json number,state"
+  - id: "dod-OmniNode-ai-omnimemory-pr-534"
+    description: "PR #534 on OmniNode-ai/omnimemory — Evidence-Source autobind."
+    source: "generated"
+    checks:
+      - check_type: "command"
+        check_value: |-
+          gh api repos/OmniNode-ai/omnimemory/contents/uv.lock?ref=ade676c1d4b85774c2c8acb74b86a78d6db6d706 --jq '.content' | base64 -d | grep -cF 'https://files.pythonhosted.org/packages/38/bf/93003e6f7e81a934f759aef301cfe94830be82f39bb0a0e45634ad134612/omnibase_core-0.47.23.tar.gz'
+  - id: "dod-OmniNode-ai-omnimemory-pr-534-ci"
+    description: "PR #534 on OmniNode-ai/omnimemory — product diff scope check (OMN-14425)."
+    source: "generated"
+    checks:
+      - check_type: "command"
+        check_value: "gh pr view 534 --repo OmniNode-ai/omnimemory --json files"
+  - id: "dod-occ-evidence-admissibility-validator-pr-534"
+    description: "Hosted OCC evidence admissibility validator (OMN-15247)."
+    source: "generated"
+    checks:
+      - check_type: "command"
+        check_value: "uv run pytest tests/test_evidence_admissibility.py -q"
+  - id: "occ-self-bind-pr-11235"
+    description: "OCC companion PR #11235 — self-bind for OMN-13902 (OMN-14650)."
+    source: "generated"
+    checks:
+      - check_type: "command"
+        check_value: "gh pr view 11235 --repo OmniNode-ai/onex_change_control --json number,state"
+  - id: "dod-OmniNode-ai-omniclaude-pr-2339"
+    description: "PR #2339 on OmniNode-ai/omniclaude — Evidence-Source autobind."
+    source: "generated"
+    checks:
+      - check_type: "command"
+        check_value: |-
+          gh api repos/OmniNode-ai/omniclaude/contents/uv.lock?ref=810049962ea1fce8e081896b16ede74bdf39adf3 --jq '.content' | base64 -d | grep -cF 'https://github.com/OmniNode-ai/omnimarket.git?rev=d0cf5753e417415cfc456d5ab116c75dfb7d8be0'
+  - id: "dod-OmniNode-ai-omniclaude-pr-2339-ci"
+    description: "PR #2339 on OmniNode-ai/omniclaude — product diff scope check (OMN-14425)."
+    source: "generated"
+    checks:
+      - check_type: "command"
+        check_value: "gh pr view 2339 --repo OmniNode-ai/omniclaude --json files"
+  - id: "dod-occ-evidence-admissibility-validator-pr-2339"
+    description: "Hosted OCC evidence admissibility validator (OMN-15247)."
+    source: "generated"
+    checks:
+      - check_type: "command"
+        check_value: "uv run pytest tests/test_evidence_admissibility.py -q"
+  - id: "occ-self-bind-pr-11236"
+    description: "OCC companion PR #11236 — self-bind for OMN-13902 (OMN-14650)."
+    source: "generated"
+    checks:
+      - check_type: "command"
+        check_value: "gh pr view 11236 --repo OmniNode-ai/onex_change_control --json number,state"
+  - id: "dod-OmniNode-ai-omniintelligence-pr-944"
+    description: "PR #944 on OmniNode-ai/omniintelligence — Evidence-Source autobind."
+    source: "generated"
+    checks:
+      - check_type: "command"
+        check_value: |-
+          gh api repos/OmniNode-ai/omniintelligence/contents/uv.lock?ref=5af5108ecaf0a105eb37ce0f70f7c8f01cd61231 --jq '.content' | base64 -d | grep -cF 'https://files.pythonhosted.org/packages/38/bf/93003e6f7e81a934f759aef301cfe94830be82f39bb0a0e45634ad134612/omnibase_core-0.47.23.tar.gz'
+  - id: "dod-OmniNode-ai-omniintelligence-pr-944-ci"
+    description: "PR #944 on OmniNode-ai/omniintelligence — product diff scope check (OMN-14425)."
+    source: "generated"
+    checks:
+      - check_type: "command"
+        check_value: "gh pr view 944 --repo OmniNode-ai/omniintelligence --json files"
+  - id: "occ-self-bind-pr-12080"
+    description: "OCC companion PR #12080 — self-bind for OMN-13902 (OMN-14650)."
+    source: "generated"
+    checks:
+      - check_type: "command"
+        check_value: "gh pr view 12080 --repo OmniNode-ai/onex_change_control --json number,state"
+  - id: "dod-occ-evidence-admissibility-validator-pr-944"
+    description: "Hosted OCC evidence admissibility validator (OMN-15247)."
+    source: "generated"
+    checks:
+      - check_type: "command"
+        check_value: "uv run pytest tests/test_evidence_admissibility.py -q"
+  - id: "occ-self-bind-pr-11237"
+    description: "OCC companion PR #11237 — self-bind for OMN-13902 (OMN-14650)."
+    source: "generated"
+    checks:
+      - check_type: "command"
+        check_value: "gh pr view 11237 --repo OmniNode-ai/onex_change_control --json number,state"
+  - id: "dod-OmniNode-ai-omnimemory-pr-540"
+    description: "PR #540 on OmniNode-ai/omnimemory — Evidence-Source autobind."
+    source: "generated"
+    checks:
+      - check_type: "command"
+        check_value: |-
+          gh api repos/OmniNode-ai/omnimemory/contents/uv.lock?ref=bfe095302e4e9eb30221b1f55a765dac5de92eed --jq '.content' | base64 -d | grep -cF 'https://files.pythonhosted.org/packages/e1/af/bd689ebf0805b8413e6e6f7fdea6fc9ea3ee59f6c0c1ce5c8bd4f427384c/omnibase_infra-0.38.58.tar.gz'
+  - id: "dod-OmniNode-ai-omnimemory-pr-540-ci"
+    description: "PR #540 on OmniNode-ai/omnimemory — product diff scope check (OMN-14425)."
+    source: "generated"
+    checks:
+      - check_type: "command"
+        check_value: "gh pr view 540 --repo OmniNode-ai/omnimemory --json files"
+  - id: "dod-occ-evidence-admissibility-validator-pr-540"
+    description: "Hosted OCC evidence admissibility validator (OMN-15247)."
+    source: "generated"
+    checks:
+      - check_type: "command"
+        check_value: "uv run pytest tests/test_evidence_admissibility.py -q"
+  - id: "dod-OmniNode-ai-omniintelligence-pr-952"
+    description: "PR #952 on OmniNode-ai/omniintelligence — Evidence-Source autobind."
+    source: "generated"
+    checks:
+      - check_type: "command"
+        check_value: |-
+          gh api repos/OmniNode-ai/omniintelligence/contents/uv.lock?ref=c656bb6c0f29c73b9f27afd6d67f9dc485c2b0fc --jq '.content' | base64 -d | grep -cF 'https://files.pythonhosted.org/packages/50/87/c91e8f54130ce0eea351a58a735635f29067d058f5dc4c86ed04f8d59a4c/omnimarket-0.4.225.tar.gz'
+  - id: "dod-OmniNode-ai-omniintelligence-pr-952-ci"
+    description: "PR #952 on OmniNode-ai/omniintelligence — product diff scope check (OMN-14425)."
+    source: "generated"
+    checks:
+      - check_type: "command"
+        check_value: "gh pr view 952 --repo OmniNode-ai/omniintelligence --json files"
+  - id: "dod-occ-evidence-admissibility-validator-pr-952"
+    description: "Hosted OCC evidence admissibility validator (OMN-15247)."
+    source: "generated"
+    checks:
+      - check_type: "command"
+        check_value: "uv run pytest tests/test_evidence_admissibility.py -q"
+  - id: "occ-self-bind-pr-11424"
+    description: "OCC companion PR #11424 — self-bind for OMN-13902 (OMN-14650)."
+    source: "generated"
+    checks:
+      - check_type: "command"
+        check_value: "gh pr view 11424 --repo OmniNode-ai/onex_change_control --json number,state"
+  - id: "occ-self-bind-pr-11426"
+    description: "OCC companion PR #11426 — self-bind for OMN-13902 (OMN-14650)."
+    source: "generated"
+    checks:
+      - check_type: "command"
+        check_value: "gh pr view 11426 --repo OmniNode-ai/onex_change_control --json number,state"
+  - id: "occ-self-bind-pr-11788"
+    description: "OCC companion PR #11788 — self-bind for OMN-13902 (OMN-14650)."
+    source: "generated"
+    checks:
+      - check_type: "command"
+        check_value: "gh pr view 11788 --repo OmniNode-ai/onex_change_control --json number,state"
+  - id: "dod-OmniNode-ai-omnimemory-pr-556"
+    description: "PR #556 on OmniNode-ai/omnimemory — Evidence-Source autobind."
+    source: "generated"
+    checks:
+      - check_type: "command"
+        check_value: |-
+          gh api repos/OmniNode-ai/omnimemory/contents/uv.lock?ref=3b0460299418baf000ed9bc12bd4a8834cfa1dfd --jq '.content' | base64 -d | grep -cF 'https://files.pythonhosted.org/packages/ff/c7/7111e984ac822f924f5c8d6ef19297b27b2c53c8ba1154311639b9da5ec9/omnibase_core-0.47.27.tar.gz'
+  - id: "dod-OmniNode-ai-omnimemory-pr-556-ci"
+    description: "PR #556 on OmniNode-ai/omnimemory — product diff scope check (OMN-14425)."
+    source: "generated"
+    checks:
+      - check_type: "command"
+        check_value: "gh pr view 556 --repo OmniNode-ai/omnimemory --json files"
+  - id: "dod-occ-evidence-admissibility-validator-pr-556"
+    description: "Hosted OCC evidence admissibility validator (OMN-15247)."
+    source: "generated"
+    checks:
+      - check_type: "command"
+        check_value: "uv run pytest tests/test_evidence_admissibility.py -q"
+        cwd: "${OMNI_HOME}/onex_change_control"
+  - id: "dod-OmniNode-ai-omniclaude-pr-2367"
+    description: "PR #2367 on OmniNode-ai/omniclaude — Evidence-Source autobind."
+    source: "generated"
+    checks:
+      - check_type: "command"
+        check_value: |-
+          gh api repos/OmniNode-ai/omniclaude/contents/uv.lock?ref=ee5b6aa2facad9894306577bd83b9db7c37315d1 --jq '.content' | base64 -d | grep -cF 'https://github.com/OmniNode-ai/omnimarket.git?rev=671d4820cfb7aa9beb43cb78d16f4b05ec106803'
+  - id: "dod-OmniNode-ai-omniclaude-pr-2367-ci"
+    description: "PR #2367 on OmniNode-ai/omniclaude — product diff scope check (OMN-14425)."
+    source: "generated"
+    checks:
+      - check_type: "command"
+        check_value: "gh pr view 2367 --repo OmniNode-ai/omniclaude --json files"
+  - id: "dod-OmniNode-ai-omniintelligence-pr-957"
+    description: "PR #957 on OmniNode-ai/omniintelligence — Evidence-Source autobind."
+    source: "generated"
+    checks:
+      - check_type: "command"
+        check_value: |-
+          gh api repos/OmniNode-ai/omniintelligence/contents/uv.lock?ref=7b43cfc9c13bb9ae2b281b4cd5c3d515cf82628d --jq '.content' | base64 -d | grep -cF 'https://files.pythonhosted.org/packages/d9/c5/d6ffc89fb6e68a392b69864fe903b10ecc3f348de0d0e54a7ce9f0230410/omnimarket-0.4.261.tar.gz'
+  - id: "dod-OmniNode-ai-omniintelligence-pr-957-ci"
+    description: "PR #957 on OmniNode-ai/omniintelligence — product diff scope check (OMN-14425)."
+    source: "generated"
+    checks:
+      - check_type: "command"
+        check_value: "gh pr view 957 --repo OmniNode-ai/omniintelligence --json files"
+  - id: "dod-OmniNode-ai-omniintelligence-pr-1006"
+    description: "PR #1006 on OmniNode-ai/omniintelligence — Evidence-Source autobind."
+    source: "generated"
+    checks:
+      - check_type: "command"
+        check_value: |-
+          gh api repos/OmniNode-ai/omniintelligence/contents/uv.lock?ref=7ea08c055ee31d66f5b7446681eab2550dfdcc09 --jq '.content' | base64 -d | grep -cF 'https://files.pythonhosted.org/packages/82/e4/cb0c4c9c62c957d74d07c4b098cf10b9b540ac7c1faab68c91af1ee4684f/omnimarket-0.4.301.tar.gz'
+  - id: "dod-OmniNode-ai-omniintelligence-pr-1006-ci"
+    description: "PR #1006 on OmniNode-ai/omniintelligence — product diff scope check (OMN-14425)."
+    source: "generated"
+    checks:
+      - check_type: "command"
+        check_value: "gh pr view 1006 --repo OmniNode-ai/omniintelligence --json files"
+  - id: "dod-occ-evidence-admissibility-validator-pr-1006"
+    description: "Hosted OCC evidence admissibility validator (OMN-15247)."
+    source: "generated"
+    checks:
+      - check_type: "command"
+        check_value: "uv run pytest tests/test_evidence_admissibility.py -q"
+        cwd: "${OMNI_HOME}/onex_change_control"
+  - id: "dod-occ-evidence-admissibility-validator-pr-957"
+    description: "Hosted OCC evidence admissibility validator (OMN-15247)."
+    source: "generated"
+    checks:
+      - check_type: "command"
+        check_value: "uv run pytest tests/test_evidence_admissibility.py -q"
+  - id: "dod-occ-evidence-admissibility-validator-pr-2367"
+    description: "Hosted OCC evidence admissibility validator (OMN-15247)."
+    source: "generated"
+    checks:
+      - check_type: "command"
+        check_value: "uv run pytest tests/test_evidence_admissibility.py -q"
+  - id: "occ-self-bind-pr-11425"
+    description: "OCC companion PR #11425 — self-bind for OMN-13902 (OMN-14650)."
+    source: "generated"
+    checks:
+      - check_type: "command"
+        check_value: "gh pr view 11425 --repo OmniNode-ai/onex_change_control --json number,state"
+  - id: "dod-OmniNode-ai-omnimemory-pr-544"
+    description: "PR #544 on OmniNode-ai/omnimemory — Evidence-Source autobind."
+    source: "generated"
+    checks:
+      - check_type: "command"
+        check_value: |-
+          gh api repos/OmniNode-ai/omnimemory/contents/uv.lock?ref=baeec04203a9d0e2c7b24c8a710dbdbd454effb3 --jq '.content' | base64 -d | grep -cF 'https://files.pythonhosted.org/packages/13/cc/d0317bbb50f790fb6589b567ac7263f815b6600796b44e28e4b615db5f09/omnibase_core-0.47.24.tar.gz'
+  - id: "dod-OmniNode-ai-omnimemory-pr-544-ci"
+    description: "PR #544 on OmniNode-ai/omnimemory — product diff scope check (OMN-14425)."
+    source: "generated"
+    checks:
+      - check_type: "command"
+        check_value: "gh pr view 544 --repo OmniNode-ai/omnimemory --json files"
+  - id: "dod-occ-evidence-admissibility-validator-pr-544"
+    description: "Hosted OCC evidence admissibility validator (OMN-15247)."
+    source: "generated"
+    checks:
+      - check_type: "command"
+        check_value: "uv run pytest tests/test_evidence_admissibility.py -q"
+  - id: "dod-OmniNode-ai-omniclaude-pr-2535"
+    description: "PR #2535 on OmniNode-ai/omniclaude — Evidence-Source autobind."
+    source: "generated"
+    checks:
+      - check_type: "command"
+        check_value: |-
+          gh api repos/OmniNode-ai/omniclaude/contents/uv.lock?ref=b4a56209ffe4c40905a9b53b69048ffb837b5318 --jq '.content' | base64 -d | grep -cF 'https://github.com/OmniNode-ai/omnimarket.git?rev=796051348e4f9cd8cebae875bf3e3cc39bb2cce1'
+  - id: "dod-OmniNode-ai-omniclaude-pr-2535-ci"
+    description: "PR #2535 on OmniNode-ai/omniclaude — product diff scope check (OMN-14425)."
+    source: "generated"
+    checks:
+      - check_type: "command"
+        check_value: "gh pr view 2535 --repo OmniNode-ai/omniclaude --json files"
+  - id: "dod-occ-evidence-admissibility-validator-pr-2535"
+    description: "Hosted OCC evidence admissibility validator (OMN-15247)."
+    source: "generated"
+    checks:
+      - check_type: "command"
+        check_value: "uv run pytest tests/test_evidence_admissibility.py -q"
+        cwd: "${OMNI_HOME}/onex_change_control"
+  - id: "occ-self-bind-pr-11603"
+    description: "OCC companion PR #11603 — self-bind for OMN-13902 (OMN-14650)."
+    source: "generated"
+    checks:
+      - check_type: "command"
+        check_value: "gh pr view 11603 --repo OmniNode-ai/onex_change_control --json number,state"
+  - id: "dod-OmniNode-ai-omniclaude-pr-2385"
+    description: "PR #2385 on OmniNode-ai/omniclaude — Evidence-Source autobind."
+    source: "generated"
+    checks:
+      - check_type: "command"
+        check_value: |-
+          gh api repos/OmniNode-ai/omniclaude/contents/uv.lock?ref=29a4d16f7f5d4cef369f29f730b0872f64e12ecb --jq '.content' | base64 -d | grep -cF 'https://github.com/OmniNode-ai/omnimarket.git?rev=67cae0fe3b806a3b738ca618d555e0046fdf7841'
+  - id: "dod-OmniNode-ai-omniclaude-pr-2385-ci"
+    description: "PR #2385 on OmniNode-ai/omniclaude — product diff scope check (OMN-14425)."
+    source: "generated"
+    checks:
+      - check_type: "command"
+        check_value: "gh pr view 2385 --repo OmniNode-ai/omniclaude --json files"
+  - id: "dod-occ-evidence-admissibility-validator-pr-2385"
+    description: "Hosted OCC evidence admissibility validator (OMN-15247)."
+    source: "generated"
+    checks:
+      - check_type: "command"
+        check_value: "uv run pytest tests/test_evidence_admissibility.py -q"
+  - id: "occ-self-bind-pr-11604"
+    description: "OCC companion PR #11604 — self-bind for OMN-13902 (OMN-14650)."
+    source: "generated"
+    checks:
+      - check_type: "command"
+        check_value: "gh pr view 11604 --repo OmniNode-ai/onex_change_control --json number,state"
+  - id: "dod-OmniNode-ai-omniintelligence-pr-955"
+    description: "PR #955 on OmniNode-ai/omniintelligence — Evidence-Source autobind."
+    source: "generated"
+    checks:
+      - check_type: "command"
+        check_value: |-
+          gh api repos/OmniNode-ai/omniintelligence/contents/uv.lock?ref=e0275fda2791b5613a33b2447180c461da610bc7 --jq '.content' | base64 -d | grep -cF 'https://files.pythonhosted.org/packages/13/cc/d0317bbb50f790fb6589b567ac7263f815b6600796b44e28e4b615db5f09/omnibase_core-0.47.24.tar.gz'
+  - id: "dod-OmniNode-ai-omniintelligence-pr-955-ci"
+    description: "PR #955 on OmniNode-ai/omniintelligence — product diff scope check (OMN-14425)."
+    source: "generated"
+    checks:
+      - check_type: "command"
+        check_value: "gh pr view 955 --repo OmniNode-ai/omniintelligence --json files"
+  - id: "dod-occ-evidence-admissibility-validator-pr-955"
+    description: "Hosted OCC evidence admissibility validator (OMN-15247)."
+    source: "generated"
+    checks:
+      - check_type: "command"
+        check_value: "uv run pytest tests/test_evidence_admissibility.py -q"
+  - id: "occ-self-bind-pr-11605"
+    description: "OCC companion PR #11605 — self-bind for OMN-13902 (OMN-14650)."
+    source: "generated"
+    checks:
+      - check_type: "command"
+        check_value: "gh pr view 11605 --repo OmniNode-ai/onex_change_control --json number,state"
+  - id: "occ-self-bind-pr-11883"
+    description: "OCC companion PR #11883 — self-bind for OMN-13902 (OMN-14650)."
+    source: "generated"
+    checks:
+      - check_type: "command"
+        check_value: "gh pr view 11883 --repo OmniNode-ai/onex_change_control --json number,state"
+  - id: "occ-self-bind-pr-11957"
+    description: "OCC companion PR #11957 — self-bind for OMN-13902 (OMN-14650)."
+    source: "generated"
+    checks:
+      - check_type: "command"
+        check_value: "gh pr view 11957 --repo OmniNode-ai/onex_change_control --json number,state"
+  - id: "dod-OmniNode-ai-omniclaude-pr-2386"
+    description: "PR #2386 on OmniNode-ai/omniclaude — Evidence-Source autobind."
+    source: "generated"
+    checks:
+      - check_type: "command"
+        check_value: |-
+          gh api repos/OmniNode-ai/omniclaude/contents/uv.lock?ref=8307fb94e272bee2f3771436dc45dcbc8e0e27ba --jq '.content' | base64 -d | grep -cF 'https://github.com/OmniNode-ai/omnimarket.git?rev=fa9f7dcf373a34f8333e039b79458f85a347c791'
+  - id: "dod-OmniNode-ai-omniclaude-pr-2386-ci"
+    description: "PR #2386 on OmniNode-ai/omniclaude — product diff scope check (OMN-14425)."
+    source: "generated"
+    checks:
+      - check_type: "command"
+        check_value: "gh pr view 2386 --repo OmniNode-ai/omniclaude --json files"
+  - id: "occ-self-bind-pr-12288"
+    description: "OCC companion PR #12288 — self-bind for OMN-13902 (OMN-14650)."
+    source: "generated"
+    checks:
+      - check_type: "command"
+        check_value: "gh pr view 12288 --repo OmniNode-ai/onex_change_control --json number,state"
+  - id: "dod-occ-evidence-admissibility-validator-pr-2386"
+    description: "Hosted OCC evidence admissibility validator (OMN-15247)."
+    source: "generated"
+    checks:
+      - check_type: "command"
+        check_value: "uv run pytest tests/test_evidence_admissibility.py -q"
+  - id: "occ-self-bind-pr-11639"
+    description: "OCC companion PR #11639 — self-bind for OMN-13902 (OMN-14650)."
+    source: "generated"
+    checks:
+      - check_type: "command"
+        check_value: "gh pr view 11639 --repo OmniNode-ai/onex_change_control --json number,state"
+  - id: "occ-admissibility-pr-2430-rb19384-claude2430"
+    description: >-
+      OMN-19384 lineage. Disclosed-skip supersession of dod-occ-evidence-admissibility-validator-pr-2430,
+      minted by the autobind of the OCC batch window that bound omniclaude#2430 to OMN-13902. The superseded
+      item's only check is 'uv run pytest tests/test_evidence_admissibility.py -q' with no declared cwd.
+      That test file exists only in onex_change_control, so the check passes when the evaluating workspace
+      is the OCC tree and exits 4 (no tests ran, file not found) in the omniclaude product tree, which
+      is what the omniclaude Contract Compliance Check read once OMN-20138 (omniclaude#2429) made it read
+      the PR's own ticket contract at the evidence commit and execute the items bound to the PR (job 109792038217
+      of the omniclaude CI run for omniclaude#2430, summary 8/353 PASS, 1 BLOCK). The pinned OCC checker
+      executes every check in the product workspace and has no cwd or execution_scope field, so no declaration
+      on a replacement can route this check to an OCC checkout. The superseded item states no fact about
+      omniclaude#2430; its producer mints it as an admissibility floor and records that it proves nothing
+      about the product change. The product fact for omniclaude#2430 is carried by the sibling item dod-OmniNode-ai-omniclaude-pr-2430-ci.
+      The admissibility suite itself stays covered by OCC's own required CI on every OCC PR. Nothing here
+      produces a PASS. Same shape as OCC#11870.
+    source: "manual"
+    status: "skipped"
+    evidence_artifact: "supersedes_dod_evidence:dod-occ-evidence-admissibility-validator-pr-2430"
+  - id: "occ-admissibility-pr-2443-supersede"
+    description: >-
+      OMN-19384 lineage. Disclosed-skip supersession of dod-occ-evidence-admissibility-validator-pr-2443,
+      minted by the autobind of the OCC batch window that bound omniclaude#2443 to OMN-13902 (OCC#11953).
+      The superseded item's only check is 'uv run pytest tests/test_evidence_admissibility.py -q' with
+      no declared cwd. That test file exists only in onex_change_control, so in the omniclaude product
+      tree it exits 4 (no tests ran, file not found), which is what the omniclaude Contract Compliance
+      Check read for omniclaude#2443 at head 8e498c27f9fb5ae7c7193044c1b6e0125faec1c1 (job 109966554577
+      of run 36736770358, summary 8/362 PASS, 1 BLOCK). The superseded item states no fact about omniclaude#2443;
+      the product fact is carried by the sibling item dod-OmniNode-ai-omniclaude-pr-2443-ci. The admissibility
+      suite stays covered by OCC's own required CI on every OCC PR. Nothing here produces a PASS. Same
+      shape as the item occ-admissibility-pr-2430-rb19384-claude2430.
+    source: "manual"
+    status: "skipped"
+    evidence_artifact: "supersedes_dod_evidence:dod-occ-evidence-admissibility-validator-pr-2443"
+  - id: "occ-admissibility-pr-2444-supersede"
+    description: >-
+      OMN-19384 lineage. Disclosed-skip supersession of dod-occ-evidence-admissibility-validator-pr-2444,
+      minted by the autobind of the OCC batch window that bound omniclaude#2444 to OMN-13902 (OCC#11957).
+      The superseded item's only check is 'uv run pytest tests/test_evidence_admissibility.py -q' with
+      no declared cwd. That test file exists only in onex_change_control, so in the omniclaude product
+      tree it exits 4 (no tests ran, file not found), which is what the omniclaude Contract Compliance
+      Check read for omniclaude#2444 at head a894c362f41d4887cb959585d0e44551f2fa6cc5 (job 109995117335
+      of run 36740003970, summary 8/366 PASS, 1 BLOCK). The superseded item states no fact about omniclaude#2444;
+      the product fact is carried by the sibling item dod-OmniNode-ai-omniclaude-pr-2444-ci. The admissibility
+      suite stays covered by OCC's own required CI on every OCC PR. Nothing here produces a PASS. Same
+      shape as the item occ-admissibility-pr-2443-supersede.
+    source: "manual"
+    status: "skipped"
+    evidence_artifact: "supersedes_dod_evidence:dod-occ-evidence-admissibility-validator-pr-2444"
+  - id: "dod-OmniNode-ai-omnibase_infra-pr-4456-ci"
+    description: "PR #4456 on OmniNode-ai/omnibase_infra: sibling-lock-refresh product diff scope (uv.lock
+      and runner-image lock only)."
+    source: "generated"
+    checks:
+      - check_type: "command"
+        check_value: "gh pr view 4456 --repo OmniNode-ai/omnibase_infra --json files"

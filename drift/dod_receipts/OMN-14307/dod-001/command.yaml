@@ -1,0 +1,46 @@
+---
+schema_version: "1.0.0"
+ticket_id: "OMN-14307"
+evidence_item_id: "dod-001"
+check_type: "command"
+check_value: >-
+  live CLI typed-object-per-operation + 25 protocol tests + mutation-discrimination proof + injected-transport
+  purity + mypy --strict at product head 1ce87561fe32fbe2923e723b4908f0a84507df9c
+status: PASS
+run_timestamp: "2026-07-10T19:45:10Z"
+commit_sha: "1ce87561fe32fbe2923e723b4908f0a84507df9c"
+runner: "gateway-builder"
+verifier: "build-verifier-2"
+pr_number: 1703
+probe_command: >-
+  env -u PYTHONPATH uv run pytest tests/nodes/node_github_repo_gateway_effect/ -q; env -u PYTHONPATH uv
+  run python -m omnimarket.nodes.node_github_repo_gateway_effect --operation <pr_status|ci_checks|open_prs_list|ticket_ref>
+  --repo OmniNode-ai/omnimarket [--pr 1703]; <mutation: mis-route ci_checks->read_pr_status in dispatcher,
+  rerun protocol A+B, restore>; env -u PYTHONPATH uv run mypy src/omnimarket/nodes/node_github_repo_gateway_effect/
+  --strict
+probe_stdout: |
+  25 passed in 0.10s
+  pr_status  -> one typed object: operation=pr_status pr=1703 overall=in-flight blocked=true merge_state_status=BLOCKED failing_contexts=[]
+  ci_checks  -> one typed object: operation=ci_checks pr=1703 overall=in-flight total=36 green=2 failed=0 in-flight=34 failing_contexts=[]
+  open_prs_list -> one typed object: count=22 with a typed prs[] array (first number=1701)
+  ticket_ref -> one typed object: head_ref=jonah/omn-14307-... ticket_id=OMN-14307
+  mutation (ci_checks->read_pr_status): 2 failed, 8 passed -- protocol A[ci_checks] isinstance RED + protocol B byte-divergence RED; restored, worktree clean
+  mypy --strict: Success, no issues found in 10 source files
+actual_output: >-
+  PASS: independent verification of the read slice at product head 1ce87561fe32fbe2923e723b4908f0a84507df9c
+  by build-verifier-2 (distinct from the implementer gateway-builder). (a) The CLI returns ONE small typed
+  JSON object per operation (verified live for pr_status / ci_checks / open_prs_list / ticket_ref against
+  a real repo/PR — not a gh dump); the GitHub token is resolved through the secret store, not a gh shell-out.
+  (b) All 25 protocol tests pass and are mutation-discriminating, not pass-by-construction: mis-routing
+  ci_checks -> read_pr_status in the dispatcher turned protocol A[ci_checks] RED (isinstance against the
+  wrong result model) and protocol B RED (dispatch output byte-diverged from the direct read), exactly
+  the mutation the PR claims; the change was reverted and the worktree is clean. (c) Injected-transport
+  purity holds: each read leaf takes an injected transport and no read function calls another (AST-checked
+  + read); the token is resolved via contract_secret_ref -> resolve_api_key with no raw os.environ/os.getenv
+  read and is never logged (static greps + read); RealGitHubReadTransport reuses GitHubHttpClient + github_api.graphql
+  with no subprocess gh and never reads the environment. mypy --strict on the node is clean and the out-of-scope
+  live-Kafka runtime path + effect leaves are honestly declared (contract lifecycle: experimental, metadata
+  full_runtime: false).
+exit_code: 0
+branch: "jonah/omn-14307-typed-github-repo-gateway-read"
+contract_sha256: "sha256:7d22c91d7dfa757513054625e4f81cccd0adea2817af5702fe00a330baac2eff"

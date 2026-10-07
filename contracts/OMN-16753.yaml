@@ -1,0 +1,265 @@
+---
+schema_version: "1.0.0"
+ticket_id: "OMN-16753"
+title: "Autobind OCC evidence for OMN-16753"
+summary: "OCC Evidence-Source autobind companion (OMN-13317 F1) for PR #1116."
+is_seam_ticket: false
+interface_change: false
+interfaces_touched: []
+evidence_requirements:
+  - kind: "ci"
+    description: "PR #1116 product diff scope present"
+    command: "gh pr view ${PR_NUMBER} --repo ${REPO} --json files"
+  - kind: "tests"
+    description: |-
+      Behavior proof for PR #1116 on OmniNode-ai/omninode_infra, derived from the PR's own diff: the test target(s) it adds or changes. Bound as dod_evidence item `dod-occ-diff-derived-behavior-proof`, executed at cwd `${OMNI_HOME}/omninode_infra`.
+    command: "uv run pytest tests/k8s/test_omn_16753_prod_api_gateway_surface_pin.py -q"
+emergency_bypass:
+  enabled: false
+  justification: ""
+  follow_up_ticket_id: ""
+dod_evidence:
+  - id: "dod-OmniNode-ai-omninode_infra-pr-1116"
+    description: "PR #1116 on OmniNode-ai/omninode_infra — Evidence-Source autobind."
+    source: "generated"
+    checks:
+      - check_type: "command"
+        check_value: "gh pr view 1116 --repo OmniNode-ai/omninode_infra --json number,state"
+  - id: "dod-OmniNode-ai-omninode_infra-pr-1116-ci"
+    description: "PR #1116 on OmniNode-ai/omninode_infra — product diff scope check (OMN-14425)."
+    source: "generated"
+    checks:
+      - check_type: "command"
+        check_value: "gh pr view 1116 --repo OmniNode-ai/omninode_infra --json files"
+  - id: "dod-occ-diff-derived-behavior-proof"
+    description: "PR #1116 on OmniNode-ai/omninode_infra — diff-derived behavior proof (OMN-16434)."
+    source: "generated"
+    evidence_artifact: "supersedes_dod_evidence:dod-OmniNode-ai-omninode_infra-pr-1116"
+    checks:
+      - check_type: "test_passes"
+        check_value: "uv run pytest tests/k8s/test_omn_16753_prod_api_gateway_surface_pin.py -q"
+        cwd: "${OMNI_HOME}/omninode_infra"
+  - id: "occ-self-bind-pr-7893"
+    description: "OCC companion PR #7893 — self-bind for OMN-16753 (OMN-14650)."
+    source: "generated"
+    checks:
+      - check_type: "command"
+        check_value: "gh pr view 7893 --repo OmniNode-ai/onex_change_control --json number,state"
+  # --- OMN-16753 App-authored grant-staging path (appended; nothing above is modified) ---
+  # A prod-promotion grant is only real once a human CODEOWNERS operator merges it onto
+  # onex_change_control@main — that merge IS the approval act (OMN-13418). Every staging PR
+  # before this was opened by the CODEOWNER themselves (OCC#7418, OCC#7899), and GitHub does
+  # not let an author approve their own pull request, so the review half of the gate could
+  # never actually be exercised. Operator ruling 2026-09-06, firm: the staging PR is to be
+  # opened by the onexbot-occ-writer App. These three items cover that path's tooling and the
+  # OMN-16753 request bundle it renders. Dev-only: no production mutation, no grant registry
+  # change on main, no dispatch of deploy-onex-prod.yml, and no change to any standing
+  # operator restriction on dispatching.
+  - id: "dod-occ-grant-staging-workflow-exists"
+    description: >-
+      .github/workflows/stage-prod-promotion-grant.yml is present on this branch, is a workflow_dispatch
+      workflow, and mints the onexbot-occ-writer App installation token from the org secrets ONEXBOT_OCC_APP_ID
+      / ONEXBOT_OCC_PRIVATE_KEY via actions/create-github-app-token — the same pinned mint shape this
+      repo already uses in nightly-promote.yml and evidence-import.yml. The token is exported only into
+      step env and is never echoed or written to a file.
+    source: "manual"
+    status: "verified"
+    checks:
+      - check_type: "command"
+        check_value: >-
+          grep -q 'workflow_dispatch:' .github/workflows/stage-prod-promotion-grant.yml && grep -q 'ONEXBOT_OCC_APP_ID'
+          .github/workflows/stage-prod-promotion-grant.yml && grep -q 'ONEXBOT_OCC_PRIVATE_KEY' .github/workflows/stage-prod-promotion-grant.yml
+  - id: "dod-occ-grant-request-bundle-complete"
+    description: >-
+      The OMN-16753 request bundle under .github/prod-promotion-requests/OMN-16753/ carries every file
+      the workflow refuses to run without — manifest.yaml (the asserted approved_by / expires_at / grant
+      ids that dispatch inputs are checked against), entries_block.yaml (the grant entries and their header),
+      occ_contract.yaml (the OCC contract rendered onto the hotfix branch), pr_body.md (the PR body, carrying
+      the main-target-guard hotfix-evidence and backmerge lines), and receipts/ (the three DoD receipts
+      whose probe output was produced against the manifest's values). The workflow fails closed on any
+      missing member and on any dispatch input that disagrees with the manifest — which is what stops
+      a dispatcher staging a different approved_by or expires_at while shipping receipts that attest to
+      the old ones.
+    source: "manual"
+    status: "verified"
+    checks:
+      - check_type: "command"
+        check_value: >-
+          test -f .github/prod-promotion-requests/OMN-16753/manifest.yaml && test -f .github/prod-promotion-requests/OMN-16753/entries_block.yaml
+          && test -f .github/prod-promotion-requests/OMN-16753/occ_contract.yaml && test -f .github/prod-promotion-requests/OMN-16753/pr_body.md
+          && test -d .github/prod-promotion-requests/OMN-16753/receipts
+  - id: "dod-occ-grant-consumer-gate-preproof"
+    description: >-
+      The consumer of the grant registry — omninode_infra scripts/validate_prod_promotion_grant.py (OMN-14209,
+      extended by OMN-17357), the exact script deploy-onex-prod.yml runs — resolved against the file this
+      bundle renders, offline via its own --grants-file path, from an omninode_infra worktree at main
+      bc451167. Two legs. Leg A, with no staging-green report, is how a dispatch would actually run today:
+      all four dispatcher/digest combinations BLOCK on the OMN-17357 staging-green premise, which is evaluated
+      before the grant anchor is read. Leg B supplies a synthetic GREEN report SOLELY to isolate the grant
+      leg — a fixture, labelled as such, that proves nothing about staging — and on it both digests PASS
+      for dispatcher daniyalabbas96 and both BLOCK as self_granted for dispatcher jonahgabriel. Recorded
+      here on dev so the finding is reviewable before any grant PR is opened.
+    source: "manual"
+    status: "verified"
+    checks:
+      - check_type: "command"
+        check_value: >-
+          grep -q '^status: PASS$' drift/dod_receipts/OMN-16753/dod-occ-grant-consumer-gate-preproof/command.yaml
+  - id: "occ-self-bind-pr-8510"
+    description: >-
+      OCC PR #8510 on OmniNode-ai/onex_change_control — keeps the OMN-16753 grant-request bundle's dod_evidence
+      ids under the 50-character ModelTicketContract cap, so the App-authored staging PR the bundle renders
+      can pass Validate Contract YAML. Tooling fix only: no grant value changes and no prod mutation.
+    source: "manual"
+    status: "verified"
+    checks:
+      - check_type: "command"
+        check_value: "gh pr view 8510 --repo OmniNode-ai/onex_change_control --json number,state,baseRefName,headRefName"
+  - id: "occ-self-bind-pr-8528"
+    description: >-
+      OCC PR #8528 on OmniNode-ai/onex_change_control — corrects the OMN-16753 grant-request bundle's
+      citation of its own path (it lives at .github/prod-promotion-requests/<ticket>/, not grants/requests/<ticket>/)
+      in the three places that said otherwise, including the entries_block.yaml comment that is spliced
+      verbatim into grants/prod_promotion_grants.yaml on main, and records the OCC#8504 supersession in
+      the approver-facing pr_body.md. Review-side text only: no grant value changes, no prod mutation,
+      and the standing operator restriction on dispatching deploy-onex-prod.yml is untouched.
+    source: "manual"
+    status: "verified"
+    checks:
+      - check_type: "command"
+        check_value: "gh pr view 8528 --repo OmniNode-ai/onex_change_control --json number,state,baseRefName,headRefName"
+  - id: "dod-occ-grant-revoke-mode"
+    description: >-
+      .github/workflows/stage-prod-promotion-grant.yml carries a REVOKE mode, so removing a grant goes
+      through the same App-authored path that stages one (operator ruling 2026-09-08, firm). Before this,
+      the workflow was add-only by construction — it refuses to render unless grants/prod_promotion_grants.yaml
+      already reads `entries: []`, which is exactly the state a revocation is trying to restore — so the
+      only way to revoke was a hand-opened PR under the CODEOWNER's own identity, which recreates the
+      self-approval deadlock the 2026-09-06 ruling exists to end. The removal itself is src/onex_change_control/scripts/revoke_prod_promotion_grants.py,
+      not an inline heredoc, precisely so its three fail-closed invariants are unit-testable: every named
+      entry must be present before anything is removed (a revocation that silently no-ops on an absent
+      id reads exactly like one that worked); no expired entry may remain (OMN-13424, or a partial revocation
+      turns every subsequent PR to main red); and the header bytes above `entries:` survive the rewrite
+      unchanged, which is why the rewrite is textual and never a YAML round-trip. Revoke mode also REFUSES
+      the approved_by and expires_at inputs rather than accepting and ignoring them, and requires the
+      durable consent citation and the operator's verbatim words in their place.
+    source: "manual"
+    status: "verified"
+    checks:
+      - check_type: "command"
+        check_value: "uv run pytest tests/test_prod_promotion_grants.py -q"
+  - id: "dod-occ-grant-revocation-bundle-complete"
+    description: >-
+      The OMN-16753 revocation bundle under .github/prod-promotion-requests/OMN-16753/revocation/ carries
+      every file revoke mode refuses to run without — manifest.yaml (the grant ids to remove plus the
+      consent citation and the operator's verbatim words, checked at dispatch), occ_contract.yaml (the
+      OCC contract rendered onto the hotfix branch), pr_body.md (the PR body carrying the main-target-guard
+      hotfix-evidence and backmerge lines), and receipts/ (the three DoD receipts whose probe output was
+      produced against the file the revocation actually renders). It is a subdirectory of the staging
+      bundle rather than a replacement for it: the staging bundle stays as the record of what was granted,
+      and the revocation sits beside it as the record of how that grant ended.
+    source: "manual"
+    status: "verified"
+    checks:
+      - check_type: "command"
+        check_value: >-
+          test -f .github/prod-promotion-requests/OMN-16753/revocation/manifest.yaml && test -f .github/prod-promotion-requests/OMN-16753/revocation/occ_contract.yaml
+          && test -f .github/prod-promotion-requests/OMN-16753/revocation/pr_body.md && test -d .github/prod-promotion-requests/OMN-16753/revocation/receipts
+  - id: "occ-self-bind-pr-8667"
+    description: >-
+      OCC PR #8667 on OmniNode-ai/onex_change_control — adds REVOKE mode to stage-prod-promotion-grant.yml
+      so a grant is removed through the same App-authored path that stages one (operator ruling 2026-09-08,
+      firm), and lands the OMN-16753 revocation bundle that path renders. Workflow, script, tests and
+      a request bundle on dev only: it does not touch grants/prod_promotion_grants.yaml, which lives on
+      main, and no prod mutation is reachable from it. The revocation PR against main is opened by the
+      App by dispatching this workflow, and is a separate PR.
+    source: "manual"
+    status: "verified"
+    checks:
+      - check_type: "command"
+        check_value: "gh pr view 8667 --repo OmniNode-ai/onex_change_control --json number,state,baseRefName,headRefName"
+  # --- OMN-16753 deploy-scope evidence for omnibase_infra#3334 (appended; nothing above is modified) ---
+  # The product PR changes two deploy-scoped runtime paths --
+  # src/omnibase_infra/runtime/health/projection_liveness.py and
+  # src/omnibase_infra/services/service_runtime_health_monitor.py -- and this contract carried
+  # no deploy-scope DoD item, so both the hosted deploy-gate and its local pre-push mirror
+  # (OMN-14681) reported FAIL_NO_EVIDENCE against it. That gap was invisible while the OCC
+  # mint outage meant no companion existed for #3334 at all: the gate could not resolve a
+  # contract and so could not prove the gap. This item closes it.
+  - id: "dod-omn16753-deploy-runtime-carries-status"
+    description: >-
+      Deploy-scope proof for the OMN-16753 runtime change. The product PR (omnibase_infra#3334) changes
+      two deploy-scoped runtime paths -- runtime/health/projection_liveness.py and services/service_runtime_health_monitor.py
+      -- and this contract carried no deploy-scope DoD item, so has_deploy_evidence() returned False over
+      it and the deploy-gate context and its pre-push mirror (OMN-14681) both reported FAIL_NO_EVIDENCE.
+      This probe reads the bytes GitHub serves for those two paths at the pinned head and asserts the
+      per-subscription attribution the runtime image has to carry: the unattributable_flow_topics field
+      the saturation verdict now reports, and the select_projection_group_suffixes seam the monitor feeds
+      it from. It goes RED if either symbol is absent from either path. Two properties, stated rather
+      than implied. It is hermetic under the OMN-14051 guard -- a gh-api content read, no live daemon,
+      no ssh, no LAN route -- because a CI runner has none of those; the live in-container import is therefore
+      not expressible here, and this proves the symbols are on the branch the runtime image is built from,
+      NOT that a lane has been rebuilt. And it is deliberately not a readback of a receipt or contract
+      this work authors, which would grep text we wrote and could never go red. Read-only: nothing is
+      deployed, restarted or mutated by it.
+    source: "manual"
+    status: "verified"
+    checks:
+      - check_type: "command"
+        check_value: >-
+          liveness="$(gh api repos/OmniNode-ai/omnibase_infra/contents/src/omnibase_infra/runtime/health/projection_liveness.py?ref=e08a1c3f0e473baf29639192402db3caa7f1dce8
+          --jq '.content' | base64 -d)" && printf '%s' "$liveness" | grep -qF 'unattributable_flow_topics'
+          && monitor="$(gh api repos/OmniNode-ai/omnibase_infra/contents/src/omnibase_infra/services/service_runtime_health_monitor.py?ref=e08a1c3f0e473baf29639192402db3caa7f1dce8
+          --jq '.content' | base64 -d)" && printf '%s' "$monitor" | grep -qF 'select_projection_group_suffixes'
+          # deploy-scope probe for OMN-14681 -- the image the deploy agent builds must carry these symbols.
+          Each body is buffered before grep -qF (OMN-15411 Rule E): an unbounded producer piped straight
+          into an early-exit consumer is killed by SIGPIPE, and the dod_verify runner's pipefail turns
+          that 141 into a false RED on evidence that is present.
+  - id: "dod-OmniNode-ai-omnibase_infra-pr-3334"
+    description: "PR #3334 on OmniNode-ai/omnibase_infra — Evidence-Source autobind."
+    source: "generated"
+    checks:
+      - check_type: "command"
+        check_value: |-
+          gh api repos/OmniNode-ai/omnibase_infra/contents/scripts/runtime_build/health_payload.py?ref=e08a1c3f0e473baf29639192402db3caa7f1dce8 --jq '.content' | base64 -d | grep -c 'class HealthDimension'
+  - id: "dod-OmniNode-ai-omnibase_infra-pr-3334-ci"
+    description: "PR #3334 on OmniNode-ai/omnibase_infra — product diff scope check (OMN-14425)."
+    source: "generated"
+    checks:
+      - check_type: "command"
+        check_value: "gh pr view 3334 --repo OmniNode-ai/omnibase_infra --json files"
+  - id: "occ-self-bind-pr-8712"
+    description: "OCC companion PR #8712 — self-bind for OMN-16753 (OMN-14650)."
+    source: "generated"
+    checks:
+      - check_type: "command"
+        check_value: "gh pr view 8712 --repo OmniNode-ai/onex_change_control --json number,state"
+  - id: "occ-self-bind-pr-8724"
+    description: >-
+      OCC self-binding receipt for PR #8724, the in-repo evidence PR carrying this contract. Binds OMN-16753
+      to the OCC PR by pr_number so eligibility can resolve a PASS receipt for the evidence PR itself.
+    source: "manual"
+    status: "verified"
+    checks:
+      - check_type: "command"
+        check_value: >-
+          gh pr view 8724 --repo OmniNode-ai/onex_change_control --json number,state,headRefName
+  - id: "dod-OmniNode-ai-omnibase_infra-pr-3344"
+    description: "PR #3344 on OmniNode-ai/omnibase_infra — Evidence-Source autobind."
+    source: "generated"
+    checks:
+      - check_type: "command"
+        check_value: |-
+          gh api repos/OmniNode-ai/omnibase_infra/contents/src/omnibase_infra/models/health/model_flow_attribution.py?ref=a062e55cf1e5fa5f8c9b3a3ca3e9c23924a6bb34 --jq '.content' | base64 -d | grep -c 'class ModelFlowAttribution'
+  - id: "dod-OmniNode-ai-omnibase_infra-pr-3344-ci"
+    description: "PR #3344 on OmniNode-ai/omnibase_infra — product diff scope check (OMN-14425)."
+    source: "generated"
+    checks:
+      - check_type: "command"
+        check_value: "gh pr view 3344 --repo OmniNode-ai/omnibase_infra --json files"
+  - id: "occ-self-bind-pr-8741"
+    description: "OCC companion PR #8741 — self-bind for OMN-16753 (OMN-14650)."
+    source: "generated"
+    checks:
+      - check_type: "command"
+        check_value: "gh pr view 8741 --repo OmniNode-ai/onex_change_control --json number,state"

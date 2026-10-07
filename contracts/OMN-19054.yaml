@@ -1,0 +1,128 @@
+---
+schema_version: 1.0.0
+ticket_id: OMN-19054
+title: The DoD-to-Linear serializer is not idempotent against a body Linear has stored
+summary: |-
+  The first real write of a serialized acceptance-criteria section, to
+  OMN-18167 on 2026-09-21, showed that Linear does not store the bytes it is
+  given: its markdown normaliser rewrites the managed section on save. The
+  planner decided changed by comparing bytes, so every later run reported
+  CHANGED and a corpus sweep would have rewritten byte-identical criteria
+  forever. changed is now decided by the OMN-18236 reader -- the criteria the
+  existing managed span parses back to, against the criteria the model
+  declares -- so the planner answers whether the body already renders this
+  model rather than whether the bytes match.
+is_seam_ticket: false
+interface_change: false
+interfaces_touched: []
+evidence_requirements:
+  - kind: tests
+    description: |-
+      Re-planning against the real post-write bytes of a serialized ticket
+      reports UNCHANGED and returns the body byte for byte, while a changed,
+      reordered or shortened model, and a criterion hand-edited inside the
+      managed span, all still report CHANGED.
+    command: uv run pytest tests/test_omn_19054_idempotent_across_linear_normalisation.py -q
+  - kind: tests
+    description: |-
+      The OMN-18270 serializer, the OMN-18236 binding gate and the OMN-19046
+      contract suite are unchanged by this fix.
+    command: uv run pytest tests/test_omn_18270_ac_section_serializer.py tests/test_omn_19046_c6_contract_binds_its_own_model.py
+      tests/test_omn_18236_ac_binding_acceptance.py -q
+  - kind: ci
+    description: PR CI checks green
+    command: gh pr checks ${PR_NUMBER} --repo ${REPO}
+emergency_bypass:
+  enabled: false
+  justification: ''
+  follow_up_ticket_id: ''
+dod_evidence:
+  - id: replanning-a-stored-body-plans-unchanged
+    description: |-
+      The defect itself, asserted against the bytes Linear actually returned
+      rather than against a body the serializer produced. That distinction is
+      the whole finding: OMN-18270 already declared
+      idempotent-on-an-unchanged-model and its test held trivially, because it
+      re-planned a body it had rendered a moment earlier and byte equality was
+      never in doubt. Measured on the real apply, 5,878 characters out and
+      5,883 back -- hyphen bullets rewritten to asterisks, underscore emphasis
+      to asterisk emphasis, not one criterion changed. new_body is asserted
+      byte-identical to the input and not merely equivalent, because a planner
+      returning re-rendered bytes with changed False would still hand an apply
+      path something different to write.
+    source: manual
+    status: verified
+    checks:
+      - check_type: command
+        check_value: uv run pytest tests/test_omn_19054_idempotent_across_linear_normalisation.py::test_replanning_a_body_linear_stored_changes_nothing
+          -q
+  - id: a-changed-model-still-replans
+    description: |-
+      The fix must not buy idempotence by going blind, so three ways a model
+      can differ are each asserted to still report CHANGED across the same
+      normalisation: a criterion whose statement was rewritten, a model that
+      SHRANK -- which a one-directional "every declared criterion appears"
+      comparison would have accepted, leaving a stale criterion live in Linear
+      under a label the contract no longer binds -- and a model whose criteria
+      were reordered, which matters because the renderer emits in the
+      contract's declaration order and deliberately refuses to sort it.
+    source: manual
+    status: verified
+    checks:
+      - check_type: command
+        check_value: uv run pytest tests/test_omn_19054_idempotent_across_linear_normalisation.py::test_a_real_model_change_still_replans_across_the_same_normalisation
+          tests/test_omn_19054_idempotent_across_linear_normalisation.py::test_a_dropped_criterion_replans_even_though_the_rest_still_match
+          tests/test_omn_19054_idempotent_across_linear_normalisation.py::test_reordering_the_model_replans_even_though_every_criterion_still_matches
+          -q
+  - id: the-comparison-is-the-gates-own-reader
+    description: |-
+      One grammar, not two. A second parser on the writing side is the single
+      failure this whole path exists to prevent: a body compared with labels
+      spelled differently from the ones the gate reads is a ticket that looks
+      in step and resolves nothing. Asserted two ways -- the module calls
+      criteria_by_label, the OMN-18236 reader the merge-blocking validator and
+      the omnibase_infra evidence closer both resolve bindings with, and the
+      module still compiles no regex of its own. The bullet character never
+      has to be known here because the reader's own list-item pattern at
+      src/onex_change_control/validation/ac_criteria.py:65 accepts [-*+] and
+      strips it.
+    source: manual
+    status: verified
+    checks:
+      - check_type: command
+        check_value: uv run pytest tests/test_omn_19054_idempotent_across_linear_normalisation.py::test_the_comparison_reuses_the_reader_rather_than_parsing_again
+          -q
+  - id: the-serializer-still-overwrites-a-hand-edit
+    description: |-
+      The direction of authority is unchanged: the contract is the model and
+      the managed span is generated output. A comparison loose enough to
+      survive Linear's normaliser could also have been loose enough to accept
+      a criterion somebody retyped in the Linear editor, which would leave the
+      body and the contract saying different things with the gate green on the
+      label. A criterion edited by hand inside the span reads back as
+      different text, plans as CHANGED, and is overwritten.
+    source: manual
+    status: verified
+    checks:
+      - check_type: command
+        check_value: uv run pytest tests/test_omn_19054_idempotent_across_linear_normalisation.py::test_a_criterion_hand_edited_inside_the_span_is_overwritten_not_accepted
+          -q
+  - id: the-premise-is-measured-not-assumed
+    description: |-
+      The negative control for the whole file, and the reason the idempotence
+      claim above is not vacuous. If the stored fixture happened to be
+      byte-equal to what this module renders, every assertion here would pass
+      while proving nothing about normalisation. The premise is asserted
+      directly -- the rendered section is NOT a substring of the stored body,
+      this module emits hyphen bullets and Linear stored asterisk ones -- and
+      alongside it, a body carrying no managed span at all still reports
+      CHANGED, so the first write can never be mistaken for a no-op by a
+      reader that is deliberately generous about where it finds a labelled
+      criterion.
+    source: manual
+    status: verified
+    checks:
+      - check_type: command
+        check_value: uv run pytest tests/test_omn_19054_idempotent_across_linear_normalisation.py::test_the_fixture_really_is_normalised_differently_from_what_we_emit
+          tests/test_omn_19054_idempotent_across_linear_normalisation.py::test_a_body_with_no_managed_section_is_still_changed
+          -q

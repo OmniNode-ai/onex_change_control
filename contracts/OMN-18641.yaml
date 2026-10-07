@@ -1,0 +1,114 @@
+---
+schema_version: "1.0.0"
+ticket_id: "OMN-18641"
+title: "Register the expiring DoD check before it lands"
+summary: >
+  The human-authored half of the OMN-18641 gate split registers the future expiring-DoD-check validator
+  path in the script exception allowlist. The implementation PR must land separately under the App identity
+  because the same PR cannot touch both authorization registry data and CI validation code without tripping
+  the repository author guards.
+is_seam_ticket: false
+interface_change: false
+interfaces_touched: []
+evidence_requirements:
+  - kind: "manual"
+    description: "The allowlist entry exists and this PR does not add the validator implementation."
+    command: |-
+      uv run python - <<'PY'
+      import pathlib, sys, yaml
+      data = yaml.safe_load(pathlib.Path('allowlists/scripts_exceptions.yaml').read_text())
+      entries = data.get('exceptions') or data.get('scripts') or data
+      text = pathlib.Path('allowlists/scripts_exceptions.yaml').read_text()
+      ok = 'scripts/validation/check_expiring_dod_checks.py' in text and not pathlib.Path('scripts/validation/check_expiring_dod_checks.py').exists()
+      sys.exit(0 if ok else 1)
+      PY
+emergency_bypass:
+  enabled: false
+  justification: ""
+  follow_up_ticket_id: ""
+dod_evidence:
+  - id: "dod-OmniNode-ai-onex_change_control-pr-10122"
+    description: "PR #10122 on OmniNode-ai/onex_change_control registers the OMN-18641 validator path
+      before the App-authored implementation lands."
+    source: "manual"
+    checks:
+      - check_type: "command"
+        check_value: |-
+          uv run python - <<'PY'
+          import pathlib, sys
+          text = pathlib.Path('allowlists/scripts_exceptions.yaml').read_text()
+          path_registered = 'scripts/validation/check_expiring_dod_checks.py' in text
+          implementation_absent = not pathlib.Path('scripts/validation/check_expiring_dod_checks.py').exists()
+          sys.exit(0 if path_registered and implementation_absent else 1)
+          PY
+  - id: "occ-self-bind-pr-10122"
+    description: "Binds OMN-18641 to OCC PR #10122."
+    source: "manual"
+    checks:
+      - check_type: "command"
+        check_value: "gh pr view 10122 --repo OmniNode-ai/onex_change_control --json number,state,headRefName"
+  - id: "dod-OmniNode-ai-onex_change_control-pr-10136"
+    description: "PR #10136 on OmniNode-ai/onex_change_control — Evidence-Source autobind."
+    source: "generated"
+    checks:
+      - check_type: "command"
+        check_value: |-
+          gh api repos/OmniNode-ai/onex_change_control/contents/scripts/validation/check_expiring_dod_checks.py?ref=60f44e49cd294872796bb8dbd78260838194fc72 --jq '.content' | base64 -d | grep -c 'class Finding'
+    binds_ac:
+      - "AC1"
+      - "AC2"
+      - "AC3"
+      - "AC4"
+      - "AC6"
+      - "AC5"
+    ac_bindings:
+      - label: "AC1"
+        criterion_hash: "e4c1319daf1adb7e6731115cac8c424d46cd96a864663d44c94fcee7d8de8b5f"
+        proposed_by: "occ-autobind"
+        accepted_by: "7a850ce1-f95e-431f-b4e3-62f7449f04c0"
+        accepted_at: "2026-09-17T22:35:25Z"
+      - label: "AC2"
+        criterion_hash: "900ecc3b5fc0844919887adada2b6bb02499c0eb2182d4bb42195a797d65c2e0"
+        proposed_by: "occ-autobind"
+      - label: "AC3"
+        criterion_hash: "f5297bb3524cf7db06c89ae988469ff145b3e97881477781c8b97381d615f6ee"
+        proposed_by: "occ-autobind"
+        accepted_by: "7a850ce1-f95e-431f-b4e3-62f7449f04c0"
+        accepted_at: "2026-09-17T22:35:25Z"
+      - label: "AC4"
+        criterion_hash: "25ade54c604affac104aaa10d702877ba7165e21f35364389ec781f3195d970c"
+        proposed_by: "occ-autobind"
+        accepted_by: "7a850ce1-f95e-431f-b4e3-62f7449f04c0"
+        accepted_at: "2026-09-17T22:35:25Z"
+      - label: "AC6"
+        criterion_hash: "79ebcb12147543cd3d10cfe39704377d041c70a7dcc57ada0e4b6b25cdd0630a"
+        proposed_by: "occ-autobind"
+      - label: "AC5"
+        criterion_hash: "8559a7f60345b8a75a184b83afd54f6e0eb2f10aa82a34044ba0a2b08d3202f1"
+        proposed_by: "occ-autobind"
+        accepted_by: "7a850ce1-f95e-431f-b4e3-62f7449f04c0"
+        accepted_at: "2026-09-17T22:35:25Z"
+  - id: "dod-OmniNode-ai-onex_change_control-pr-10136-ci"
+    description: "PR #10136 on OmniNode-ai/onex_change_control — product diff scope check (OMN-14425)."
+    source: "generated"
+    checks:
+      - check_type: "command"
+        check_value: "gh pr view 10136 --repo OmniNode-ai/onex_change_control --json files"
+  - id: "occ-self-bind-pr-10137"
+    description: "OCC companion PR #10137 — self-bind for OMN-18641 (OMN-14650)."
+    source: "generated"
+    checks:
+      - check_type: "command"
+        check_value: "gh pr view 10137 --repo OmniNode-ai/onex_change_control --json number,state"
+  - id: "dod-omn-18641-implementation-lands-pr-10136"
+    description: "PR #10136 lands the App-authored implementation the registration in PR #10122 deliberately
+      preceded (per this contract's own summary: the two surfaces cannot land in one PR). The prior item's
+      'implementation absent' assertion was scoped to PR #10122's own diff at authoring time and is superseded
+      by design now that the implementation exists -- re-running that exact command against any later
+      tree will always read implementation_absent as False, which is not a regression, it is the expected
+      outcome of the split this contract documents."
+    source: "manual"
+    evidence_artifact: "supersedes_dod_evidence:dod-OmniNode-ai-onex_change_control-pr-10122"
+    checks:
+      - check_type: "command"
+        check_value: "uv run pytest tests/test_expiring_dod_checks_omn18641.py -q"

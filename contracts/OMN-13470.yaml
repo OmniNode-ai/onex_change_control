@@ -1,0 +1,107 @@
+---
+schema_version: "1.0.0"
+ticket_id: "OMN-13470"
+title: "feat(omnimarket): combine LLM-judge adequacy score into the delegation quality gate"
+summary: >-
+  The deterministic check set for verifiable code classes (compiles_without_errors / final_artifact_only
+  / passes_existing_tests) is a HARD FLOOR for refusals/empties but is too strict to be the sole adequacy
+  authority: a correct-but-mechanically-incomplete cloud code_generation answer scores ~0.733 deterministic
+  and fails the 0.85 required_bar, so no cloud row passes the gate today (delegation_judge_verdict_events
+  = 0 rows; delegation-judge-verdict.v1 HWM = 0). OMN-13367 declared the judge verdict event schema, projection
+  table, topic, and rubric config but never produced a verdict and never combined it into the gate. This
+  change wires the producer + combine. HandlerJudgeAdequacy (a drop-in judge handler, NO new node) builds
+  a rubric- grounded adequacy prompt over (task, candidate, acceptance criteria) and runs it through the
+  canonical inference bridge (AdapterInferenceBridge) -- an EFFECT, never an inline model call inside
+  the pure gate reducer -- parses a 0-1 adequacy score, and builds a durable, replayable ModelDelegationJudgeVerdictEvent
+  (fail-closed to JUDGE_FAILED with actual_score=None on call/parse failure, no silent zero). delta()
+  gains judge_adequacy_score: when the deterministic floor passes on a verifiable path it COMBINES the
+  deterministic band fraction with the judge score (0.6/0.4) and records score_source='combined'; the
+  orchestrator applies required_bar to the combined score. A refusal/empty hard-blocks in the fail_deterministic
+  branch BEFORE the combine, preserving the OMN-13409 refusal-not-pass invariant. HandlerQualityGateIntent.handle_async
+  runs the judge effect for code_generation/test, threads the score into delta(), and emits BOTH the gate
+  result and the judge verdict event (delegation-judge-verdict.v1) for the existing projection. delegation_judge_rubrics.v1.yaml
+  gains delegation_code_adequacy_v1 for the verifiable code classes. Replay-safety: the judge does no
+  I/O of its own (delegates the single LLM call to an injected adapter); the recorded verdict is read
+  back on replay and the event_hash recomputes deterministically, so the model is never re-called. Child
+  of OMN-13335 (up-tier discriminator) and the customer-beta SEA/delegation claim.
+is_seam_ticket: false
+interface_change: false
+interfaces_touched: []
+emergency_bypass:
+  enabled: false
+  justification: ""
+  follow_up_ticket_id: ""
+dod_evidence:
+  - id: "dod-omnimarket-pr-1338"
+    description: >-
+      Per-code-PR binding receipt for omnimarket PR #1338 (jonahgabriel/omn-13470-add-llm-judge-adequacy-score-to-delegation-quality-gate,
+      base=dev). Adds HandlerJudgeAdequacy (judge EFFECT on the canonical inference bridge), the delta()
+      combine (score_source='combined', deterministic hard floor preserved), HandlerQualityGateIntent.handle_async
+      (judge effect + dual-event emit of the gate result and delegation-judge-verdict.v1), and the delegation_code_adequacy_v1
+      rubric. Real-dispatch-path tests assert a good-but-mechanically-incomplete code answer completes
+      via the combined score and a refusal does not complete even with a maximal judge score; the judge
+      verdict is captured and replayable. Binds OMN-13470 to omnimarket PR #1338 by pr_number and commit_sha.
+    source: "manual"
+    status: "verified"
+    checks:
+      - check_type: "command"
+        check_value: >-
+          grep -q '^status: PASS$' drift/dod_receipts/OMN-13470/dod-omnimarket-pr-1338/command.yaml
+  - id: "dod-deploy-no-runtime-impact"
+    description: >-
+      Deploy-path DoD evidence for OMN-13470. The change is a focused handler/reducer/config change in
+      omnimarket (node_delegation_quality_gate_reducer + a new judge handler + a rubric entry). It adds
+      no runtime node, changes no contract topic (the delegation-judge-verdict.v1 topic and projection
+      table were already declared by OMN-13367), and alters no image build inputs beyond the new handler
+      module. The corrected behavior reaches the runtime only on the next normal dev->promotion->image
+      rebuild -- no separate redeploy is gated by this PR, and no .201 mutation is performed here. deploy
+    source: "manual"
+    status: "verified"
+    checks:
+      - check_type: "command"
+        check_value: >-
+          grep -q '^status: PASS$' drift/dod_receipts/OMN-13470/dod-deploy-no-runtime-impact/command.yaml
+  - id: "dod-occ-pr-self"
+    description: >-
+      OCC self-binding receipt for the central evidence PR carrying the OMN-13470 contract and code-PR
+      binding. Binds the OCC PR itself by pr_number so the OCC receipt-gate eligibility check can resolve
+      a PASS receipt for the evidence PR.
+    source: "manual"
+    status: "verified"
+    checks:
+      - check_type: "command"
+        check_value: >-
+          grep -q '^status: PASS$' drift/dod_receipts/OMN-13470/dod-occ-pr-self/command.yaml
+  - id: "dod-omnimarket-pr-1347"
+    description: >-
+      Re-fix binding receipt for omnimarket PR #1347 (jonahgabriel/omn-13470-judge-concrete-model-dogfood,
+      base=dev). The original combine PR #1338 shipped with the judge's default model_key set to the delegation
+      TIER name 'cheap_cloud', which the canonical inference bridge keys by concrete reviewer key — so
+      the real call raised 'ValueError: Unknown model_key: cheap_cloud' and every judge verdict came back
+      judge_failed; its real-dispatch-path test injected a _FakeBridge accepting any model_key, masking
+      the bug. This re-fix makes the judge resolve a CONCRETE model (glm-5.2) + COMPLETE verbatim endpoint
+      + secret_ref from the routing authority (RoutingResolvedJudgeInferenceAdapter, backend_id cloud-glm)
+      — never a tier name — and hardens the terminal path to fail CLOSED to a valid delegation-failed
+      event (also closes OMN-13140). DOGFOODED ON THE LIVE ARCHITECTURE: a REAL z.ai GLM cloud call returns
+      verdict=pass actual_score=1.0 on the production default path, and a REAL EventBusInmemory chain
+      proves the refusal terminal still emits a valid delegation-failed event. The mock test was rewritten:
+      _FakeBridge + patch(httpx.Client) + the judge_model_version=="routing-contract:cheap_cloud" assertion
+      are DELETED; replaced with a recorded-from-real-GLM replay that rejects tier names + a live cloud
+      GLM gate. Binds OMN-13470 to omnimarket PR #1347 by pr_number and commit_sha.
+    source: "manual"
+    status: "verified"
+    checks:
+      - check_type: "command"
+        check_value: >-
+          grep -q '^status: PASS$' drift/dod_receipts/OMN-13470/dod-omnimarket-pr-1347/command.yaml
+  - id: "dod-occ-pr-1347"
+    description: >-
+      OCC self-binding receipt for the central evidence PR carrying the OMN-13470 re-fix contract update
+      and the omnimarket PR #1347 binding. Binds the OCC PR itself by pr_number so the OCC receipt-gate
+      eligibility check can resolve a PASS receipt for the evidence PR.
+    source: "manual"
+    status: "verified"
+    checks:
+      - check_type: "command"
+        check_value: >-
+          grep -q '^status: PASS$' drift/dod_receipts/OMN-13470/dod-occ-pr-1347/command.yaml

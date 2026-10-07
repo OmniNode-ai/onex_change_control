@@ -1,0 +1,50 @@
+---
+schema_version: "1.0.0"
+ticket_id: "OMN-14516"
+evidence_item_id: "dod-verify-2286-ledger-projection-wiring"
+check_type: "command"
+check_value: >-
+  S=$(gh api "repos/OmniNode-ai/omnibase_infra/contents/src/omnibase_infra/runtime/service_kernel.py?ref=5f64390c3d703d328ecd46fc04aba0757dbacb84"
+  --jq .content | base64 -d); H=$(gh api "repos/OmniNode-ai/omnibase_infra/contents/src/omnibase_infra/nodes/node_ledger_projection_compute/handlers/handler_ledger_projection.py?ref=5f64390c3d703d328ecd46fc04aba0757dbacb84"
+  --jq .content | base64 -d); E=$(gh api "repos/OmniNode-ai/omnibase_infra/contents/src/omnibase_infra/runtime/intent_effects/intent_effect_ledger_append.py?ref=5f64390c3d703d328ecd46fc04aba0757dbacb84"
+  --jq .content | base64 -d); K=$(printf '%s' "$S" | grep -c 'auto_wiring_result_appliers\["node_ledger_projection_compute"\]');
+  R=$(printf '%s' "$S" | grep -c '"ledger.append"'); D=$(printf '%s' "$H" | grep -c 'async def handle(');
+  C=$(printf '%s' "$H" | grep -c '_coerce_event_message'); I=$(printf '%s' "$E" | grep -c 'class IntentEffectLedgerAppend');
+  test "$K" -ge 1 && test "$R" -ge 1 && test "$D" -ge 1 && test "$C" -ge 1 && test "$I" -ge 1
+contract_entry_sha256: "sha256:62752a53d788282cb40f99d521b3033b493c49209ace6f711145b6431644750e"
+status: PASS
+run_timestamp: "2026-07-13T03:35:00Z"
+commit_sha: "5f64390c3d703d328ecd46fc04aba0757dbacb84"
+runner: "ledger-fix"
+verifier: "ledger-check-effect-readback"
+pr_number: 2286
+probe_command: >-
+  gh pr view 2286 --repo OmniNode-ai/omnibase_infra --json number,state,headRefOid
+probe_stdout: |
+  {"headRefOid":"5f64390c3d703d328ecd46fc04aba0757dbacb84","number":2286,"state":"OPEN"}
+actual_output: >-
+  PASS at head 5f64390c3d703d328ecd46fc04aba0757dbacb84. Static binding at head: applier-registration
+  K=1, ledger.append intent registration R=1, async handle() D=1, dict-envelope coercion C=3, IntentEffectLedgerAppend
+  I=1 -> exit 0. RED proven against EXISTS-but-WRONG mutations, not merely absence: (1) reverting ONLY
+  the service_kernel applier registration (every file still present, contract still parses, routing entry
+  still resolves and is still assigned all 7 topics) drops K to 0 -> exit 1, and locally flips the wiring
+  outcome back to SKIPPED with 0 dispatchers; (2) reverting ONLY handle() drops D to 0 -> exit 1 while
+  the applier is still registered. Either mutation alone returns event_ledger to zero rows, so neither
+  half is sufficient. LIVE EFFECT-SIDE READBACK (proof_class=live-readback), stability-test lane (omnibase-infra-stability-test,
+  .201), workspace image 1697e0e6f79a built from this head; prod and judge untouched/read-only. BEFORE
+  - 'SELECT count(*) FROM event_ledger' = 0 (the table had NEVER held a real row on any lane; the dev
+  lane's single row is topic=wi14-proof-ledger-append source=wi14-proof, a synthetic row hand-written
+  by OMN-14134, which closed Done at proof_class=code-only while leaving this producer dead), and consumer
+  group node_ledger_projection_compute did not exist among 562 live groups. AFTER - kernel logged 'Ledger
+  raw projection result applier registered (contract=node_ledger_projection_compute)'; handler_wiring
+  logged 'Auto-wired subscription' for all 7 subscribed topics under consumer_group stability-test.omnibase_infra.node_ledger_projection_compute.consume.1.0.1;
+  rpk group list shows that group Stable on all 7 topics; 'SELECT count(*) FROM event_ledger' = 6 -> 13
+  -> 19 and still climbing, i.e. a live consumer, not a one-shot insert. Rows are REAL platform events
+  (topic=onex.evt.platform.node-heartbeat.v1 partition 0/1/2/3 kafka_offset 167450-167992, topic=onex.evt.platform.node-introspection.v1
+  offset 4015, source=stability-test). NOTE - onex.cmd.platform.ledger-append.v1 HWM remains 0 and that
+  is CORRECT, not a gap: the result applier executes the ledger.append intent in-process via IntentExecutor
+  exactly as the two already-working raw projections (node_build_loop_projection_compute, node_pr_state_projection_compute)
+  do; it does not publish a command. The rows in the table are the fact; the ingress HWM was a proxy for
+  those rows and the proxy is wrong.
+exit_code: 0
+branch: "jonah/omn-14516-ledger-projection-wiring"

@@ -1,0 +1,150 @@
+---
+schema_version: "1.0.0"
+ticket_id: "OMN-14605"
+title: "OCC companion for omnibase_infra#2305 — mixed-category routing gate (enforcement + frozen baseline)"
+summary: >
+  OCC evidence companion for OmniNode-ai/omnibase_infra#2305 (OMN-14605). #2305 adds a mixed-category
+  routing gate: a handler_routing entry whose topic_match spans MORE THAN ONE real message category is
+  a permanent NO_DISPATCHER (silent drop / DLQ) because handler_wiring stamps ONE category per entry and
+  MixinNodeDispatch (OMN-12549) hard-rejects the mismatched shape. The PR ships (a) the validator library
+  + CLI (src/omnibase_infra/validators/mixed_category_routing.py, mixed_category_findings), (b) a FROZEN,
+  shrink-only burn-down baseline of the 4 currently-known mixed-category entries (config/validation/mixed_category_routing_baseline.yaml
+  — the 3 node_artifact_change_detector_effect handlers + node_coding_agent_orchestrator), (c) the gate
+  wired as a CI job (.github/workflows/ci.yml) AND a pre-commit hook (.pre-commit-config.yaml) so it is
+  ENFORCEMENT, not advisory detection (rule #5), and (d) a regression test (tests/ci/test_mixed_category_routing_gate.py).
+  Every substantive check below is a CONTENT READ pinned to #2305's head commit SHA (1e21e9d8914cc96c8020d533031ba020218a8ee0).
+  It observes the source #2305 actually wrote, so it does not depend on #2305's CI — which matters because
+  #2305's CI is red precisely BECAUSE this contract was missing (occ-preflight/eligibility -> missing
+  Evidence-Source). A check keyed on #2305's CI would be circular. No check greps this repo's own receipt
+  corpus for "status: PASS". The RED direction was verified independently: an implementer-blind reviewer
+  (not the author of #2305) checked out the PR head in a worktree and ran the gate three ways — the regression
+  suite `uv run pytest tests/ci/test_mixed_category_routing_gate.py` -> 4 passed; the CLI with the frozen
+  baseline -> exit 0, "115 contracts scanned, 4 mixed-category entries (all in the frozen baseline), 0
+  new violations"; the CLI with an EMPTY baseline (the RED control) -> exit 1, naming exactly the 4 offenders.
+  Each product-tree read below also carries its own RED control: the same command at omnibase_infra dev
+  HEAD (197ace1d0d8710c4bf5ffaf6c6d26dd496ffb7cc — the fix commit's exact parent), where #2305 has not
+  landed, finds zero occurrences (or the file 404s) and would fail.
+is_seam_ticket: false
+interface_change: false
+interfaces_touched: []
+evidence_requirements:
+  - kind: "manual"
+    description: "omnibase_infra#2305 head SHA carries the mixed-category routing gate, its frozen baseline,
+      and its CI + pre-commit enforcement wiring"
+    command: "see dod_evidence check_values (content reads pinned to 1e21e9d8)"
+emergency_bypass:
+  enabled: false
+  justification: ""
+  follow_up_ticket_id: ""
+dod_evidence:
+  - id: "dod-verify-2305-validator-present"
+    description: >-
+      Product-observing: reads the actual source of src/omnibase_infra/validators/mixed_category_routing.py
+      at #2305's exact head commit SHA (1e21e9d8914cc96c8020d533031ba020218a8ee0) via the GitHub contents
+      API and asserts it defines mixed_category_findings — the core detection routine that scans every
+      contract's handler_routing entries and returns the ones whose topic_match spans more than one real
+      message category, which is the entire substance of the gate. This reads the product tree, not this
+      receipt; nothing in the command touches the OCC checkout, so it cannot pass merely because someone
+      wrote "status: PASS" in a receipt. RED DIRECTION: the file does not exist at all at omnibase_infra
+      dev HEAD (197ace1d0d8710c4bf5ffaf6c6d26dd496ffb7cc — the fix commit's parent; 404 from the contents
+      API, grep -c == 0, exit 1); it exits 0 only at #2305's head (grep -c == 1).
+    source: "manual"
+    status: "verified"
+    checks:
+      - check_type: "command"
+        check_value: >-
+          test "$(gh api "repos/OmniNode-ai/omnibase_infra/contents/src/omnibase_infra/validators/mixed_category_routing.py?ref=1e21e9d8914cc96c8020d533031ba020218a8ee0"
+          --jq .content | base64 -d | grep -c "def mixed_category_findings")" -ge 1
+  - id: "dod-verify-2305-baseline-frozen-4-entries"
+    description: >-
+      Product-observing: reads config/validation/mixed_category_routing_baseline.yaml at #2305's head
+      commit SHA and asserts it names node_coding_agent_orchestrator — one of the 4 currently-known mixed-category
+      offenders the frozen, shrink-only burn-down baseline pins (the other three are node_artifact_change_detector_effect
+      handlers). The baseline is what lets the gate pass GREEN today while forbidding any NEW mixed-category
+      entry; its presence is a direct read of the burn-down mechanism, not a restatement of the PR's claim.
+      RED DIRECTION: the baseline file does not exist at dev HEAD (197ace1d0d8710c4bf5ffaf6c6d26dd496ffb7cc
+      — 404, grep -c == 0, exit 1); it exits 0 only at #2305's head (grep -c == 2).
+    source: "manual"
+    status: "verified"
+    checks:
+      - check_type: "command"
+        check_value: >-
+          test "$(gh api "repos/OmniNode-ai/omnibase_infra/contents/config/validation/mixed_category_routing_baseline.yaml?ref=1e21e9d8914cc96c8020d533031ba020218a8ee0"
+          --jq .content | base64 -d | grep -c "node_coding_agent_orchestrator")" -ge 1
+  - id: "dod-verify-2305-ci-gate-wired"
+    description: >-
+      Product-observing ENFORCEMENT proof (rule #5: detection wired as a pre-merge CI gate, not advisory):
+      reads .github/workflows/ci.yml at #2305's head commit SHA and asserts it invokes mixed_category_routing,
+      so the gate runs on every PR and blocks merge on a new mixed-category entry. ci.yml already exists
+      on dev (this PR modifies it), so a bare existence check would NOT discriminate and is deliberately
+      not used. RED DIRECTION: the mixed_category_routing invocation occurs twice at #2305's head SHA
+      and ZERO times in the same file at dev HEAD (197ace1d0d8710c4bf5ffaf6c6d26dd496ffb7cc), so the command
+      exits 0 at #2305's head and exits 1 at dev.
+    source: "manual"
+    status: "verified"
+    checks:
+      - check_type: "command"
+        check_value: >-
+          test "$(gh api "repos/OmniNode-ai/omnibase_infra/contents/.github/workflows/ci.yml?ref=1e21e9d8914cc96c8020d533031ba020218a8ee0"
+          --jq .content | base64 -d | grep -c "mixed_category_routing")" -ge 1
+  - id: "dod-verify-2305-precommit-hook-wired"
+    description: >-
+      Product-observing ENFORCEMENT proof (rule #5: local pre-commit hook, so the gate fires before push,
+      not only in CI): reads .pre-commit-config.yaml at #2305's head commit SHA and asserts it wires the
+      mixed-category-routing hook. .pre-commit-config.yaml already exists on dev (this PR modifies it),
+      so a bare existence check would NOT discriminate and is deliberately not used. RED DIRECTION: the
+      mixed-category-routing hook id occurs once at #2305's head SHA and ZERO times in the same file at
+      dev HEAD (197ace1d0d8710c4bf5ffaf6c6d26dd496ffb7cc); the command exits 0 at #2305's head, exits
+      1 at dev.
+    source: "manual"
+    status: "verified"
+    checks:
+      - check_type: "command"
+        check_value: >-
+          test "$(gh api "repos/OmniNode-ai/omnibase_infra/contents/.pre-commit-config.yaml?ref=1e21e9d8914cc96c8020d533031ba020218a8ee0"
+          --jq .content | base64 -d | grep -c "mixed-category-routing")" -ge 1
+  - id: "dod-verify-2305-regression-test-present"
+    description: >-
+      Product-observing: reads tests/ci/test_mixed_category_routing_gate.py at #2305's head commit SHA
+      and asserts it carries test_gate_flags_mixed_category_entry — the regression test that drives mixed_category_findings
+      against a synthetic mixed-category entry and proves the gate FLAGS it (the RED-vs-exists-but-wrong
+      direction: a mixed-category entry is genuinely detected, not silently passed). RED DIRECTION: the
+      test file does not exist at all at dev HEAD (197ace1d0d8710c4bf5ffaf6c6d26dd496ffb7cc — 404, grep
+      -c == 0, exit 1); it exits 0 only at #2305's head where the test is present.
+    source: "manual"
+    status: "verified"
+    checks:
+      - check_type: "command"
+        check_value: >-
+          test "$(gh api "repos/OmniNode-ai/omnibase_infra/contents/tests/ci/test_mixed_category_routing_gate.py?ref=1e21e9d8914cc96c8020d533031ba020218a8ee0"
+          --jq .content | base64 -d | grep -c "def test_gate_flags_mixed_category_entry")" -ge 1
+  - id: "dod-deploy-assessment-2305"
+    description: >-
+      Deploy-gate assessment for omnibase_infra#2305. The PR changes exactly five files — the validator
+      library/CLI, its frozen baseline YAML, the CI workflow, the pre-commit config, and the regression
+      test — none of which is a Dockerfile, compose file, or deploy script; it is a CI/validator change,
+      not a live runtime rollout, and deploy-gate resolves it deploy-neutral (it touches no node-handler
+      runtime path). Falsifiable: the command fails if the PR diff ever grows a Dockerfile/compose/deploy
+      change.
+    source: "manual"
+    status: "verified"
+    checks:
+      - check_type: "command"
+        check_value: >-
+          ! (gh pr diff 2305 --repo OmniNode-ai/omnibase_infra --name-only | grep -qE "docker-compose|Dockerfile|deploy/")
+  - id: "dod-occ-self-bind-pr-4133"
+    description: >-
+      Self-bind receipt for this OCC evidence companion. Binds an OMN-14605 PASS receipt to this companion's
+      own PR (OCC#4133, branch jonah/omn-14605-occ-companion) so onex_change_control's own occ-merge-eligibility
+      gate can resolve the companion — the six product-observing items above all bind to the omnibase_infra
+      product PR #2305, so without this item nothing binds to #4133 itself (reason pr_ticket_mismatch).
+      This is a binding/stamp item, NOT substantive evidence: it derives to L0 and does not count toward
+      the contract substance floor (the product content-reads above carry the substance). Mirrors the
+      dod-occ-*-self-commit pattern of prior merged evidence companions.
+    source: "manual"
+    status: "verified"
+    checks:
+      - check_type: "command"
+        check_value: >-
+          grep -q 'jonah/omn-14605-occ-companion' drift/dod_receipts/OMN-14605/dod-occ-self-bind-pr-4133/command.yaml
+          && grep -q 'pr_number: 4133' drift/dod_receipts/OMN-14605/dod-occ-self-bind-pr-4133/command.yaml

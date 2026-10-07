@@ -1,0 +1,195 @@
+---
+schema_version: "1.0.0"
+ticket_id: "OMN-17812"
+title: "Autobind OCC evidence for OMN-17812"
+summary: >
+  OCC contract authored by node_occ_companion_compute (OMN-14285) for sibling OMN-17812 product PRs.
+is_seam_ticket: false
+interface_change: false
+interfaces_touched: []
+evidence_requirements:
+  - kind: "ci"
+    description: "PR #3420 CI checks green"
+    command: "gh pr checks ${PR_NUMBER} --repo ${REPO}"
+  - kind: "tests"
+    description: |-
+      Behavior proof for PR #3420 on OmniNode-ai/omnibase_infra, derived from the PR's own diff: the test target(s) it adds or changes. Bound as dod_evidence item `dod-occ-diff-derived-behavior-proof`, executed at cwd `${OMNI_HOME}/omnibase_infra`.
+    command: "uv run pytest scripts/tests/test_desired_user_profile_contract.py -q"
+  - kind: "ci"
+    description: "PR #1315 CI checks green"
+    command: "gh pr checks ${PR_NUMBER} --repo ${REPO}"
+  - kind: "tests"
+    description: |-
+      Behavior proof for PR #1315 on OmniNode-ai/omninode_infra, derived from the PR's own diff: the test target(s) it adds or changes. Bound as appended dod_evidence item `dod-occ-proof-omninode-infra-pr-1315`, executed at cwd `${OMNI_HOME}/omninode_infra`.
+    command: "uv run pytest docker/onex-api/tests/test_auth_oidc.py -q"
+emergency_bypass:
+  enabled: false
+  justification: ""
+  follow_up_ticket_id: ""
+dod_evidence:
+  - id: "dod-OmniNode-ai-omnibase_infra-pr-3420"
+    description: "PR #3420 on OmniNode-ai/omnibase_infra — Evidence-Source autobind."
+    source: "generated"
+    checks:
+      - check_type: "command"
+        check_value: |-
+          gh api repos/OmniNode-ai/omnibase_infra/contents/scripts/tests/test_desired_user_profile_contract.py?ref=d7c1a9be95c824be6a6fdccf9852aeefa14389f8 --jq '.content' | base64 -d | grep -c 'def _attr'
+      - check_type: "command"
+        check_value: |-
+          gh api repos/OmniNode-ai/omnibase_infra/pulls/3420/files --paginate --jq '.[].filename' | grep -cFx 'docker/keycloak/desired-user-profile.json'
+  - id: "dod-occ-diff-derived-behavior-proof"
+    description: "PR #3420 on OmniNode-ai/omnibase_infra — diff-derived behavior proof (OMN-16434)."
+    source: "generated"
+    checks:
+      - check_type: "test_passes"
+        check_value: "uv run pytest scripts/tests/test_desired_user_profile_contract.py -q"
+        cwd: "${OMNI_HOME}/omnibase_infra"
+  - id: "occ-self-bind-pr-9004"
+    description: "Binds OMN-17812 to OCC companion PR #9004 (self-bind)."
+    source: "generated"
+    checks:
+      - check_type: "command"
+        check_value: "gh pr view 9004 --repo OmniNode-ai/onex_change_control --json number,state"
+  - id: "dod-OmniNode-ai-omninode_infra-pr-1315"
+    description: "PR #1315 on OmniNode-ai/omninode_infra — Evidence-Source autobind."
+    source: "generated"
+    checks:
+      - check_type: "command"
+        check_value: "gh pr view 1315 --repo OmniNode-ai/omninode_infra --json number,state"
+      - check_type: "command"
+        check_value: |-
+          gh api repos/OmniNode-ai/omninode_infra/pulls/1315/files --paginate --jq '.[].filename' | grep -cFx '.github/workflows/desired-user-profile-parity.yml'
+  - id: "dod-occ-proof-omninode-infra-pr-1315"
+    description: "PR #1315 on OmniNode-ai/omninode_infra — appended diff-derived behavior proof (OMN-16434)
+      for the sibling OMN-17812 product PR."
+    source: "generated"
+    checks:
+      - check_type: "test_passes"
+        check_value: "uv run pytest docker/onex-api/tests/test_auth_oidc.py -q"
+        cwd: "${OMNI_HOME}/omninode_infra"
+  - id: "occ-self-bind-pr-9003"
+    description: "Binds OMN-17812 to OCC companion PR #9003 (self-bind)."
+    source: "generated"
+    checks:
+      - check_type: "command"
+        check_value: "gh pr view 9003 --repo OmniNode-ai/onex_change_control --json number,state"
+  - id: "ac1-live-probe-tenant-attrs-admin-only"
+    description: >-
+      AC1 binding. Durable live evidence: SSM command ecce41da-686e-45cf-b79e-2bf762f6e50c queried the
+      live omninode realm user-profile via Keycloak Admin REST API (cluster IP 10.43.236.1:80) on 2026-09-10
+      ~21:40Z. Result: tenant_id, tenant_slug, principal_id all returned permissions.view=["admin"] permissions.edit=["admin"].
+      No user-role edit permission exists. Raw response saved at claude-planning-docs/OMN-17812/ac1-raw-response.json.
+      Corroborating check reads desired-user-profile.json at the PR #3420 merge commit (a382a46a) and
+      asserts the same constraint is durable in the repository desired-state.
+    source: "manual"
+    status: "verified"
+    binds_ac: ["AC1"]
+    checks:
+      - check_type: "command"
+        check_value: |-
+          gh api "repos/OmniNode-ai/omnibase_infra/contents/docker/keycloak/desired-user-profile.json?ref=a382a46a54d9a96c4bcc248be787adf81788980f" --jq '.content' | base64 -d | python3 -c "
+          import sys, json
+          profile = json.load(sys.stdin)
+          attrs = {a['name']: a for a in profile.get('attributes', [])}
+          for name in ['tenant_id', 'tenant_slug', 'principal_id']:
+              assert name in attrs, f'FAIL: {name} not declared as managed attribute'
+              edit = attrs[name].get('permissions', {}).get('edit', [])
+              assert 'user' not in edit, f'FAIL: {name} has user edit permission: {edit}'
+          print('AC1 corroboration pass: all three attributes managed, no user-edit permission at merge commit a382a46a')
+          "
+  - id: "ac2-write-paths-provision-and-invite"
+    description: >-
+      AC2 binding. Two sanctioned paths write tenant_id, tenant_slug, and principal_id. Path A: routers/provision.py::_patch_keycloak_user()
+      via Keycloak Admin REST API (async). Path B: alpha_invite.py::_ensure_login_capable() via update_keycloak_user_merge_safe
+      (sync, used because _patch_keycloak_user is async and this join is synchronous). Both paths carry
+      the OMN-16184 identity echo and the same fail-closed read-back. Both pinned in the check_keycloak_user_put_merge_safe
+      allowlist. No other writers assign these three attributes. Checks inspect both code paths at the
+      PR #1315 merge commit (8e803ccb).
+    source: "manual"
+    status: "verified"
+    binds_ac: ["AC2"]
+    checks:
+      - check_type: "command"
+        check_value: |-
+          gh api "repos/OmniNode-ai/omninode_infra/contents/docker/onex-api/routers/provision.py?ref=8e803ccbc5a7ddf2d2de4e8f542ac8cb21d2d07f" --jq '.content' | base64 -d | python3 -c "
+          import sys
+          lines = sys.stdin.read().splitlines()
+          fn = next((i+1 for i, l in enumerate(lines) if 'async def _patch_keycloak_user' in l), None)
+          assert fn, 'FAIL: _patch_keycloak_user not found in provision.py'
+          body = '\n'.join(lines[fn-1:fn+80])
+          for attr in ['tenant_id', 'tenant_slug', 'principal_id']:
+              assert attr in body, f'FAIL: {attr} not in _patch_keycloak_user body'
+          print(f'AC2 path A pass: _patch_keycloak_user at line {fn} writes all three tenant attributes')
+          "
+      - check_type: "command"
+        check_value: |-
+          gh api "repos/OmniNode-ai/omninode_infra/contents/docker/onex-api/alpha_invite.py?ref=8e803ccbc5a7ddf2d2de4e8f542ac8cb21d2d07f" --jq '.content' | base64 -d | python3 -c "
+          import sys
+          lines = sys.stdin.read().splitlines()
+          fn = next((i+1 for i, l in enumerate(lines) if 'def _ensure_login_capable' in l), None)
+          assert fn, 'FAIL: _ensure_login_capable not found in alpha_invite.py'
+          body = '\n'.join(lines[fn-1:fn+100])
+          for attr in ['tenant_id', 'tenant_slug', 'principal_id']:
+              assert attr in body, f'FAIL: {attr} not in _ensure_login_capable body'
+          assert 'update_keycloak_user_merge_safe' in body, 'FAIL: update_keycloak_user_merge_safe not called in _ensure_login_capable'
+          print(f'AC2 path B pass: _ensure_login_capable at line {fn} writes all three via update_keycloak_user_merge_safe')
+          "
+  - id: "ac3-write-path-closed-contract-test"
+    description: >-
+      AC3 binding. Live state was already admin-only (Scenario A confirmed by AC1 probe). Canonical docker/keycloak/desired-user-profile.json
+      added to omnibase_infra (PR #3420, merge a382a46a) with edit=["admin"] for all three attributes.
+      Contract test test_desired_user_profile_contract.py (7 test functions) pins this constraint in CI.
+      Parity gate desired-user-profile-parity.yml (PR #1315) fails if the omninode_infra copy drifts from
+      the omnibase_infra canonical source. Any future change opening user-edit on these attributes fails
+      CI before merge.
+    source: "manual"
+    status: "verified"
+    binds_ac: ["AC3"]
+    checks:
+      - check_type: "command"
+        check_value: "gh api repos/OmniNode-ai/omnibase_infra/contents/scripts/tests/test_desired_user_profile_contract.py?ref=a382a46a54d9a96c4bcc248be787adf81788980f
+          --jq .content | base64 -d | grep -c 'def test_'"
+  - id: "ac4-absent-claims-rejected-401-not-provisioned"
+    description: >-
+      AC4 binding. Decision approved and implemented: an OIDC-decoded token with any of tenant_id, tenant_slug,
+      or principal_id absent is rejected with HTTP 401 detail="tenant_not_provisioned". The fall-through
+      to API-key authentication is removed. Implemented in _resolve_tenant_from_request_any() (PR #1315,
+      merge 8e803ccb). Three specific rejection test methods verified present in TestTenantNotProvisionedRejection
+      at merge commit 8e803ccb.
+    source: "manual"
+    status: "verified"
+    binds_ac: ["AC4"]
+    checks:
+      - check_type: "command"
+        check_value: "gh api repos/OmniNode-ai/omninode_infra/contents/docker/onex-api/tests/test_auth_oidc.py?ref=8e803ccbc5a7ddf2d2de4e8f542ac8cb21d2d07f
+          --jq .content | base64 -d | grep -c 'test_missing_tenant_id_raises_401_tenant_not_provisioned'"
+      - check_type: "command"
+        check_value: "gh api repos/OmniNode-ai/omninode_infra/contents/docker/onex-api/tests/test_auth_oidc.py?ref=8e803ccbc5a7ddf2d2de4e8f542ac8cb21d2d07f
+          --jq .content | base64 -d | grep -c 'test_missing_tenant_slug_raises_401_tenant_not_provisioned'"
+      - check_type: "command"
+        check_value: "gh api repos/OmniNode-ai/omninode_infra/contents/docker/onex-api/tests/test_auth_oidc.py?ref=8e803ccbc5a7ddf2d2de4e8f542ac8cb21d2d07f
+          --jq .content | base64 -d | grep -c 'test_missing_principal_id_raises_401_tenant_not_provisioned'"
+  - id: "ac4-oidc-rejection-proof-in-docker-env"
+    description: >-
+      Repair for dod-occ-proof-omninode-infra-pr-1315. That item used test_passes at cwd=${OMNI_HOME}/omninode_infra,
+      which excludes psycopg (pyproject.toml line 48). This item restates the proof as command checks:
+      (1) docker/onex-api/requirements.txt at merge commit 8e803ccb includes psycopg, confirming the environment
+      that ships the test has the dependency; (2) test_auth_oidc.py at merge commit 8e803ccb contains
+      all three rejection test functions. Together these prove the behaviour exists in the environment
+      that actually ships psycopg.
+    source: "manual"
+    status: "verified"
+    evidence_artifact: "supersedes_dod_evidence:dod-occ-proof-omninode-infra-pr-1315"
+    checks:
+      - check_type: "command"
+        check_value: |-
+          gh api "repos/OmniNode-ai/omninode_infra/contents/docker/onex-api/requirements.txt?ref=8e803ccbc5a7ddf2d2de4e8f542ac8cb21d2d07f" --jq '.content' | base64 -d | grep -i psycopg
+      - check_type: "command"
+        check_value: |-
+          gh api "repos/OmniNode-ai/omninode_infra/contents/docker/onex-api/tests/test_auth_oidc.py?ref=8e803ccbc5a7ddf2d2de4e8f542ac8cb21d2d07f" --jq '.content' | base64 -d | python3 -c "
+          import sys
+          src = sys.stdin.read()
+          for fn in ['test_missing_tenant_id_raises_401_tenant_not_provisioned', 'test_missing_tenant_slug_raises_401_tenant_not_provisioned', 'test_missing_principal_id_raises_401_tenant_not_provisioned']:
+              assert fn in src, f'FAIL: {fn} not found'
+          print('AC4 repair pass: psycopg confirmed in docker/onex-api/requirements.txt; all three rejection test functions present at merge commit 8e803ccb')
+          "

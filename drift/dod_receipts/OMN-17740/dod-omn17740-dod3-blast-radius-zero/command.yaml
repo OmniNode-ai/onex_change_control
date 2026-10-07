@@ -1,0 +1,42 @@
+---
+schema_version: 1.0.0
+ticket_id: OMN-17740
+evidence_item_id: dod-omn17740-dod3-blast-radius-zero
+check_type: command
+check_value: |
+  env AWS_PAGER= aws ssm get-command-invocation --region us-east-1 --command-id 5be0aa0d-6758-41b7-a6ea-f6b1fc4fe7de --instance-id i-06169517a92b45f86 --query 'StandardOutputContent' --output text | grep -c 'WORKLOADS_TOTAL=24 AUTO_RELOAD=0'
+contract_sha256: c18b45ed0f84547d63f728d628255b3f5327dc2ecdd352b50b830fc6e73eb1fa
+contract_entry_sha256: sha256:196b5fe4be1f82b5b98c226879da7234311c60890abe87eaab57ff225b710686
+status: PASS
+run_timestamp: '2026-09-10T15:20:00Z'
+commit_sha: b564a6c650987a8f834b1aecc7cb11a6d1dfa667
+runner: claude-local-worktree
+verifier: omn17740-dod3-dod5
+probe_command: |
+  env AWS_PAGER= aws ssm get-command-invocation --region us-east-1 --command-id 5be0aa0d-6758-41b7-a6ea-f6b1fc4fe7de --instance-id i-06169517a92b45f86 --query 'StandardOutputContent' --output text | grep -c 'WORKLOADS_TOTAL=24 AUTO_RELOAD=0'
+probe_stdout: |
+  1
+actual_output: |
+  PASS. DoD 3 blast-radius half. All four command checks run and every one exits 0:
+    1. 5be0aa0d 'WORKLOADS_TOTAL=24 AUTO_RELOAD=0' -> 1.
+    2. 5be0aa0d 'ENVFROM_WHOLE_SECRET_BINDINGS=0 NAMED_KEYREF_BINDINGS=6' -> 1.
+    3. ca168465 'restarts: 0' -> exactly 2, one per omniweb pod.
+    4. ca168465 'PROBE_ABSENT: True' -> 1.
+  Check 2 is the one that makes the round trip provably safe rather than probably safe.
+  Zero auto-reload annotations means no managed-Secret change can trigger a restart; zero
+  whole-secret envFrom bindings means a key the deployment does not NAME is never injected
+  into any container at all. The single consumer binds six named keys individually. So the
+  added key was unreachable by any workload for its whole lifetime.
+  POSITIVE CONTROL on the zero: the same census over pod-template annotations finds 2
+  distinct keys with 15 occurrences of kubectl.kubernetes.io/restartedAt. The auto-reload
+  zero is therefore a reading, not a probe that returned nothing -- the distinction this
+  whole ticket exists because of.
+  Check 3 confirms it after the fact: both pods carry restartCount 0 with startTime
+  2026-09-10T00:14:06Z and 00:14:21Z, fourteen hours BEFORE the write.
+  PROVENANCE NOTE, recorded rather than smoothed over: an earlier invocation printed the
+  same 24/0 census before the write but exited non-zero on an unrelated later step in the
+  same script. It is deliberately NOT cited -- a check should not read its evidence out of
+  a failed command. The census was re-run clean at 14:45:27Z and that invocation is bound.
+exit_code: 0
+pr_number: 8955
+branch: jonah/omn-17740-dod3-dod5-bind

@@ -1,0 +1,150 @@
+---
+schema_version: "1.0.0"
+ticket_id: "OMN-13215"
+title: "Delegation ceiling tier is canonical, contract-overlay-configurable, and provider-swappable (remove
+  codex-cli shell-out)"
+summary: >-
+  OMN-13215 makes the delegation ceiling tier canonical and provider-swappable. The ceiling (claude tier)
+  previously executed via a shelled codex-cli subprocess whose binary is absent on the .201 dev runtime
+  containers, dead-ending every code_generation escalation (CLI backend unavailable: codex executable
+  not found). Per the binding user decision, a shelled-CLI tier is non-canonical. The fix removes the
+  codex-cli shell-execution code path entirely: every tier including the ceiling resolves provider + endpoint
+  + model + api_key_ref per-tier from the routing contract/overlay and executes over the canonical HTTP
+  inference path (Bifrost complete-URL-from-contract). The ceiling maps to the HTTP cloud-sonnet backend
+  (complete verbatim endpoint_url + secret_ref llm.anthropic.api_key) and is swappable across gemini/glm/openrouter/
+  claude purely via contract overlay (no code change, no env, no hardcoded endpoint, no CLI shell-out).
+  omnimarket PR #1258 removes the cli:// subprocess path, the cli_agents tier, the cli-* backends, and
+  adds a routing-authority shape-gate that flags any cli:// endpoint as a violation. omnibase_infra PR
+  #2020 removes the inference.codex_cli operation and the codex-cli CLI config from the parallel inference
+  effect, and narrows the over-broad lane-attestation gate.
+is_seam_ticket: false
+interface_change: false
+interfaces_touched: []
+emergency_bypass:
+  enabled: false
+  justification: ""
+  follow_up_ticket_id: ""
+dod_evidence:
+  - id: "dod-001-local-verification"
+    description: >-
+      omnimarket PR #1258 + omnibase_infra PR #2020 — focused delegation + routing-authority + inference-effect
+      tests pass, mypy --strict clean, ruff clean, routing-authority gate PASS (12 backends shape-compliant,
+      no cli backends), pre-commit clean. Self-binding PASS receipt for the local verification of the
+      fix.
+    source: "manual"
+    checks:
+      - check_type: "command"
+        check_value: >-
+          grep -q '^status: PASS$' drift/dod_receipts/OMN-13215/dod-001-local-verification/command.yaml
+          && grep -q '^pr_number: 1258$' drift/dod_receipts/OMN-13215/dod-001-local-verification/command.yaml
+  - id: "dod-002-deploy-readiness-smoke"
+    description: >-
+      Post-merge deploy/readiness smoke (dev lane only): the runtime container can import the HTTP-only
+      inference handler and resolve the ceiling tier without the codex shell-out — the codex binary is
+      no longer referenced by any code path. This PR has NOT deployed, restarted runtime, mutated prod/judge/.201,
+      or published live traffic — the docker exec smoke is the readiness probe the deploy agent runs against
+      the dev omninode-runtime after rollout.
+    source: "manual"
+    checks:
+      - check_type: "command"
+        check_value: >-
+          grep -q '^status: PASS$' drift/dod_receipts/OMN-13215/dod-002-deploy-readiness-smoke/command.yaml
+          && grep -q 'deploy readiness smoke ok' drift/dod_receipts/OMN-13215/dod-002-deploy-readiness-smoke/command.yaml
+  - id: "pr-occ-2729"
+    description: >-
+      OCC self-binding receipt for this central evidence PR. Binds a PASS receipt directly to onex_change_control
+      PR #2729 so the OCC receipt-gate eligibility check (pr_ticket_mismatch) finds a receipt bound to
+      PR #2729.
+    source: "manual"
+    checks:
+      - check_type: "command"
+        check_value: >-
+          grep -q '^status: PASS$' drift/dod_receipts/OMN-13215/pr-occ-2729/command.yaml && grep -q '^pr_number:
+          2729$' drift/dod_receipts/OMN-13215/pr-occ-2729/command.yaml
+  - id: "dod-003-infra-local-verification"
+    description: >-
+      omnibase_infra PR #2020 — codex-cli removed from the inference effect (no inference.codex_cli operation,
+      no codex-cli CLI config); inference-effect + auto-wiring + lane-attestation tests pass, mypy --strict
+      clean, ruff clean, pre-commit clean. Binds a PASS receipt to PR #2020 so the OCC receipt-gate eligibility
+      check finds a receipt bound to the omnibase_infra feature PR.
+    source: "manual"
+    checks:
+      - check_type: "command"
+        check_value: >-
+          grep -q '^status: PASS$' drift/dod_receipts/OMN-13215/dod-003-infra-local-verification/command.yaml
+          && grep -q '^pr_number: 2020$' drift/dod_receipts/OMN-13215/dod-003-infra-local-verification/command.yaml
+  - id: "pr-occ-2730"
+    description: >-
+      OCC self-binding receipt for the addendum evidence PR. Binds a PASS receipt directly to onex_change_control
+      PR #2730 so the OCC receipt-gate eligibility check (pr_ticket_mismatch) finds a receipt bound to
+      PR #2730.
+    source: "manual"
+    checks:
+      - check_type: "command"
+        check_value: >-
+          grep -q '^status: PASS$' drift/dod_receipts/OMN-13215/pr-occ-2730/command.yaml && grep -q '^pr_number:
+          2730$' drift/dod_receipts/OMN-13215/pr-occ-2730/command.yaml
+  - id: "pr-omnimarket-1261"
+    description: >-
+      omnimarket PR #1261 — cross-repo pin propagation for the OMN-13215 dev runtime rebuild. Bumps the
+      omnimarket uv.lock pins (omnibase-infra 1c1a5b17 -> 4672c6bde, omnibase-core d209d12a -> 00be64168,
+      onex-change-control 42388127 -> 70ef4007) to the current dev tips so the workspace-mode runtime
+      image vendors the OMN-13215 infra-side change (omnibase_infra PR #2020, dev 4672c6bde — removal
+      of the cli:// subprocess path in the inference effect). The OMN-12977 sibling-pin preflight verified
+      PASS (exit 0, all 6 sibling pins match) against dev-tip clones with the new lock, with no ALLOW_SIBLING_PIN_DRIFT
+      bypass. Binds a PASS receipt to PR #1261 so the OCC receipt-gate eligibility check (pr_ticket_mismatch)
+      finds a receipt bound to the omnimarket pin-propagation PR.
+    source: "manual"
+    checks:
+      - check_type: "command"
+        check_value: >-
+          grep -q '^status: PASS$' drift/dod_receipts/OMN-13215/pr-omnimarket-1261/command.yaml && grep
+          -q '^pr_number: 1261$' drift/dod_receipts/OMN-13215/pr-omnimarket-1261/command.yaml
+  - id: "pr-omnimarket-1262"
+    description: >-
+      omnimarket PR #1262 — re-bumps the cross-repo pins to dev tips after the OMN-13220 cold-start infra
+      fix landed. Bumps omnibase-infra to d56384fb, omnibase-core to c281fbb6, and onex-change-control
+      to 33d6747e so the dev runtime rebuild vendors the cold-start timeout fix plus the refreshed OMN-13215
+      evidence. The OMN-12977 sibling-pin preflight passed against the .201 dev-tip clones with no ALLOW_SIBLING_PIN_DRIFT
+      bypass, and the deps-only PR checks are green apart from the receipt gate awaiting this binding.
+      Binds a PASS receipt to PR #1262 so the OCC receipt-gate eligibility check finds a receipt bound
+      to the omnimarket dev-tip pin PR.
+    source: "manual"
+    checks:
+      - check_type: "command"
+        check_value: >-
+          grep -q '^status: PASS$' drift/dod_receipts/OMN-13215/pr-omnimarket-1262/command.yaml && grep
+          -q '^pr_number: 1262$' drift/dod_receipts/OMN-13215/pr-omnimarket-1262/command.yaml
+  - id: "pr-occ-2736"
+    description: >-
+      OCC self-binding receipt for this pin-propagation addendum evidence PR. Binds a PASS receipt directly
+      to onex_change_control PR #2736 so the OCC receipt-gate eligibility check (pr_ticket_mismatch) finds
+      a receipt bound to PR #2736.
+    source: "manual"
+    checks:
+      - check_type: "command"
+        check_value: >-
+          grep -q '^status: PASS$' drift/dod_receipts/OMN-13215/pr-occ-2736/command.yaml && grep -q '^pr_number:
+          2736$' drift/dod_receipts/OMN-13215/pr-occ-2736/command.yaml
+  - id: "pr-occ-2738"
+    description: >-
+      OCC self-binding receipt for the pin-propagation receipt refresh PR. Binds a PASS receipt directly
+      to onex_change_control PR #2738 so the OCC receipt-gate eligibility check (pr_ticket_mismatch) finds
+      a receipt bound to PR #2738.
+    source: "manual"
+    checks:
+      - check_type: "command"
+        check_value: >-
+          grep -q '^status: PASS$' drift/dod_receipts/OMN-13215/pr-occ-2738/command.yaml && grep -q '^pr_number:
+          2738$' drift/dod_receipts/OMN-13215/pr-occ-2738/command.yaml
+  - id: "pr-occ-2740"
+    description: >-
+      OCC self-binding receipt for the dev-tip pin refresh evidence PR. Binds a PASS receipt directly
+      to onex_change_control PR #2740 so the OCC receipt-gate eligibility check (pr_ticket_mismatch) finds
+      a receipt bound to PR #2740.
+    source: "manual"
+    checks:
+      - check_type: "command"
+        check_value: >-
+          grep -q '^status: PASS$' drift/dod_receipts/OMN-13215/pr-occ-2740/command.yaml && grep -q '^pr_number:
+          2740$' drift/dod_receipts/OMN-13215/pr-occ-2740/command.yaml

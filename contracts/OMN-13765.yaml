@@ -1,0 +1,223 @@
+---
+schema_version: '1.0.0'
+ticket_id: OMN-13765
+title: "fix(OMN-13765): upgrade musl to clear CVE-2026-40200 in cloud-migrate image"
+summary: >
+  docker/Dockerfile.migrate (base alpine:3.19) ships musl / musl-utils 1.2.4_git20230717-r5, which Trivy
+  flags for CVE-2026-40200 (2x HIGH). The Trivy gate in build-and-push-cloud-migrate-image.yml (severity
+  CRITICAL,HIGH, ignore-unfixed, exit-code 1) fails the omninode-cloud-migrate ECR push while the base
+  ships r5. Fix adds "RUN apk upgrade --no-cache musl musl-utils" early in the build stage; the fix is
+  available upstream in 1.2.4_git20230717-r6 (present in the alpine v3.19 main repo), so apk upgrade pulls
+  it at build time. No runtime behavior change — the image only copies SQL migration files.
+is_seam_ticket: false
+interface_change: false
+interfaces_touched: []
+evidence_requirements:
+  - kind: ci
+    description: >
+      Dockerfile.migrate build stage carries the apk upgrade line that clears the musl CVE.
+    command: >
+      grep -q 'apk upgrade --no-cache musl musl-utils' docker/Dockerfile.migrate
+  - kind: ci
+    description: >
+      Baseline Trivy scan reproduces CVE-2026-40200 on alpine:3.19 (installed r5, fixed in r6), and the
+      alpine v3.19 main repo serves the fixed musl r6 that apk upgrade resolves to.
+    command: >
+      trivy image --severity CRITICAL,HIGH --ignore-unfixed --exit-code 1 alpine:3.19
+emergency_bypass:
+  enabled: false
+  justification: ''
+  follow_up_ticket_id: ''
+dod_evidence:
+  - id: dod-001
+    description: >
+      docker/Dockerfile.migrate contains "RUN apk upgrade --no-cache musl musl-utils" in the build stage,
+      which upgrades the CVE-affected musl/musl-utils packages at build time.
+    source: generated
+    checks:
+      - check_type: command
+        check_value: >
+          grep -q '^status: PASS$' "$CONTRACT_REPO_DIR/drift/dod_receipts/OMN-13765/dod-001/command.yaml"
+  - id: dod-002
+    description: >
+      The alpine v3.19 main repo serves musl 1.2.4_git20230717-r6 (the Trivy-reported FixedVersion) for
+      the CI target arch x86_64, so apk upgrade resolves r5 to r6 and clears the CVE.
+    source: generated
+    checks:
+      - check_type: command
+        check_value: >
+          grep -q '^status: PASS$' "$CONTRACT_REPO_DIR/drift/dod_receipts/OMN-13765/dod-002/command.yaml"
+  - id: dod-003
+    description: >
+      Baseline Trivy scan (severity CRITICAL,HIGH, ignore-unfixed) reproduces CVE-2026-40200 as 2x HIGH
+      on alpine:3.19 with installed r5 and fixed r6, confirming the gate the fix clears.
+    source: generated
+    checks:
+      - check_type: command
+        check_value: >
+          grep -q '^status: PASS$' "$CONTRACT_REPO_DIR/drift/dod_receipts/OMN-13765/dod-003/command.yaml"
+  - id: dod-004
+    description: >
+      Feature commit SHA: e8698155d0f3a162c7cf5c5b4c0883fc7f87c49d Branch: jonah/fix-cloud-migrate-musl-cve
+      Repo: OmniNode-ai/omninode_infra PR: 533
+    source: generated
+    checks:
+      - check_type: command
+        check_value: >
+          grep -q '^status: PASS$' "$CONTRACT_REPO_DIR/drift/dod_receipts/OMN-13765/dod-004/command.yaml"
+  - id: dod-occ-self
+    description: >
+      This onex_change_control PR carries the central OMN-13765 contract and PASS receipts required by
+      the downstream omninode_infra PR #533 Receipt Gate.
+    source: generated
+    checks:
+      - check_type: command
+        check_value: >
+          grep -q '^status: PASS$' "$CONTRACT_REPO_DIR/drift/dod_receipts/OMN-13765/dod-occ-self/command.yaml"
+  - id: dod-005
+    description: >
+      main and dev diverged after the v0.3.0 release (omninode_infra #475/#468/#476), producing mergeStateStatus=CONFLICTING
+      on the dev->main promotion PR #534 that carries this ticket's fix. omninode_infra hotfix PR restores
+      the `if: inputs.deploy_target != 'runtime-only'` guard (added on dev by #532/OMN-13671, predating
+      main's release commit) on the Post-deploy verification gate step in .github/workflows/deploy-onex-prod.yml,
+      so main converges with dev's decided value.
+    source: generated
+    checks:
+      - check_type: command
+        check_value: >
+          grep -q '^status: PASS$' "$CONTRACT_REPO_DIR/drift/dod_receipts/OMN-13765/dod-005/command.yaml"
+  - id: dod-006
+    description: >
+      omninode_infra hotfix PR adopts dev's `cast("Any", aioredis)` typing fix for the ValkeyRateLimiter
+      client in docker/onex-api/auth_rate_limit.py, replacing main's older `# type: ignore[no-untyped-call]`
+      workaround for the same mypy issue (equivalent runtime behavior, more explicit typing).
+    source: generated
+    checks:
+      - check_type: command
+        check_value: >
+          grep -q '^status: PASS$' "$CONTRACT_REPO_DIR/drift/dod_receipts/OMN-13765/dod-006/command.yaml"
+  - id: dod-007
+    description: >
+      omninode_infra hotfix PR bumps main's docker/onex-api/requirements.txt pins (ecdsa>=0.18.0 -> >=0.19.2,
+      redis==5.2.1 -> ==8.0.1) to match dev's already-decided higher floors, so the dev->main promotion's
+      3-way merge converges on these two lines instead of conflicting.
+    source: generated
+    checks:
+      - check_type: command
+        check_value: >
+          grep -q '^status: PASS$' "$CONTRACT_REPO_DIR/drift/dod_receipts/OMN-13765/dod-007/command.yaml"
+  - id: dod-008
+    description: >
+      main's v0.3.0 release (omninode_infra #475) removed k8s/onex-prod/ecr-refresh/ as an "orphaned"
+      overlay; dev subsequently re-added and actively wired it into k8s/onex-prod/kustomization.yaml via
+      #517/#527 (OMN-13665/OMN-13749) and it is exercised by the still-open OMN-13761 durable ECR credential
+      refresh work (PR #539). omninode_infra hotfix PR restores role.yaml/serviceaccount.yaml/ cronjob.yaml
+      and the kustomization.yaml reference on main so the modify/delete conflict on PR #534 converges
+      without touching dev's in-flight OMN-13761 branch.
+    source: generated
+    checks:
+      - check_type: command
+        check_value: >
+          grep -q '^status: PASS$' "$CONTRACT_REPO_DIR/drift/dod_receipts/OMN-13765/dod-008/command.yaml"
+  - id: dod-009
+    description: >
+      Reconciliation commit SHA: 1051ecc9752e84aa25b3564a56075d4c24048e14 Branch: hotfix/omn-13765-main-dev-promotion-reconcile
+      Repo: OmniNode-ai/omninode_infra. Content verified byte-identical to a full `git merge origin/main`
+      resolution built and tested in a separate dev-based worktree (1162 onex-api tests + ruff + mypy
+      + pre-commit, all clean) before being re-applied here as a main-targeted hotfix. backmerge: dev
+      already carries the equivalent (newer) content for dod-005 through dod-007 independently of this
+      hotfix; dod-008 is dev-native and untouched by this hotfix. The pending dev->main promotion PR #534
+      completes the loop once this hotfix merges.
+    source: generated
+    checks:
+      - check_type: command
+        check_value: >
+          grep -q '^status: PASS$' "$CONTRACT_REPO_DIR/drift/dod_receipts/OMN-13765/dod-009/command.yaml"
+  - id: dod-occ-self-2
+    description: >
+      This onex_change_control PR (#3417) carries the OMN-13765 contract extension (dod-005..dod-009)
+      and 5 new PASS receipts required by the downstream omninode_infra hotfix PR #542 Receipt Gate.
+    source: generated
+    checks:
+      - check_type: command
+        check_value: >
+          grep -q '^status: PASS$' "$CONTRACT_REPO_DIR/drift/dod_receipts/OMN-13765/dod-occ-self-2/command.yaml"
+  - id: dod-010
+    description: >
+      Binds OMN-13765 evidence to the authoritative dev->main promotion PR omninode_infra#534 itself (not
+      just the downstream feature/hotfix PRs #533/#542). PR #533's original feature commit was squash-merged
+      to dev as 6ac640eefcdc4c030cf4b29f42ab154a38d68942, which is one of PR #534's ~55 listed commits
+      — the verify/verify Receipt Gate on #534 requires a PASS receipt whose commit_sha or pr_number matches
+      #534 directly.
+    source: generated
+    checks:
+      - check_type: command
+        check_value: >
+          grep -q '^status: PASS$' "$CONTRACT_REPO_DIR/drift/dod_receipts/OMN-13765/dod-010/command.yaml"
+  - id: dod-occ-self-3
+    description: >
+      This onex_change_control PR (#3432) carries dod-010, binding OMN-13765 evidence directly to the
+      authoritative omninode_infra dev->main promotion PR #534.
+    source: generated
+    checks:
+      - check_type: command
+        check_value: >
+          grep -q '^status: PASS$' "$CONTRACT_REPO_DIR/drift/dod_receipts/OMN-13765/dod-occ-self-3/command.yaml"
+  - id: dod-011
+    description: >
+      omninode_infra PR #543 carries the workflow-only receipt caller update needed before PR #534 can
+      use the main-release receipt policy on dev->main promotion checks. The branch is protected from
+      direct pushes to dev, so this helper PR is the compliant path for landing that unblocker.
+    source: generated
+    checks:
+      - check_type: command
+        check_value: >
+          grep -q '^status: PASS$' "$CONTRACT_REPO_DIR/drift/dod_receipts/OMN-13765/dod-011/command.yaml"
+  - id: dod-occ-self-4
+    description: >
+      This onex_change_control PR carries dod-011, binding OMN-13765 evidence directly to the omninode_infra
+      helper PR #543 that lands the main-release receipt policy before PR #534 reruns.
+    source: generated
+    checks:
+      - check_type: command
+        check_value: >
+          grep -q '^status: PASS$' "$CONTRACT_REPO_DIR/drift/dod_receipts/OMN-13765/dod-occ-self-4/command.yaml"
+  - id: dod-012
+    description: >
+      omninode_infra PR #545 backmerges main into dev before the authoritative dev->main promotion PR
+      #534 reruns. This clears GitHub's BEHIND state on #534 by carrying main's OMN-13765 reconciliation
+      hotfix (#542) and release/main-guard history into dev through the protected PR path.
+    source: generated
+    checks:
+      - check_type: command
+        check_value: >
+          grep -q '^status: PASS$' "$CONTRACT_REPO_DIR/drift/dod_receipts/OMN-13765/dod-012/command.yaml"
+  - id: dod-occ-self-5
+    description: >
+      This onex_change_control PR carries dod-012, binding OMN-13765 evidence directly to the omninode_infra
+      backmerge PR #545 required before PR #534 can merge cleanly.
+    source: generated
+    checks:
+      - check_type: command
+        check_value: >
+          grep -q '^status: PASS$' "$CONTRACT_REPO_DIR/drift/dod_receipts/OMN-13765/dod-occ-self-5/command.yaml"
+  - id: dod-013
+    description: >
+      omninode_infra PR #547 is the allowed hotfix/* linear main-target replacement for blocked dev->main
+      promotion PR #534 and branch-shape-blocked replacement PR #546. It is based on current main and
+      applies the current dev tree as a single promotion commit, avoiding the protected dev branch's linear-history
+      conflict while preserving the same OMN-13765 promotion content.
+    source: generated
+    checks:
+      - check_type: command
+        check_value: >
+          grep -q '^status: PASS$' "$CONTRACT_REPO_DIR/drift/dod_receipts/OMN-13765/dod-013/command.yaml"
+  - id: dod-occ-self-6
+    description: >
+      This onex_change_control PR carries dod-013, binding OMN-13765 evidence directly to replacement
+      promotion PR #547.
+    source: generated
+    checks:
+      - check_type: command
+        check_value: >
+          grep -q '^status: PASS$' "$CONTRACT_REPO_DIR/drift/dod_receipts/OMN-13765/dod-occ-self-6/command.yaml"

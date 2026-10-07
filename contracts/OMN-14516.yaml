@@ -1,0 +1,226 @@
+---
+schema_version: "1.0.0"
+ticket_id: "OMN-14516"
+title: "OCC companion for omnibase_infra#2286 — event_ledger has never held a row; ledger projection was
+  SKIPPED at wiring"
+summary: >
+  OCC evidence companion for OmniNode-ai/omnibase_infra#2286 (OMN-14516, child of OMN-14135). The audit
+  ledger `event_ledger` has held ZERO rows on every lane since node_ledger_projection_compute shipped,
+  while its 7 subscribed topics carried live traffic (638 events on node-registration alone) and the consumer
+  group never existed among 562 live groups. Nothing was ever red. ROOT CAUSE (proven by running the real
+  discovery+wiring path, not by reading): the contract declares consumer_purpose "audit", making it a
+  raw event projection contract, and handler_wiring.py:3329 SKIPS such a contract outright unless the
+  kernel registered a result applier for it BY NAME — otherwise the node would consume Kafka offsets while
+  dropping every intent it emits. No applier was registered, so the contract never wired and no consumer
+  was ever created. This is NOT the operation_match/handler_routing_loader theory: that loader is a legacy
+  path auto-wiring never calls, operation_match is first-class (~70 contracts use it including the healthy
+  node_ledger_write_effect), and the routing entry parses fine and is assigned all 7 topics — rewriting
+  the contract to payload_type_match would have papered over the real defect, so the contract is UNCHANGED.
+  Two independent defects, either of which alone keeps the table empty: (1) the missing kernel result
+  applier (load-bearing), and (2) the missing def-B handle() entrypoint, without which handler_wiring
+  binds the _missing_handle sentinel that raises on every event and is then log-and-discarded by the auto-wired
+  consume boundary (no DLQ, no redelivery). handle() alone = still zero rows; applier alone = still zero
+  rows.
+is_seam_ticket: true
+interface_change: false
+interfaces_touched: []
+evidence_requirements:
+  - kind: "manual"
+    description: "omnibase_infra#2286 head registers the ledger-projection result applier and adds the
+      def-B handle() entrypoint; live stability-test readback shows non-zero event_ledger rows."
+    command: "see dod_evidence check_values"
+emergency_bypass:
+  enabled: false
+  justification: ""
+  follow_up_ticket_id: ""
+dod_evidence:
+  - id: "dod-verify-2286-ledger-projection-wiring"
+    description: >-
+      Product-observing check against omnibase_infra#2286 head 5f64390c3d703d328ecd46fc04aba0757dbacb84.
+      Asserts BOTH load-bearing halves of the fix are present at the pinned head, because either one alone
+      leaves event_ledger at zero rows: (1) service_kernel registers a result applier under the exact
+      contract name node_ledger_projection_compute AND registers the ledger.append intent handler — without
+      this the contract is SKIPPED at wiring and no consumer is ever created; (2) HandlerLedgerProjection
+      exposes an async handle() dispatch entrypoint — without this auto-wiring binds _missing_handle,
+      which raises on every dispatched event and is swallowed by the consume boundary; (3) IntentEffectLedgerAppend
+      exists to carry the emitted intent to the write effect. The check reads the PR head content directly,
+      so it goes RED on the EXISTS-but-WRONG mutations, not merely on file absence: deleting the applier
+      registration line drops K to 0 (exit 1) while every file still exists and the routing entry still
+      parses; deleting handle() drops H to 0 (exit 1) while the applier is still registered. Both mutations
+      were executed locally and both produced the expected RED before this evidence was written.
+    source: "manual"
+    status: "verified"
+    checks:
+      - check_type: "command"
+        check_value: >-
+          S=$(gh api "repos/OmniNode-ai/omnibase_infra/contents/src/omnibase_infra/runtime/service_kernel.py?ref=5f64390c3d703d328ecd46fc04aba0757dbacb84"
+          --jq .content | base64 -d); H=$(gh api "repos/OmniNode-ai/omnibase_infra/contents/src/omnibase_infra/nodes/node_ledger_projection_compute/handlers/handler_ledger_projection.py?ref=5f64390c3d703d328ecd46fc04aba0757dbacb84"
+          --jq .content | base64 -d); E=$(gh api "repos/OmniNode-ai/omnibase_infra/contents/src/omnibase_infra/runtime/intent_effects/intent_effect_ledger_append.py?ref=5f64390c3d703d328ecd46fc04aba0757dbacb84"
+          --jq .content | base64 -d); K=$(printf '%s' "$S" | grep -c 'auto_wiring_result_appliers\["node_ledger_projection_compute"\]');
+          R=$(printf '%s' "$S" | grep -c '"ledger.append"'); D=$(printf '%s' "$H" | grep -c 'async def
+          handle('); C=$(printf '%s' "$H" | grep -c '_coerce_event_message'); I=$(printf '%s' "$E" | grep
+          -c 'class IntentEffectLedgerAppend'); test "$K" -ge 1 && test "$R" -ge 1 && test "$D" -ge 1
+          && test "$C" -ge 1 && test "$I" -ge 1
+  - id: "dod-rebind-2286-head-61782b9a"
+    description: >-
+      Product-head rebind for omnibase_infra#2286 after the product PR advanced from the originally evidenced
+      head 5f64390c3d703d328ecd46fc04aba0757dbacb84 to live head 61782b9a3cd466bfb1868077ff3bccc1c5ecf69e.
+      The delta is a single empty rerun commit whose subject is "chore(OMN-14516): fresh SHA to re-run
+      occ-preflight after Evidence-Source binding (OCC#4077)"; GitHub compare reports zero changed files.
+      This item does not replace the substantive live-effect evidence above; it binds the current product
+      merge candidate SHA so Receipt Gate does not rely on evidence for a stale product head.
+    source: "manual"
+    status: "verified"
+    checks:
+      - check_type: "command"
+        check_value: >-
+          test "$(gh pr view 2286 --repo OmniNode-ai/omnibase_infra --json headRefOid --jq .headRefOid)"
+          = "61782b9a3cd466bfb1868077ff3bccc1c5ecf69e" && gh api "repos/OmniNode-ai/omnibase_infra/compare/5f64390c3d703d328ecd46fc04aba0757dbacb84...61782b9a3cd466bfb1868077ff3bccc1c5ecf69e"
+          --jq '((.files | length) == 0) and ((.commits | length) == 1) and (.commits[0].sha == "61782b9a3cd466bfb1868077ff3bccc1c5ecf69e")'
+          | grep -Fx true
+  - id: "dod-occ-self-4077"
+    description: >-
+      Self-bind item for onex_change_control#4077 after PR creation. It binds OMN-14516 to this companion
+      PR and branch so Receipt Gate/OCC Preflight can verify that the central evidence PR itself has a
+      PASS receipt bound to PR #4077. Product-observing evidence is carried by the product wiring and
+      product-head rebind entries; this item is binding only.
+    source: "manual"
+    status: "verified"
+    checks:
+      - check_type: "command"
+        check_value: >-
+          test "$(gh pr view 4077 --repo OmniNode-ai/onex_change_control --json headRefName --jq .headRefName)"
+          = "jonah/omn-14516-ledger-projection-evidence" && grep -q 'dod-occ-self-4077' contracts/OMN-14516.yaml
+  - id: "dod-head-e5ccbcd5-contract-appliers"
+    evidence_artifact: "supersedes_dod_evidence:dod-rebind-2286-head-61782b9a"
+    description: >-
+      Product-observing supplement for omnibase_infra#2286 head e5ccbcd5d6965a7de5fd6a5274d8aeea88ae8554.
+      This head replaces the first product repair's by-name kernel result-applier allowlist with contract-derived
+      wiring: raw audit/projection contracts declare intent_consumption.intent_routing_table, the kernel
+      derives DispatchResultApplier instances from those contract declarations, and the generic IntentEffectDispatchBridge
+      invokes the write-effect handler's canonical handle() surface. The check binds the current product
+      head and proves the new shape exists while the deleted bespoke bridge classes and node_ledger_projection_compute
+      by-name allowlist entry do not.
+    source: "manual"
+    status: "verified"
+    checks:
+      - check_type: "command"
+        check_value: >-
+          H=$(gh pr view 2286 --repo OmniNode-ai/omnibase_infra --json headRefOid --jq .headRefOid); test
+          "$H" = "e5ccbcd5d6965a7de5fd6a5274d8aeea88ae8554"; gh api "repos/OmniNode-ai/omnibase_infra/compare/61782b9a3cd466bfb1868077ff3bccc1c5ecf69e...$H"
+          --jq '(.files | map({(.filename): .status}) | add) as $m | ($m["src/omnibase_infra/nodes/node_ledger_projection_compute/contract.yaml"]
+          == "modified") and ($m["src/omnibase_infra/runtime/service_kernel.py"] == "modified") and ($m["src/omnibase_infra/runtime/auto_wiring/handler_wiring.py"]
+          == "modified") and ($m["src/omnibase_infra/runtime/intent_effects/intent_effect_dispatch_bridge.py"]
+          == "added") and ($m["src/omnibase_infra/runtime/intent_effects/intent_effect_build_loop_append.py"]
+          == "removed") and ($m["src/omnibase_infra/runtime/intent_effects/intent_effect_pr_state_upsert.py"]
+          == "removed")' | grep -Fx true
+  - id: "dod-deploy-assessment-2286-head-e5ccbcd5"
+    description: >-
+      Deploy-gate assessment for omnibase_infra#2286 head e5ccbcd5d6965a7de5fd6a5274d8aeea88ae8554. The
+      PR touches runtime paths, so the downstream deploy gate requires central deploy DoD evidence. No
+      live deploy, restart, or prod mutation was performed by this merge sweep; the product PR body records
+      that prod remained untouched/read-only and that no prod promotion is in scope. Post-merge validation
+      remains required on the runtime lane before any promotion claim: verify the runtime consumer group
+      exists and event_ledger row count increases from real platform traffic.
+    source: "manual"
+    status: "verified"
+    checks:
+      - check_type: "command"
+        check_value: >-
+          H=$(gh pr view 2286 --repo OmniNode-ai/omnibase_infra --json headRefOid --jq .headRefOid); test
+          "$H" = "e5ccbcd5d6965a7de5fd6a5274d8aeea88ae8554"; gh api "repos/OmniNode-ai/omnibase_infra/compare/61782b9a3cd466bfb1868077ff3bccc1c5ecf69e...$H"
+          --jq 'any(.files[].filename; test("^src/omnibase_infra/runtime/|^src/omnibase_infra/nodes/node_ledger_projection_compute/"))'
+          | grep -Fx true; gh pr view 2286 --repo OmniNode-ai/omnibase_infra --json body --jq .body |
+          grep -q 'Prod is untouched and read-only throughout'; printf '%s\n' 'deploy assessment: no live
+          deploy or restart performed by Codex for OMN-14516; post-merge runtime validation is required
+          before any promotion claim.'
+  - id: "dod-occ-self-4087"
+    description: >-
+      Self-bind item for onex_change_control#4087, the append-only supplement that binds the live omnibase_infra#2286
+      product head e5ccbcd5 after OCC#4077 had already merged. This item binds OMN-14516 to the new central
+      evidence PR so Receipt Gate/OCC Preflight can verify the supplement itself.
+    source: "manual"
+    status: "verified"
+    checks:
+      - check_type: "command"
+        check_value: >-
+          test "$(gh pr view 4087 --repo OmniNode-ai/onex_change_control --json headRefName --jq .headRefName)"
+          = "jonah/omn-14516-ledger-projection-evidence" && grep -q 'dod-occ-self-4087' contracts/OMN-14516.yaml
+  - id: "dod-reshape-derivation-verified"
+    evidence_artifact: "supersedes_dod_evidence:dod-head-e5ccbcd5-contract-appliers"
+    description: >-
+      Reshape-aware product-observing check for omnibase_infra#2286. It reads the LIVE merge-candidate
+      head dynamically (gh pr view headRefOid) rather than pinning a snapshot SHA, so a test-only advance
+      of the product branch (e.g. f72f9b47 -> 1420b2f4, which touched only test files) does not stale
+      it; it always verifies whatever head Codex is about to land. It supersedes the e5ccbcd5-bound contract-appliers
+      item that pins a now-stale head. Re-verified INDEPENDENTLY by verify-2286 (adversarial verifier,
+      not the ledger-reshape implementer): the by-name kernel result-applier allowlist for node_ledger_projection_compute
+      is DELETED and appliers are DERIVED from each projection contract's intent_consumption.intent_routing_table
+      via load_intent_routing_table plus the single generic IntentEffectDispatchBridge; the raw-projection
+      wiring outcome is FAILED (not SKIPPED) when no applier is wired. The check reads file CONTENT at
+      the pinned head, so it is RED against EXISTS-but-WRONG mutations, not merely on file absence: re-adding
+      auto_wiring_result_appliers["node_ledger_projection_compute"] drives A to non-zero (RED, proven
+      by a mutation dry-run); reverting the SKIPPED->FAILED reshape brings back the old "requires dedicated
+      raw event projection wiring" reason (O non-zero, RED). The verifier independently reproduced both
+      the derivation-without-allowlist proof and the SKIPPED->FAILED revert-run-restore RED-proof before
+      this receipt was written.
+    source: "manual"
+    status: "verified"
+    checks:
+      - check_type: "command"
+        check_value: |-
+          H=$(gh pr view 2286 --repo OmniNode-ai/omnibase_infra --json headRefOid --jq .headRefOid)
+          test -n "$H"
+          S=$(gh api "repos/OmniNode-ai/omnibase_infra/contents/src/omnibase_infra/runtime/service_kernel.py?ref=$H" --jq .content | base64 -d)
+          W=$(gh api "repos/OmniNode-ai/omnibase_infra/contents/src/omnibase_infra/runtime/auto_wiring/handler_wiring.py?ref=$H" --jq .content | base64 -d)
+          B=$(gh api "repos/OmniNode-ai/omnibase_infra/contents/src/omnibase_infra/runtime/intent_effects/intent_effect_dispatch_bridge.py?ref=$H" --jq .content | base64 -d)
+          D=$(printf '%s' "$S" | grep -c 'load_intent_routing_table'; true)
+          U=$(printf '%s' "$S" | grep -c 'IntentEffectDispatchBridge'; true)
+          A=$(printf '%s' "$S" | grep -c 'auto_wiring_result_appliers\["node_ledger_projection_compute"\]'; true)
+          F=$(printf '%s' "$W" | grep -c 'no result applier is wired'; true)
+          O=$(printf '%s' "$W" | grep -c 'requires dedicated raw event projection wiring'; true)
+          G=$(printf '%s' "$B" | grep -c 'class IntentEffectDispatchBridge'; true)
+          test "$D" -ge 1 && test "$U" -ge 1 && test "$A" -eq 0 && test "$F" -ge 1 && test "$O" -eq 0 && test "$G" -ge 1
+  - id: "dod-deploy-live-readback-2286"
+    evidence_artifact: "supersedes_dod_evidence:dod-deploy-assessment-2286-head-e5ccbcd5"
+    description: >-
+      Deploy-class evidence for omnibase_infra#2286, superseding the e5ccbcd5 deploy-assessment which
+      recorded only "post-merge runtime validation is required" and never carried a live readback. The
+      CI-runnable assertion reads the live merge-candidate head dynamically (not a pinned snapshot SHA).
+      verify-2286 performed the readback INDEPENDENTLY on the .201 stability-test lane (docker exec psql
+      + rpk): event_ledger went from ZERO (its state for the entire prior life of the table, on every
+      lane) to 1203 rows and still growing, and node_ledger_projection_compute now holds 7 Stable auto-wired
+      consumer groups (one per subscribed topic) with node_ledger_write_effect Stable on onex.cmd.platform.ledger-append.v1
+      — where before the fix it had zero consumer groups. This proves the derived-applier wired path is
+      live end to end: consume the 7 platform topics -> emit ledger.append -> IntentEffectDispatchBridge
+      -> HandlerLedgerAppend.handle -> event_ledger. The CI-runnable assertion binds the head and confirms
+      the ledger projection contract declares the intent_routing_table to node_ledger_write_effect (the
+      seam the kernel derivation reads); the live docker-exec readback command and its result are recorded
+      in the check_value and receipt as the manual attestation, since OCC runners cannot reach the .201
+      lane.
+    source: "manual"
+    status: "verified"
+    checks:
+      - check_type: "command"
+        check_value: |-
+          H=$(gh pr view 2286 --repo OmniNode-ai/omnibase_infra --json headRefOid --jq .headRefOid)
+          test -n "$H"
+          C=$(gh api "repos/OmniNode-ai/omnibase_infra/contents/src/omnibase_infra/nodes/node_ledger_projection_compute/contract.yaml?ref=$H" --jq .content | base64 -d)
+          printf '%s' "$C" | grep -q 'intent_routing_table'
+          printf '%s' "$C" | grep -q 'node_ledger_write_effect'
+          printf '%s\n' 'live deploy readback (manual, independent verifier verify-2286, .201 stability-test lane, 2026-07-13): ssh omni-201-ts docker exec omnibase-infra-stability-test-postgres psql -U postgres -d omnibase_infra -tAc "SELECT count(*) FROM event_ledger" -> 1203 rows and growing (was 0 for the entire prior life of the table on every lane); ssh omni-201-ts docker exec omnibase-infra-stability-test-redpanda rpk group list -> 7 Stable consumer groups for node_ledger_projection_compute plus a Stable node_ledger_write_effect group on onex.cmd.platform.ledger-append.v1 (was 0 groups; the legacy hardcoded group onex-ledger-projection-compute is Dead). Wired path proven live end-to-end: consume 7 platform topics -> emit ledger.append -> IntentEffectDispatchBridge -> HandlerLedgerAppend.handle -> event_ledger. NOTE: a WHERE topic=onex.cmd.platform.ledger-append.v1 scoping returns 0 because event_ledger.topic stores the SOURCE event topic (node-heartbeat etc.), not the command topic; the correctly-scoped readback is the unscoped count above.'
+  - id: "dod-occ-self-4094"
+    description: >-
+      Self-bind item for onex_change_control#4094, this append-only companion carrying the head-agnostic
+      reshape and live-readback deploy evidence. It binds OMN-14516 to this companion PR and branch so
+      Receipt Gate / OCC Preflight can verify the companion itself and so occ-preflight/eligibility does
+      not fail pr_ticket_mismatch. The receipt's commit_sha is a commit in THIS companion PR's own commit
+      set (9efd0983, not the product #2286 head) — the OMN-14549 self-bind rule. Binding only; the substantive
+      evidence is carried by dod-reshape-derivation-verified and dod-deploy-live-readback-2286.
+    source: "manual"
+    status: "verified"
+    checks:
+      - check_type: "command"
+        check_value: >-
+          test "$(gh pr view 4094 --repo OmniNode-ai/onex_change_control --json headRefName --jq .headRefName)"
+          = "jonah/omn-14516-ledger-evidence-f72f9b47" && grep -q 'dod-occ-self-4094' contracts/OMN-14516.yaml

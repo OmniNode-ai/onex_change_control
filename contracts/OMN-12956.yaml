@@ -1,0 +1,70 @@
+---
+schema_version: "1.0.0"
+ticket_id: "OMN-12956"
+title: "Route node_overseer_observer handler_routing to concrete Null* impls (main-runtime bootstrap crash)"
+summary: >
+  node_overseer_observer/contract.yaml (omnimarket) routed handler_routing.handlers to the EvidenceEvaluator
+  and SideEffectObserver typing.Protocol interfaces. The runtime handler resolver (omnibase_core ServiceHandlerResolver.resolve,
+  reached via omnibase_infra _import_handler_class → getattr(import_module(module), name)) instantiates
+  the routed class on its zero-arg path; a Protocol target raises TypeError: Protocols cannot be instantiated
+  (typing.py:1774). The contract declares no runtime_profiles, so it defaults to main-profile ownership
+  and is wired by the crashing main runtime, crash-looping bootstrap on infra builds predating the OMN-12501
+  quarantine guard (infra <0.38.x). This is the fatal crash of omninode-stability-test-runtime on the
+  2026-06-11 dev-HEAD rebuild (RESOLVER-CRASH-DIAGNOSIS.md). Fix routes handler_routing to the concrete
+  NullEvidenceEvaluator / NullSideEffectObserver implementations already present in the same modules (the
+  contract root handler: block already named NullEvidenceEvaluator). Adds a TDD recurrence ratchet (tests/validation/test_handler_routing_no_protocol_targets.py)
+  that loads every omnimarket contract's handler_routing targets, resolves each via the same runtime path,
+  and asserts no resolved class is a typing.Protocol; red on the pre-fix contract (2 failed), green post-fix
+  (319 passed / 32 skipped). Contract-only YAML change to one node descriptor plus one new validation
+  test; no topic schema, envelope, or contract API change. This is the first item of the next stability
+  rebuild batch — merging to dev unblocks dev-HEAD deploys.
+is_seam_ticket: false
+interface_change: false
+interfaces_touched: []
+evidence_requirements:
+  - kind: "tests"
+    description: >
+      TDD-first recurrence guard resolves every omnimarket handler_routing target via the runtime path
+      and asserts none is a typing.Protocol. Red on the pre-fix node_overseer_observer contract (EvidenceEvaluator
+      / SideEffectObserver), green after routing to the concrete Null* impls.
+    command: "uv run pytest tests/validation/test_handler_routing_no_protocol_targets.py -q"
+emergency_bypass:
+  enabled: false
+  justification: ""
+  follow_up_ticket_id: ""
+dod_evidence:
+  - id: "dod-omnimarket-pr-1165"
+    description: >
+      omnimarket PR #1165 routes node_overseer_observer/contract.yaml handler_routing from the EvidenceEvaluator
+      / SideEffectObserver typing.Protocol interfaces to the concrete NullEvidenceEvaluator / NullSideEffectObserver
+      implementations and adds tests/validation/test_handler_routing_no_protocol_targets.py. Evidence
+      anchor: omnimarket head commit 454a6f485ef39e3276aec84b6a41f3d5b5d66559.
+    source: "manual"
+    checks:
+      - check_type: "command"
+        check_value: "grep -q '^status: PASS$' drift/dod_receipts/OMN-12956/dod-omnimarket-pr-1165/command.yaml
+          && grep -q '^pr_number: 1165$' drift/dod_receipts/OMN-12956/dod-omnimarket-pr-1165/command.yaml
+          && grep -q 'passed' drift/dod_receipts/OMN-12956/dod-omnimarket-pr-1165/command.yaml"
+  - id: "dod-deploy-assessment"
+    description: >
+      Deploy assessment: this is a contract-only handler_routing change in omnimarket with no topic schema,
+      envelope, or contract API change. It changes which concrete class the resolver instantiates for
+      node_overseer_observer so main-runtime bootstrap no longer crashes on a Protocol target. Reaching
+      live effect requires the next omnimarket image rebuild on the stability-test runtime — a quiesce-coordinated
+      stability rebuild (No live deploy is performed by this PR; dev/prod lanes untouched). This PR is
+      the first item of that rebuild batch and unblocks dev-HEAD deploys.
+    source: "manual"
+    checks:
+      - check_type: "command"
+        check_value: "grep -q '^status: PASS$' drift/dod_receipts/OMN-12956/dod-deploy-assessment/command.yaml
+          && grep -q '^pr_number: 1165$' drift/dod_receipts/OMN-12956/dod-deploy-assessment/command.yaml
+          && grep -q 'No live deploy' drift/dod_receipts/OMN-12956/dod-deploy-assessment/command.yaml"
+  - id: "dod-occ-pr-2472"
+    description: "onex_change_control PR #2472 (dev) carries the OMN-12956 central contract and receipt
+      evidence; this self-binding receipt makes the OCC PR satisfy its own OCC merge-eligibility check
+      (binds a PASS receipt to PR #2472)."
+    source: "manual"
+    checks:
+      - check_type: "command"
+        check_value: "grep -q '^status: PASS$' drift/dod_receipts/OMN-12956/dod-occ-pr-2472/command.yaml
+          && grep -q '^pr_number: 2472$' drift/dod_receipts/OMN-12956/dod-occ-pr-2472/command.yaml"

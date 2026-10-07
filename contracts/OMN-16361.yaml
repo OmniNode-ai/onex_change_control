@@ -1,0 +1,65 @@
+---
+schema_version: "1.0.0"
+ticket_id: "OMN-16361"
+title: "Receipt hardening CI step — add GH_TOKEN so cross-repo commit_sha lookups run authenticated"
+summary: "The 'Run receipt hardening on changed receipts' step in .github/workflows/ci.yml (~line 132)
+  set only BASE_REF in its env:, so when check_receipt_hardening.py's _commit_sha_resolves falls back
+  to 'gh api repos/<owner>/<repo>/commits/<sha>' for a cross-repo commit_sha lookup, gh api ran unauthenticated
+  and exited non-zero unconditionally. No cross-repo commit_sha could ever resolve in CI, regardless of
+  whether the commit was real — every autobind companion carrying a product-repo receipt got a false [COMMIT_SHA_EXISTS]
+  'fabricated' verdict and CI Summary failed closed. This PR mirrors the secrets.CROSS_REPO_PAT || github.token
+  pattern already used at six sibling steps in the same workflow (lines ~941, 974, 1686, 1701, 1966, 2089).
+  Self-authored by the implementer for this ticket's own carrier PR #6836 (not a companion pattern) —
+  a bounded, one-line gate-mechanical fix, same shape as OMN-15461's contract."
+is_seam_ticket: false
+interface_change: false
+interfaces_touched: []
+evidence_requirements:
+  - kind: "ci"
+    description: "OCC PR CI checks green"
+    command: "gh pr checks ${PR_NUMBER} --repo ${REPO}"
+emergency_bypass:
+  enabled: false
+  justification: ""
+  follow_up_ticket_id: ""
+dod_evidence:
+  - id: "dod-omn16361-gh-token-added-pr-6836"
+    description: "PR #6836 actually adds GH_TOKEN to the 'Run receipt hardening on changed receipts' step
+      env:, not merely describes it. Asserted against the PR's own diff hunk for .github/workflows/ci.yml:
+      exactly one ADDED line sets GH_TOKEN. Falsifiable: asserting any count other than 1 exits non-zero."
+    source: "manual"
+    status: "verified"
+    checks:
+      - check_type: "command"
+        check_value: "gh api repos/OmniNode-ai/onex_change_control/pulls/6836/files --paginate --jq '[.[]
+          | select(.filename == \".github/workflows/ci.yml\") | .patch] | join(\"\")' | grep -c 'GH_TOKEN:'"
+  - id: "occ-self-bind-pr-6836"
+    description: "Self-bind: OCC PR 6836 is this ticket's own carrier PR, proven by its own file list
+      containing .github/workflows/ci.yml."
+    source: "manual"
+    status: "verified"
+    checks:
+      - check_type: "command"
+        check_value: "gh pr view 6836 --repo OmniNode-ai/onex_change_control --json files --jq '.files[].path'
+          | grep -cxF '.github/workflows/ci.yml'"
+  - id: "dod-OmniNode-ai-onex_change_control-pr-6836"
+    description: "PR #6836 on OmniNode-ai/onex_change_control — Evidence-Source autobind."
+    source: "generated"
+    checks:
+      - check_type: "command"
+        check_value: "gh pr view 6836 --repo OmniNode-ai/onex_change_control --json number,state"
+      - check_type: "command"
+        check_value: "gh pr view 6836 --repo OmniNode-ai/onex_change_control --json files"
+  - id: "dod-occ-evidence-admissibility-validator"
+    description: "Hosted OCC evidence admissibility validator (OMN-15247)."
+    source: "generated"
+    evidence_artifact: "supersedes_dod_evidence:dod-OmniNode-ai-onex_change_control-pr-6836"
+    checks:
+      - check_type: "command"
+        check_value: "uv run pytest tests/test_evidence_admissibility.py -q"
+  - id: "occ-self-bind-pr-6837"
+    description: "Binds OMN-16361 to OCC companion PR #6837 (self-bind)."
+    source: "generated"
+    checks:
+      - check_type: "command"
+        check_value: "gh pr view 6837 --repo OmniNode-ai/onex_change_control --json number,state"

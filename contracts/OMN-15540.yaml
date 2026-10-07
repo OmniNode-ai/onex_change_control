@@ -1,0 +1,134 @@
+---
+schema_version: "1.0.0"
+ticket_id: "OMN-15540"
+title: "Contract-lint Rule F — reject dod_evidence predicates pinned to a MUTABLE external state"
+summary: >-
+  A dod_evidence predicate that can only ever be satisfied by an immutable-past state is the mechanism
+  by which "red-but-accepted" adjudication requests reach the operator: the check produces an unresolvable
+  red, which escalates, which spends operator judgement on a defect that was AUTHORED rather than discovered.
+  A corpus sweep of all 7,588 contracts/*.yaml found 6 dod_evidence items carrying 8 such check_values,
+  two of them ALREADY deterministically RED — contracts/OMN-10765.yaml dod-001/dod-002 pin `?ref=jonah/omn-10765-port-change-aware-test-selection-to-omniintelligence`,
+  a branch deleted on merge (live: HTTP 404), and contracts/OMN-15484.yaml asserted run 30565261108's
+  `occ-preflight / eligibility` concluded `failure` when the re-run job reads `success`. OMN-15484's owning
+  lane landed the correct attempt-anchored repair on dev mid-build, so the frozen baseline is the remaining
+  5 items / 6 checks. This PR adds Rule F to scripts/lint_contract_check_values.py with three sub-detectors
+  (F1 pinned run conclusion, F2 deletable branch ref, F3 unanchored-cumulative count bound), HARD tier
+  so it moves the linter's exit code, plus a shrink-only corpus baseline wired into ci.yml's existing
+  unconditional `contract-corpus-ratchets` job — which is already inside the required `CI Summary` context.
+  No new workflow and no new script: the rule ships with its mechanism (feedback_a_rule_is_not_a_mechanism).
+  Mainline refs (`?ref=dev`), abbreviated and full SHAs, release tags, runner-substituted refs, monotone
+  lower bounds (`>= N`), zero-assertions, and ATTEMPT-ANCHORED run reads (`?filter=all` + `.run_attempt==N`,
+  or `/attempts/<n>/jobs` — per-attempt job records are immutable, verified live: run 30565261108 returns
+  attempt 1 = failure alongside attempt 2 = success) are all exempt by design and pinned by negative controls,
+  so the rule discriminates rather than blanket-rejects. The attempt-anchored exemption exists because
+  the first draft of Rule F flagged the correct repair and this PR's own corpus ratchet caught it against
+  live dev.
+is_seam_ticket: false
+interface_change: false
+interfaces_touched: []
+evidence_requirements:
+  - kind: "ci"
+    description: "Rule F detectors are present in the linter and wired into the hard-finding path"
+    command: "grep -q 'mutable-state-pin' scripts/lint_contract_check_values.py"
+emergency_bypass:
+  enabled: false
+  justification: ""
+  follow_up_ticket_id: ""
+dod_evidence:
+  - id: "dod-omn-15540-rule-f-red-before-green-after"
+    description: >-
+      The RED-before/GREEN-after pair, executed against the detector rather than described. The RED anchor
+      is the LITERAL check_value shipped in contracts/OMN-15484.yaml (run 30565261108, `occ-preflight
+      / eligibility`, `grep -qx failure`) — the same bytes, not a paraphrase, held in `_OMN_15484_CHECK_2`
+      in the test module — and the detector must flag it. The GREEN anchor is the anchored replacement
+      for that same evidence (assert a recorded receipt rather than re-read a surface that has since moved),
+      and the detector must NOT flag it. Falsifiable in both directions: deleting the F1 detector fails
+      the first test, and widening it to match any `actions/runs` mention fails the second. Measured against
+      the pre-change linter at authoring time, 5 Rule F detection tests FAILED and all 14 negative controls
+      passed, which is the RED-before proof. NOTE ON SHAPE, since it is load-bearing: the anchor bytes
+      are asserted through the test module rather than re-embedded in this check_value. Rule F is a TEXT
+      scanner and cannot distinguish a check that QUOTES a violating shape as test data from one that
+      EXECUTES it — an earlier draft of this item inlined the literal and was correctly flagged by the
+      rule it ships, and correctly caught by the corpus ratchet. Quoting the anchor in exactly one place
+      (the test) is the fix; loosening the detector is not.
+    source: "manual"
+    status: "verified"
+    checks:
+      - check_type: "command"
+        check_value: "uv run pytest tests/unit/scripts/test_lint_contract_check_values.py -q -p no:randomly
+          -k 'rule_f_red_before_on_literal_omn_15484_check_two or rule_f_green_after_on_anchored_receipt_shape'"
+  - id: "dod-omn-15540-rule-f-unit-suite"
+    description: >-
+      The full Rule F unit suite — 22 tests covering all three sub-detectors, the hard-tier exit-code
+      assertion, and the negative controls for mainline/SHA/tag/runner-substituted refs, monotone lower
+      bounds, `is:open`-bounded counts, closed date ranges, zero-assertions, and attempt-anchored run
+      reads. Falsifiable: removing any sub-detector fails its detection test, and loosening one fails
+      its negative control.
+    source: "manual"
+    status: "verified"
+    checks:
+      - check_type: "command"
+        check_value: "uv run pytest tests/unit/scripts/test_lint_contract_check_values.py -q -p no:randomly
+          -k rule_f"
+  - id: "dod-omn-15540-rule-f-corpus-ratchet"
+    description: >-
+      The mechanism, not the rule: the shrink-only corpus ratchet over every contracts/*.yaml. This runs
+      in ci.yml's `contract-corpus-ratchets` job, which is unconditional (no needs:, no if:, no paths
+      filter) and wired into the required `CI Summary` context with a strict success-only check — the
+      only surface that sees contracts a PR does not touch. Proven to fire at authoring time: adding a
+      synthetic contract carrying one new run-conclusion pin made this test FAIL with "1 NEW Rule F (mutable-state-pin)
+      violation(s) ... ['contracts/OMN-99999.yaml::dod-probe']", and removing it restored green. Also
+      asserts the concurrent-repair exemption set may only name entries the baseline actually carries,
+      so it cannot become a general-purpose allowlist.
+    source: "manual"
+    status: "verified"
+    checks:
+      - check_type: "command"
+        check_value: "uv run pytest tests/unit/scripts/test_lint_contract_check_values_corpus_baseline.py
+          -q -p no:randomly -k rule_f"
+  - id: "dod-omn-15540-baseline-census-exact"
+    description: >-
+      The frozen baseline records exactly the 5 dod_evidence items the corpus sweep found on dev at landing,
+      no more and no fewer — padding it with non-violations or dropping a real one both defeat the ratchet.
+      Fail-closed: a missing or truncated baseline file yields a count that is not 5 and the `test` comparison
+      exits 1. The census that motivated this rule found 6 items; contracts/OMN-15484.yaml left the live
+      scan on its own when its owning lane landed the attempt-anchored repair mid-build, which is the
+      class shrinking by a real fix rather than by a weakened detector.
+    source: "manual"
+    status: "verified"
+    checks:
+      - check_type: "command"
+        check_value: "test \"$(grep -c '^  - contracts/' .onex_ratchets/omn_15540_rule_f_baseline.yaml)\"
+          = \"5\""
+  - id: "dod-omn-15540-rule-f-is-hard-tier"
+    description: >-
+      Rule F must change the linter's exit code, unlike warning-tier Rule E. A rule that only prints is
+      a rule without a mechanism. Falsifiable: routing Rule F through lint_contract_warnings instead of
+      lint_contract makes this return 0 and the check goes RED.
+    source: "manual"
+    status: "verified"
+    checks:
+      - check_type: "command"
+        check_value: "uv run pytest tests/unit/scripts/test_lint_contract_check_values.py -q -p no:randomly
+          -k rule_f_run_conclusion_changes_exit_code"
+  - id: "dod-OmniNode-ai-onex_change_control-pr-5665"
+    description: "PR #5665 on OmniNode-ai/onex_change_control — Evidence-Source autobind."
+    source: "generated"
+    checks:
+      - check_type: "command"
+        check_value: "gh pr view 5665 --repo OmniNode-ai/onex_change_control --json number,state"
+      - check_type: "command"
+        check_value: "gh pr view 5665 --repo OmniNode-ai/onex_change_control --json files"
+  - id: "dod-occ-evidence-admissibility-validator"
+    description: "Hosted OCC evidence admissibility validator (OMN-15247)."
+    source: "generated"
+    evidence_artifact: "supersedes_dod_evidence:dod-OmniNode-ai-onex_change_control-pr-5665"
+    checks:
+      - check_type: "command"
+        check_value: "uv run pytest tests/test_evidence_admissibility.py -q"
+  - id: "occ-self-bind-pr-5666"
+    description: "Binds OMN-15540 to OCC companion PR #5666 (self-bind)."
+    source: "generated"
+    checks:
+      - check_type: "command"
+        check_value: "gh pr view 5666 --repo OmniNode-ai/onex_change_control --json number,state"

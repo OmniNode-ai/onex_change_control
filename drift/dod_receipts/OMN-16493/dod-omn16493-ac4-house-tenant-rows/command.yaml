@@ -1,0 +1,42 @@
+---
+schema_version: 1.0.0
+ticket_id: OMN-16493
+evidence_item_id: dod-omn16493-ac4-house-tenant-rows
+check_type: command
+check_value: |
+  gh api 'repos/OmniNode-ai/omnibase_infra/contents/docker/migrations/forward/nodes/node_projection_delegation/0037_delegation_events_uuid_mixed_representation_guard_before_set_role.sql?ref=3dfe23e5e5e41f6b0c8a7501e0a6883e2dbd0a42' --jq '.content' | base64 -d | grep -c "ALTER COLUMN tenant_id SET DEFAULT '820272f9-4aaf-5add-a2df-0af942852ab2'::uuid"
+contract_sha256: sha256:4a0c6e9ce31e4afbb935bf3b4d9b17415cabdf6c37a962841d198f988fa89105
+contract_entry_sha256: sha256:53601d90823159cc76a8eeefd1b5bb87dd3eee0f2e755fdbd1734e2b0ccde810
+status: PASS
+run_timestamp: '2026-09-10T02:04:45Z'
+commit_sha: 3dfe23e5e5e41f6b0c8a7501e0a6883e2dbd0a42
+runner: claude-local-worktree
+verifier: omn16493-ac6-readback-close
+probe_command: |
+  gh api 'repos/OmniNode-ai/omnibase_infra/contents/docker/migrations/forward/nodes/node_projection_delegation/0037_delegation_events_uuid_mixed_representation_guard_before_set_role.sql?ref=3dfe23e5e5e41f6b0c8a7501e0a6883e2dbd0a42' --jq '.content' | base64 -d | grep -c "ALTER COLUMN tenant_id SET DEFAULT '820272f9-4aaf-5add-a2df-0af942852ab2'::uuid"
+probe_stdout: |
+  1
+actual_output: |
+  PASS. AC4 -- the legacy `omninode` rows resolve under the house-tenant UUID
+  820272f9-4aaf-5add-a2df-0af942852ab2. Same read-only session as AC2 and AC3.
+
+    set_config('app.tenant_id','820272f9-4aaf-5add-a2df-0af942852ab2') then count(*)  ->  43
+    split on the apply instant: 43 written before the cutover, 0 after
+
+  A frozen population, so this is the criterion's count-equal in its LITERAL form: the ticket body
+  recorded the pre-apply slug key `omninode` returning exactly 43 on 2026-08-24 and again on
+  2026-08-28, and the UUID key now returns exactly 43. Nothing lost, nothing added.
+
+  The mapping is registry-resolved rather than assumed: tenant_registry_mirror carries the row
+  (820272f9-4aaf-5add-a2df-0af942852ab2, omninode), read back in the same session, and 0037 resolves
+  through that mirror rather than through a hardcoded CASE arm.
+
+  NEGATIVE CONTROL: the slug key `omninode` now raises InvalidTextRepresentation
+  `invalid input syntax for type uuid: "omninode"`, so the 43 rows answer to the UUID key alone and not
+  to both representations at once.
+
+  The check asserts 0037 also re-points the column DEFAULT at the same house-tenant UUID, so a future
+  insert that omits tenant_id lands on the house tenant rather than on a slug.
+exit_code: 0
+pr_number: 3340
+branch: dev

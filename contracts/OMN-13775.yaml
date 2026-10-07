@@ -1,0 +1,58 @@
+---
+schema_version: "1.0.0"
+ticket_id: "OMN-13775"
+title: "docs(OMN-13775): codify docker builds run on .201 stability, never in-sandbox"
+summary: >-
+  Worker Bash-tool sandboxes have no docker daemon, so build-fix agents dispatched to fix a Dockerfile/compose
+  file/image issue dead-end on local `docker build`. This ticket codifies the routing policy: builds and
+  runtime verification run on the .201 stability-test lane via the gated node_redeploy_orchestrator path,
+  never in-sandbox and never via raw ssh+docker. Delivered as operating rule 10 in plugins/onex/skills/dispatch_worker/prompt.md
+  plus a new runbook (docs/runbooks/docker-build-worker-routing.md) in omniclaude PR #1829. No runtime/contract/topic
+  changes; docs + local-gate-config only.
+is_seam_ticket: false
+interface_change: false
+interfaces_touched: []
+emergency_bypass:
+  enabled: false
+  justification: ""
+  follow_up_ticket_id: ""
+dod_evidence:
+  - id: "dod-dispatch-policy-runbook"
+    description: >-
+      omniclaude PR #1829 (branch jonah/omn-13775-docker-build-worker-routing, commit 9533435c62c5ab5f2a0b818e75baf8f64c96422e)
+      adds operating rule 10 to plugins/onex/skills/dispatch_worker/prompt.md routing all build/runtime-verify
+      steps through node_redeploy_orchestrator targeting the .201 stability-test lane, and adds docs/runbooks/docker-build-worker-routing.md
+      documenting the full procedure, decision table, and the OMN-13760 deploy-agent-revival blocker that
+      currently caps the gated path at author-only. Both files verified present via `git show 9533435c6:plugins/onex/skills/dispatch_worker/prompt.md`
+      and `git show 9533435c6:docs/runbooks/docker-build-worker-routing.md`.
+    source: "manual"
+    status: "verified"
+    checks:
+      - check_type: "command"
+        check_value: >-
+          grep -q '^status: PASS$' drift/dod_receipts/OMN-13775/dod-dispatch-policy-runbook/command.yaml
+  - id: "dod-local-gates-green"
+    description: >-
+      All local pre-commit + pre-push hooks pass clean on the omniclaude branch head (9533435c6): mypy,
+      pyright, bandit, ruff format/check, onex-validate (0 errors), duplicate-model check, secret detection,
+      and the full pre-commit --all-files equivalent. `uv run pytest tests/ -v` (no -k) was attempted
+      but the local Kafka integration guard requires a running omnibase-infra-redpanda broker unavailable
+      in this session; the change is docs/config-only with zero Python behavior touched, so no unit test
+      regression risk. CI's own test matrix (Tests Gate) is the authoritative pass/fail signal and is
+      checked via `gh pr checks 1829 --watch`.
+    source: "manual"
+    status: "verified"
+    checks:
+      - check_type: "command"
+        check_value: >-
+          grep -q '^status: PASS$' drift/dod_receipts/OMN-13775/dod-local-gates-green/command.yaml
+  - id: "dod-occ-self"
+    description: >-
+      Self-binding OCC receipt: this onex_change_control PR carries the OMN-13775 contract plus the dod-dispatch-policy-runbook
+      and dod-local-gates-green receipts required by downstream Receipt Gate resolution on omniclaude
+      PR #1829.
+    source: "generated"
+    checks:
+      - check_type: "command"
+        check_value: >-
+          grep -q '^status: PASS$' drift/dod_receipts/OMN-13775/dod-occ-self/command.yaml

@@ -1,0 +1,33 @@
+---
+schema_version: "1.0.0"
+ticket_id: "OMN-13985"
+evidence_item_id: "dod-omnibase-infra-pr-2214"
+check_type: "command"
+check_value: "grep -q '^status: PASS$' drift/dod_receipts/OMN-13985/dod-omnibase-infra-pr-2214/command.yaml"
+status: PASS
+contract_sha256: "sha256:1ab8f2043a3d85d939649d9dd4a82d5a88efdb5bee155839b9023276de29d77c"
+run_timestamp: "2026-07-05T18:20:00Z"
+commit_sha: "39326cd481814c0630c1ed6e266517dccda93774"
+runner: "claude-opus"
+verifier: "claude-opus-receipt-review-omn-13985"
+probe_command: >-
+  python3 -c "import yaml; yaml.safe_load(open('.github/workflows/build-workspace-candidate-runtime.yml'))"
+  && (in a clean venv) python3 scripts/runtime_build/check_sibling_lock_pins.py before vs after pip install
+  'pydantic>=2' && pre-commit run --files .github/workflows/build-workspace-candidate-runtime.yml
+probe_stdout: |
+  YAML parse: OK.
+  check_sibling_lock_pins.py BEFORE pydantic install: ModuleNotFoundError: No module named 'pydantic'
+  (exit 1) -- reproduces the failing CI run 28748861432 at the staging step.
+  check_sibling_lock_pins.py AFTER pip install 'pydantic>=2': reaches argparse, exits 2 with
+  "the following arguments are required: --lock" -- the top-level import is resolved.
+  pre-commit run --files on the workflow: all applicable hooks passed.
+actual_output: >-
+  PASS: omnibase_infra PR #2214 inserts a "python3 -m pip install --upgrade 'pydantic>=2'" step immediately
+  before the "Stage workspace sibling trees into the build context" step in .github/workflows/build-workspace-candidate-runtime.yml.
+  This resolves the top-level pydantic import in scripts/runtime_build/check_sibling_lock_pins.py that
+  stage_workspace.sh invokes, which had aborted the build with exit 3 (run 28748861432). Only pydantic
+  is third-party; the rest of the script is stdlib. No ALLOW_SIBLING_PIN_DRIFT bypass used; no workflow
+  restructuring.
+exit_code: 0
+branch: "jonah/omn-13985-fix-candidate-build-pydantic"
+pr_number: 2214

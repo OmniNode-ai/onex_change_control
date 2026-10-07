@@ -1,0 +1,80 @@
+---
+schema_version: "1.0.0"
+ticket_id: "OMN-16031"
+title: "suppress intra-repo baselines quality/roi snapshot NAME_CONFLICTs (producer-schema realignment)
+  — unblock OCC Migration Conflict Check"
+summary: >-
+  The OCC Migration Conflict Check job hard-failed (exit 1) with two unsuppressed NAME_CONFLICTs — tables
+  baselines_quality_snapshots and baselines_roi_snapshots, each reported twice under omnibase_infra (001_create_*.sql
+  vs 002_realign_*_to_producer_schema.sql, disjoint column sets). Both pairs are intra-repo sequential
+  migrations inside a single node migration directory (docker/migrations/forward/nodes/node_projection_baselines_quality/
+  and .../node_projection_baselines_roi/): the 001 migrations shaped each projection table around a model
+  invented independently of the real producer event (ModelBaselinesSnapshotEvent), and the 002 realignment
+  migrations DROP and recreate the tables against the producer contract — patterns_recommended/recommend_rate
+  became patterns_significant/significant_rate, and confidence/recommendations/retry_delta/time_delta_ms
+  became roi_pct_avg/latency_improvement_pct_avg/cost_improvement_pct_avg/sample_size. The tables held
+  zero rows in every known environment, so nothing was migrated. Both files remain in tree because node
+  migrations are append-only, which is exactly why the checker sees one table name with two different
+  column sets. This is intentional forward schema evolution inside one repo — not a duplicate table, not
+  a cross-repo overlap, and not something a rename or a git-rm could fix without breaking migration replay.
+  The canonical mechanism is migration_conflict_suppressions.yaml under reason schema_evolution, the same
+  category already used for every sibling in-repo redefinition (agent_actions, code_entities, code_relationships,
+  session_outcomes, llm_delegation_daily_projection). The conflict only surfaced now because recent OCC
+  merges were evidence-only and the zone-filter docs_only fast lane skipped this job; the fail-closed
+  CI Summary correctly refuses to tolerate it. Self-contained OCC PR adds the two reason/owner/reference-carrying
+  suppression entries AND carries this contract plus its PASS receipts (Evidence-Source: self), because
+  the unsuppressed conflict otherwise fails Migration Conflict Check on every non-docs_only OCC PR, including
+  this one. Suppressions-file change only — no DDL, no migration, no code, no live deploy, no .201 mutation.
+is_seam_ticket: false
+interface_change: false
+interfaces_touched: []
+evidence_requirements:
+  - kind: "manual"
+    description: "OCC Migration Conflict Check gate command exits 0 with the new suppressions file"
+    command: "uv run check-migration-conflicts --repos-root <repos> --check-columns --warn-columns --suppressions-file
+      migration_conflict_suppressions.yaml"
+emergency_bypass:
+  enabled: false
+  justification: ""
+  follow_up_ticket_id: ""
+dod_evidence:
+  - id: "dod-occ-suppression"
+    description: >-
+      migration_conflict_suppressions.yaml gains reason-carrying entries for baselines_quality_snapshots
+      and baselines_roi_snapshots (conflict_type name_conflict, reason schema_evolution, repos [omnibase_infra],
+      owner omnibase_infra, reference to the producer-schema realignment ticket). Reproduced the exact
+      OCC gate command against depth=1 clones of the same five repos the OCC CI clones (omniintelligence,
+      omnibase_infra, omnimemory, omniclaude, omnibase_core — all at dev): before the change the scan
+      reported "Found 2 migration conflict(s)" with both NAME_CONFLICTs and exited 1; after the change
+      it reports "No migration conflicts found", "Suppressed 43 known conflict(s)", and exits 0. Documents
+      an intentional in-repo schema realignment; does not hide a real conflict. Every check below reads
+      omnibase_infra — a repo this PR does not author — at its live dev ref, so each can go RED independently
+      of anything typed in this PR.
+    source: "manual"
+    status: "verified"
+    checks:
+      - check_type: "command"
+        check_value: "gh api 'repos/OmniNode-ai/omnibase_infra/contents/docker/migrations/forward/nodes/node_projection_baselines_quality/001_create_baselines_quality_snapshots.sql?ref=dev'
+          --jq .content | base64 -d | grep -c 'CREATE TABLE IF NOT EXISTS baselines_quality_snapshots'"
+      - check_type: "command"
+        check_value: "gh api 'repos/OmniNode-ai/omnibase_infra/contents/docker/migrations/forward/nodes/node_projection_baselines_quality/002_realign_quality_snapshots_to_producer_schema.sql?ref=dev'
+          --jq .content | base64 -d | grep -c 'DROP TABLE IF EXISTS baselines_quality_snapshots'"
+      - check_type: "command"
+        check_value: "gh api 'repos/OmniNode-ai/omnibase_infra/contents/docker/migrations/forward/nodes/node_projection_baselines_roi/001_create_baselines_roi_snapshots.sql?ref=dev'
+          --jq .content | base64 -d | grep -c 'CREATE TABLE IF NOT EXISTS baselines_roi_snapshots'"
+      - check_type: "command"
+        check_value: "gh api 'repos/OmniNode-ai/omnibase_infra/contents/docker/migrations/forward/nodes/node_projection_baselines_roi/002_realign_roi_snapshots_to_producer_schema.sql?ref=dev'
+          --jq .content | base64 -d | grep -c 'DROP TABLE IF EXISTS baselines_roi_snapshots'"
+  - id: "dod-delivery-pr"
+    description: >-
+      Self-bind: OCC PR 6452 is this ticket's own carrier PR, proven by its own GitHub-reported file list
+      containing migration_conflict_suppressions.yaml — the file this ticket changes. The PR is self-contained
+      (fix + contract + receipts in one PR) because the unsuppressed NAME_CONFLICTs otherwise fail Migration
+      Conflict Check on any non-docs_only OCC PR, which would block a separate evidence-only PR from landing
+      the receipts.
+    source: "manual"
+    status: "verified"
+    checks:
+      - check_type: "command"
+        check_value: "gh pr view 6452 --repo OmniNode-ai/onex_change_control --json files --jq '.files[].path'
+          | grep -cxF 'migration_conflict_suppressions.yaml'"

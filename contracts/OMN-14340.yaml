@@ -1,0 +1,60 @@
+---
+schema_version: "1.0.0"
+ticket_id: "OMN-14340"
+title: "chore(OMN-14340): ratchet protocols→models frozen ignores + tiered hub growth-ratchet in omnibase_core"
+summary: >-
+  omnibase_core PR #1423 converts the permissive `protocols->models` wildcard import-linter ignore into
+  a hard, monotonically non-increasing RATCHET frozen at 65 edges, plus a TIERED hub growth-ratchet (scripts/ci/check_import_ratchet.py
+  + generated baseline scripts/ci/import_ratchet_baseline.py). A NEW protocols->models edge, or a NEW
+  module importing into the mixins (17) or protocols (63) hubs, HARD-FAILS; a new importer into the high-churn
+  utils hub (548) is WARN-only and non-blocking (explicit operator tuning 2026-07-10 — a hard freeze on
+  the 548-edge utils hub fires on most new files, generates friction, and gets routed around, so it is
+  not real enforcement; utils dissolves in the RSD rewrite anyway). The ratchet is wired as a BLOCKING
+  CI gate (Import Layering Oracle job) and an import-ratchet pre-commit hook (enforcement, not detection).
+  Enforcement-only: it does NOT modify protocols->models source. Retirement rides the RSD canonical rewrite.
+  No runtime or deploy scope.
+is_seam_ticket: false
+interface_change: false
+interfaces_touched: []
+emergency_bypass:
+  enabled: false
+  justification: ""
+  follow_up_ticket_id: ""
+dod_evidence:
+  - id: "dod-omnibase_core-pr-1423"
+    description: >-
+      Independent adversarial verification (a separate verifier, NOT the implementing agent) against omnibase_core
+      PR #1423 head 8bc59f6f2eeaf35a570c65935121a59dbfb23fc9 in the isolated worktree with PYTHONPATH
+      cleared. Baseline run: check_import_ratchet.py exits 0, protocols->models=65 (frozen max 65), hub_inbound={utils:548,
+      mixins:17, protocols:63}. LIVE injection proofs (real throwaway files, run through the checker CLI,
+      then removed; worktree left clean): (1) a protocols/ module importing models.primitives.model_semver
+      -> EXIT 1 with the precise edge reported; (2) a new module importing into the mixins hub -> EXIT
+      1; (3) a new module importing into the protocols hub -> EXIT 1; (4) a new module importing into
+      the utils hub -> EXIT 0, surfaced as a non-blocking WARNING only (utils count 548->549, exit stays
+      0). The tiered enforcement behaves exactly as specified — mixins/protocols hard-fail, utils warn-only.
+      Can't-rot mutation: neutering find_violations() to return an empty dict drove 3 self-check tests
+      RED (test_ratchet_flags_new_protocols_models_edge and the mixins/protocols hard-fail-hub cases);
+      reverting restored 12/12 green — the ratchet cannot silently rot into a no-op. Baseline honesty:
+      regenerating the baseline via --update produced a file byte-identical to the committed scripts/ci/import_ratchet_baseline.py,
+      so the frozen sets match live grimp enumeration and were not hand-loosened. Wiring: the ratchet
+      runs as a blocking step in the Import Layering Oracle CI job and as the import-ratchet pre-commit
+      hook. 12 ratchet unit tests pass; lint-imports 4 kept/0 broken; mypy --strict clean on the two changed
+      scripts; ruff clean. No runtime or deploy scope.
+    source: "manual"
+    status: "verified"
+    checks:
+      - check_type: "command"
+        check_value: >-
+          grep -q '^status: PASS$' drift/dod_receipts/OMN-14340/dod-omnibase_core-pr-1423/command.yaml
+          && grep -q '^pr_number: 1423$' drift/dod_receipts/OMN-14340/dod-omnibase_core-pr-1423/command.yaml
+  - id: "dod-occ-self"
+    description: >-
+      OCC companion self-binding: this onex_change_control PR carries the OMN-14340 contract and PASS
+      receipt for omnibase_core PR #1423, binding itself to occ-preflight by commit_sha (contract commit
+      C1), with no runtime or deploy scope.
+    source: "manual"
+    status: "verified"
+    checks:
+      - check_type: "command"
+        check_value: >-
+          grep -q '^status: PASS$' drift/dod_receipts/OMN-14340/dod-occ-self/command.yaml

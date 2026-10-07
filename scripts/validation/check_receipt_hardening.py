@@ -1,0 +1,4296 @@
+# SPDX-FileCopyrightText: 2025 OmniNode.ai Inc.
+# SPDX-License-Identifier: MIT
+"""Receipt hardening gate (OMN-13060, retro item A-5; per-entry hash OMN-14411).
+
+Enforces three invariants on DoD receipts produced on/after the gate
+introduction date (``run_timestamp >= 2026-06-12T00:00:00Z``):
+
+1. A contract hash binding must be present: ``contract_entry_sha256``
+   (preferred, OMN-13888) or ``contract_sha256`` (legacy, whole-file).
+   Hand-authored sha-less receipts (the 2530/2533/2534 failure mode) are
+   rejected at commit time instead of wedging the OCC PR at the merge gate.
+2. The binding must match the pinned contract at the staged state
+   (OMN-14411):
+   - ``contract_entry_sha256``, when present, is authoritative and is
+     checked against ``compute_contract_entry_sha256`` of the receipt's own
+     ``dod_evidence[evidence_item_id]`` — the same per-entry hash the
+     append-only gate (``validator_occ_append_only``) already enforces.
+     Because this hash only folds in the receipt's own entry plus the
+     immutable header, appending a *new* dod_evidence item to the contract
+     does not change it, so prior receipts stay valid across appends.
+   - ``contract_sha256`` (legacy, no ``contract_entry_sha256`` present) is
+     checked against the whole-file ``sha256(contracts/<ticket_id>.yaml)``.
+     This binding is inherently incompatible with the append-only contract
+     model — it goes stale on *every* append to the contract, regardless of
+     which entry changed — and exists only for receipts minted before
+     OMN-13888. Do not mint new receipts against it.
+   A mismatch means the bound entry (or, for legacy receipts, the whole
+   file) mutated after the receipt was produced — rerun probes, regenerate
+   the receipt.
+3. PASS receipts may not use a session-local / generic verifier alias
+   (``agent``, ``automated``, bare container ids, ...). A PASS receipt
+   must name an identifiable independent verifier.
+
+Receipts with ``run_timestamp`` before the introduction date are exempt:
+2,870 legacy receipts on dev lack the field (907 more carry stale hashes,
+382 carry denylisted verifiers) and are migration debt owned by their own
+tickets — this gate is a ratchet on NEW receipts, not a retro-block.
+``pre-commit run --all-files`` (which OCC CI runs) must stay green on the
+legacy corpus.
+
+SUPERSESSION BINDING (OMN-15459), the fourth invariant
+------------------------------------------------------
+Supersession is the *repair* primitive of an append-only receipt store: a
+net-new ``<check_type>.supersede.<NNNN>.yaml`` carries the authoritative
+``replacement`` for a frozen base receipt. Until OMN-15459 this gate
+validated the replacement's schema, hashes and identity and **never asked
+whether the replacement executes the check the superseded item declares**
+— the string ``check_value`` did not appear anywhere in this file. That
+made the repair path a laundering channel: any item, however specific its
+declared bar, could be silently rebound to any check that exits 0.
+
+The live instance: ``onex_change_control#5534`` (merged 2026-07-30,
+``34c8dacc``) added **8** ``command.supersede.2552.yaml`` files against 8
+DISTINCT ``dod_evidence`` items, every one carrying a **byte-identical**
+``replacement.check_value`` — one ``grep -c 'def _build_specs'`` of
+``scripts/create_kafka_topics.py``. So
+``dod-occ-evidence-admissibility-validator`` (declared check: ``uv run
+pytest tests/test_evidence_admissibility.py -q``) now authoritatively
+attests that a Kafka-topic script defines a function, while the
+admissibility suite it names goes unrun. ``OCC#5528`` did the same with 6
+files one PR earlier. Machine-producer behaviour, not a hand-authoring
+slip — it scales.
+
+Two rules, both required, evaluated only on ``*.supersede.*.yaml`` files:
+
+``S1`` — **distinctness.** Two supersessions in the same cohort (same
+ticket directory, same ``.supersede.<TOKEN>.`` suffix — i.e. minted
+together for one consuming PR) may not carry a byte-identical normalized
+``replacement.check_value`` while naming DIFFERENT ``evidence_item_id``s.
+One probe cannot be the authoritative proof of N distinct bars.
+
+``S2`` — **family binding.** A replacement must reference the artifact
+family of the item it replaces: at least one anchor derived from the
+superseded item's OWN declared ``checks[*].check_value`` in
+``contracts/<ticket>.yaml`` (file paths, grep symbols, test targets, PR
+numbers), from a ``pr-<N>`` fragment in the item id, or the item id
+itself. An arbitrary file is not that item's bar.
+
+Neither rule is satisfied by falsifiability auditing: the OCC#5534 grep is
+*genuinely* RED-derivable (1 at the fix ref, 0 at the parent). It is a
+well-formed probe. It just falsifies a different item — which is why the
+OMN-14505 predicate, ``lint_contract_check_values`` and
+``contract_compliance_check`` all pass it. They reason about a check in
+isolation; these two rules reason about the item↔replacement *pairing*.
+
+REPAIR IS APPEND-ONLY, and the gate recognises it. A merged mis-paired
+supersession is immutable — it is never rewritten. A net-new sibling
+supersession marks it REPAIRED, and drops it from the violation set, when
+all three hold: (a) the sibling's ``supersedes:`` names the mis-paired
+*record* (``ModelReceiptSupersession`` sanctions superseding "the receipt
+**or record** this one replaces"; the model is ``extra="forbid"``, so a
+bespoke ``corrects:`` key would invalidate the record itself); (b) the
+sibling's ``.supersede.<NNNN>.`` token is HIGHER, since
+``validator_receipt_supersession`` resolves the active receipt as the
+highest token — a lower-numbered "repair" would leave the wrong-item
+record authoritative and be purely cosmetic; and (c) the sibling is
+itself clean under S1+S2. The cure is strictly stronger than the disease:
+it must carry a discriminating per-item check of its own, so "repair"
+cannot be another rebind.
+
+Pre-existing violations are carried in the frozen, shrink-only baseline
+``.onex_ratchets/omn_15459_supersession_binding_baseline.yaml`` and are
+skipped. Corpus mode (``--supersession-corpus``) asserts set equality
+against that baseline in BOTH directions — a new violation fails, and a
+repaired entry that was not removed from the baseline also fails. The
+baseline may only shrink; never pad it to make a new supersession pass.
+
+ABSOLUTE-PATH + STDOUT-EMITTABILITY (OMN-15710), the fifth and sixth
+invariants
+------------------------------------------------------------------
+``onex_change_control#6084`` (merged 2026-08-05, ``3e24d9bd9``) landed three
+receipts that passed every existing gate — Receipt Honesty Gate (rules A-E,
+``omnibase_core.validation.validator_receipt_honesty``), this file's
+contract-hash/verifier checks, ``verify / verify``, and
+``Contract Compliance Check`` — while being demonstrably dishonest:
+
+* ``occ6080-attribution-fix-no-live-mutation`` hardcoded
+  ``/Users/jonah/Code/omni_home/docs/tracking/ROLLING_WORK_LEDGER.md`` into
+  ``probe_command``/``check_value`` (unreproducible on any other host or a CI
+  checkout), AND its recorded ``probe_stdout`` for the trailing ``grep -c``
+  command was hand-written prose, not the integer ``grep -c`` can only emit.
+* Two ``occ6080-grammar-repair-note`` receipts recorded a ``probe_stdout``
+  that WAS byte-exact for their declared ``printf '...'`` command, but an
+  ``actual_output`` that was hand-written prose the ``printf`` literal cannot
+  produce.
+
+None of A-E check whether recorded output is *structurally reproducible*
+from the declared command, and none reject a machine-specific absolute path
+in a probe body. Two new rules close both gaps, applied to the same
+post-cutoff, PASS-receipt population as the checks above (same
+``HARDENING_CUTOFF`` exemption — see ``check_receipt_file``):
+
+``ABS_PATH`` — **no machine-specific absolute paths in probe bodies.**
+``check_value``/``probe_command`` (receipts) and ``dod_evidence[*].checks[*
+].check_value`` (contract files) may not contain ``/Users/``, ``/Volumes/``,
+or ``/home/<user>/``. Unlike source-code lint (``aislop_sweep``'s
+hardcoded-path rule), **no ``# local-path-ok`` allowlist is honored here**: a
+receipt/contract check body is re-executed by CI on a fresh checkout as the
+proof a claim is true, and there is no legitimate case for "this proof only
+runs on my machine" — that is precisely the OCC#6084(a) defect. Source code
+can have a justified machine-only branch; a probe cannot.
+
+``STDOUT_EMIT`` — **bounded, honest shape-consistency check.** For a small,
+explicitly enumerated registry of terminal-command shapes this file can
+reason about structurally, assert the recorded ``probe_stdout`` — and
+**only** ``probe_stdout``, see below — is consistent with what that command
+can emit:
+
+* ``printf '<literal>'`` / ``echo '<literal>'`` (no ``%`` format specifier)
+  as the terminal command → ``probe_stdout`` must equal the literal,
+  byte-for-byte (after ``\\n``/``\\t`` un-escaping for ``printf``).
+* ``grep -c ...`` as the terminal command → the last non-empty output line
+  must be a bare integer. Catches the OCC#6080(a) defect directly.
+* ``wc -l`` as the terminal command → the last non-empty line must be an
+  integer, optionally followed by a filename.
+* ``--jq '<simple-scalar-path>'`` where the path's final segment matches
+  ``sha``/``oid`` (e.g. ``.sha``, ``.mergeCommit.oid``) → the output must be
+  a hex string.
+
+Every class first skips (undetectable, not a violation) when ``probe_stdout``
+parses as JSON — a ``{"evidence_ref": ..., "green_exit": 0, "red_exit": 1,
+"red_ref": ...}`` bundle is a distinct, structured RED/GREEN differential
+proof format used across dozens of receipts in this corpus, not the bare
+scalar shape any registry entry describes.
+
+**``actual_output`` is deliberately OUT OF SCOPE for every class**, including
+the printf/echo literal one — this is a narrowing made during OMN-15710's own
+verification, not the original design. ``ModelDodReceipt.actual_output``'s
+own docstring (omnibase_core) states it is "distinct from probe_stdout... may
+be a structured / truncated rendering" — schema-sanctioned to diverge from
+the literal captured stream. A corpus-wide dry run of the original
+(``probe_stdout``-and-``actual_output``) design against live ``dev`` found
+dozens of pre-existing, legitimate PASS receipts across many tickets
+(OMN-15571, OMN-15651, OMN-7334, and others) using ``actual_output`` for
+exactly that documented purpose — narrative summaries, in at least one case
+describing a second (RED) probe leg never shown in ``probe_command`` at all.
+Checking ``actual_output`` for literal equality was a systemic false
+positive against schema-sanctioned usage, not a defect signal, so the rule
+was narrowed to ``probe_stdout`` only. **Documented residual**: the
+occ6080-grammar-repair-note defect shape itself — ``probe_stdout`` correct,
+``actual_output`` paraphrased — is therefore NOT caught by this mechanism
+going forward; OMN-15710 AC1 tracks that specific pair's closure via
+independent verification instead, and this residual is called out explicitly
+in the OMN-15710 PR body/ticket comment per the ticket's own "false positive
+→ narrow the check" instruction.
+
+This is deliberately **not** general command execution or emulation — it is
+a documented, closed registry (``_EMITTABILITY_REGISTRY`` plus the
+printf/echo special case) of command shapes whose *only* possible stdout
+shape can be derived without running anything. What it does **not** catch,
+by design (residual, OMN-15710 PR body/ticket comment carries this too):
+compound/piped ``jq`` filters (``[.a,.b] | @tsv``, the exact shape of the
+OCC#6080(a) ``--jq`` clause — that defect is still caught, but via the
+``grep -c`` half of the same command, not via this class), any command not
+in the registry (``curl``, ``psql``, ``docker exec``, arbitrary scripts),
+JSON-shaped ``probe_stdout`` of any kind (see above), multi-line/tabular
+output, ``actual_output`` (see above), and quoting edge cases in the naive
+top-level ``;``/``|``/``&`` command-segment splitter. A defect outside this
+bounded registry is a false negative here, not a false pass — partial
+mechanical coverage, not full command-emulation confidence.
+
+Both rules apply only to ``EnumReceiptStatus.PASS`` receipts (consistent
+with the existing denylisted-verifier check above): a PENDING/FAIL/ADVISORY
+receipt is not asserting the check ran cleanly, so shape-consistency of its
+output is not this gate's concern.
+
+**Residual: a superseded base receipt's own dirty content is never
+re-scanned by ABS_PATH/STDOUT_EMIT.** ``check_receipt_file`` resolves a
+base receipt with a valid ``*.supersede.*.yaml`` sibling and returns ``[]``
+for the base *before* either rule (or any rule in this file) runs against
+the base's own fields — only the sibling's ``replacement`` is validated
+(via ``_valid_supersession_replacement`` -> ``_receipt_binding_violations``,
+which does run both new rules). This is the same append-only design the
+four pre-existing rules already rely on (a merged receipt is immutable;
+supersession is the repair primitive, not a rewrite), so ABS_PATH/STDOUT_EMIT
+inherit it rather than introduce it. The practical effect: an immutable base
+receipt that itself contains a machine-specific absolute path or a
+non-reproducible ``probe_stdout`` is never independently flagged once a
+clean replacement sibling exists, even though the dirty original stays on
+disk. OCC autobind mints these supersede siblings routinely — it is what
+produced the still-open ``command.supersede.6087.yaml`` finding this same
+PR reports — so this is a live, not theoretical, channel. Closing it would
+mean re-scanning every historically-superseded base for the two new rules,
+which is a corpus-wide retro-audit outside this PR's "gate extensions only"
+scope (operator ruling R-c); it is recorded here, not silently, per that
+same scope decision.
+
+DERIVED_VERIFIER (OMN-18778), the ninth invariant
+-------------------------------------------------
+Invariant 3 above rejects a PASS receipt whose verifier is a GENERIC alias.
+Nothing anywhere in this gate compared ``verifier`` to ``runner``, and the one
+place in the platform that did — ``ModelDodReceipt`` Rule 1, raw string
+equality, PASS downgraded to ADVISORY — has a measured surface of 28 files out
+of 27,449 on dev (0.1%), and zero in the fourteen days before this rule landed.
+
+That is not a corpus without self-attestation. It is a rule one character
+defeats. The shape every producer actually writes is the runner handle plus a
+segment: ``omn18543-ac-binding`` verified by ``omn18543-ac-binding-verifier``
+(four receipts, 2026-09-18T20:45:45Z), ``claude-code`` by
+``claude-code-review`` (300), ``codex`` by ``codex-runtime-verifier`` (131).
+Appending ``-verifier`` is the natural thing an actor writes when it re-reads
+its own work, and it converts a self-attestation into a passing gate without
+anyone intending an evasion.
+
+The rule: a PASS receipt whose ``verifier`` is its ``runner``, or an affix
+extension of it, once separators are normalized, does not name an independent
+verifier. Segment-boundary affixes only — a handle that merely shares a token
+is not refused, because ``manual`` -> ``lakshman-manual-focused-test`` names a
+different person. The 91% of the post-cutoff corpus that passes is where the
+mechanical producers live (``node_pr_lifecycle_fix_effect``,
+``node_occ_companion_compute``, ``node_occ_observation_effect``, all naming
+``occ-evidence-source-autobind`` / ``occ-observation-append``); every shape it
+refuses is a hand-authored session handle.
+
+THIS IS NOT AN IDENTITY CHECK, and must not become one. Comparing the git
+author of the product commit against the git author of the receipt commit was
+built, shadow-measured at 78.9% would-block, and RULED OUT on 2026-07-21
+(OMN-14890 Canceled, ``omnimarket#1851`` closed unmerged): with one developer,
+that axis flags a corpus whose authorship is correct, and 54.4 of those 78.9
+points were unresolvable-repo inconclusives rather than findings. This rule
+compares two strings the same actor writes, so its claim is narrow by
+construction — it refuses a receipt that does not even CLAIM a second actor,
+and says nothing about whether a claimed one is real. That remains the
+reproducibility direction (OMN-14393), not an identity comparison.
+
+Pre-existing violations are frozen in
+``.onex_ratchets/omn_18778_derived_verifier_baseline.yaml`` and suppressed for
+this rule only. A BASELINE and not a cutoff date, for the reason the orphan
+baseline states and this rule inherits verbatim: ``run_timestamp`` is
+producer-written and the newest entries were minted the same day the rule was
+written, so no date separates legacy from live. The file's ``open_repairs:``
+list carries receipts that are pre-existing but deliberately NOT suppressed.
+
+ORPHAN_BINDING (OMN-13888), the eighth invariant
+------------------------------------------------
+Invariant 2 above accepts a whole-file ``contract_sha256`` when no
+``contract_entry_sha256`` is present, and until now it asked nothing about
+WHETHER the receipt's ``evidence_item_id`` is a declared ``dod_evidence``
+item at all. The entry-hash branch does ask — an unknown item raises
+``ContractEntryNotFoundError`` and is reported — but the whole-file branch
+had no equivalent, so a receipt naming an item its contract never declares
+passed silently. The string "orphan" did not appear in this file.
+
+That receipt is an ORPHAN, and the consequences fall on other people:
+
+* it pins ``sha256(contracts/<ticket>.yaml)``, so EVERY later append to that
+  contract, BY ANY LANE, restales it. The appending lane fails a gate on a
+  receipt it never wrote and cannot repair, which append-locks the ticket
+  contract for the whole fleet;
+* the sanctioned repair does not reach it either. ``S2`` derives a
+  replacement's anchors from the superseded item's OWN declared
+  ``checks[*].check_value``, and an undeclared item declares none — so
+  ``_item_anchors`` falls back to the item id and any ``pr-<N>`` fragment in
+  it, and the supersession either fails ``[S2]`` or passes by coincidence.
+
+Measured, live on ``dev``: ``contracts/OMN-17530.yaml`` declared 6 items
+against 9 receipt directories; the 3 extras
+(``dod-OmniNode-ai-omnibase_infra-pr-3326`` / ``-pr-3328`` / ``-pr-3332``)
+were minted whole-file-bound by ``node_occ_companion_compute``'s merged path,
+which appended only the OCC self-bind entry and never this PR's own entry —
+so every 2nd-and-later consumer of a ticket minted exactly one orphan. That
+producer defect is closed in the same change (the emitter now appends the
+item and REFUSES to mint a receipt it cannot bind per entry); this rule is
+the consumer-side half, so a regression there cannot land silently.
+
+``ORPHAN_BINDING`` — **a receipt with neither an entry hash nor an entry is
+refused.** Reported instead of the whole-file comparison, because on an
+orphan that comparison's stale-hash message names the wrong repair. Applies
+to the same post-``HARDENING_CUTOFF`` population as invariants 1-3.
+
+GRANDFATHER RULE — dated, enumerated, shrink-only. Removing whole-file
+acceptance outright is NOT what this does and would not be defensible: on
+dev at the time of writing, 9,908 receipts bind whole-file to an item their
+contract DOES declare, and they stay valid. The orphan population is 439
+post-cutoff receipts, frozen by path in
+``.onex_ratchets/omn_13888_orphan_receipt_baseline.yaml`` and suppressed for
+that rule only — every other rule still applies to a baselined file.
+
+A back-fill migration was considered and REFUSED, not skipped: writing
+``contract_entry_sha256`` into those 439 receipts means rewriting merged
+receipt files, which the OCC Append-Only Gate rejects as
+``receipt_file_mutated``. Repair here is append-only by construction —
+declare the item, mint a net-new receipt or supersession bound per entry,
+and shrink the baseline in the same PR.
+
+A time cutoff was also considered and refused: ``run_timestamp`` is
+producer-written, and the newest orphans in this corpus were minted the same
+day this rule was written, so no date separates legacy from live. The file
+carries a second list, ``open_repairs:``, for orphans that are pre-existing
+but under an ACTIVE, recorded repair — corpus members (so ``--orphan-corpus``
+stays a two-way set-equality check) that are deliberately NOT suppressed, so
+the gate names them to whichever lane next stages them. The three OMN-17530
+receipts above are its founding entries.
+
+WHAT IS AND IS NOT WIRED, stated rather than implied. The per-receipt
+ORPHAN_BINDING rule is enforced on every PR through the paths every other rule
+in this file uses: the ``check-receipt-hardening`` pre-commit hook and the
+changed-receipt CI step. ``--orphan-corpus`` — the two-way, whole-corpus
+set-equality ratchet — is deliberately NOT a required job yet, and the reason
+is measured rather than a preference: the producer that mints orphans is still
+deployed, so ``dev`` gained a new orphan roughly every merged second-consumer
+companion (439 -> 441 -> 442 in seventy minutes on the day this rule landed,
+every one from an unrelated lane). A required two-way job under those
+conditions is red on every PR in the repo within minutes and teaches people to
+pad the baseline, which is the one thing its own header forbids. What IS
+asserted continuously is the direction that cannot be reddened by a peer merge
+and still catches the ratchet failure that matters — no baselined entry has
+stopped being an orphan without being removed — in
+``tests/unit/scripts/test_orphan_receipt_binding_gate_omn_13888.py``. Wiring
+the two-way job is a follow-up for once the producer fix is deployed and the
+mint rate is zero.
+
+COMMIT_SHA_EXISTENCE (OMN-15461), the seventh invariant
+--------------------------------------------------------
+``commit_sha`` is a required ``ModelDodReceipt`` field asserting "the code
+state this check ran against" — nothing has ever validated that it resolves
+to a real commit. Two live incidents, different in kind, both closed by the
+same fix:
+
+* **Local-worktree-only.** The standard ``.200`` patch-transfer workflow
+  (``omni_home/CLAUDE.md`` rule 11a) commits locally, then
+  ``format-patch``/``scp``/``git am`` on the gate host mints a *different*
+  commit object; only the host object is ever pushed, but the receipt keeps
+  citing the local one. 13+ confirmed instances across OCC#5496/#5523/#5541
+  and the OMN-15413 merge-base receipts (ticket comments, 2026-07-30/08-02).
+  Offline ``git cat-file -e`` PASSES on these — the object is real, just
+  never pushed. Local existence is not the property that matters; remote
+  reachability is.
+* **Fabricated with a plausible prefix.** OCC#6725 (2026-08-19): a subagent
+  self-bind receipt cited ``3f35bfa939ddb6da...`` — sharing only the first
+  10 hex characters with the real commit (``3f35bfa939ebf85e...``) before
+  diverging. Not a truncation or typo (a prefix match that precise cannot
+  occur by chance); a hallucinated SHA that a well-formed-hex regex cannot
+  distinguish from a real one. Caught only by manual ``git cat-file -t``.
+
+Both are the same defect at the mechanism level: nothing resolves
+``commit_sha`` against a repository at all. ``_commit_sha_existence_violations``
+closes it with a resolver that builds one local remote-tracking index only as
+a cacheable hint, then confirms every valid claim through GitHub's commits API
+against OCC and, after an OCC 404 only, a trusted product-repo hint from
+the contract-bound ``check_value``/``probe_command`` fields. Tracking refs can
+be stale and pre-commit must not fetch, so they never prove remote
+reachability. A 200 response is accepted only when its JSON object carries the
+exact requested full ``sha``. ``actual_output`` is free-form narrative and
+cannot select a repository. Unresolvable claims are receipt defects;
+unavailable API evidence is a distinct hard failure, not a best-effort pass.
+
+Deliberately **not** a full-corpus shrink-only baseline (the
+``SUPERSESSION_BASELINE_PATH``/``CONTRACT_ABS_PATH_BASELINE_PATH`` pattern):
+that would require a `gh api` call per historical `commit_sha` across the
+~14,000-receipt corpus (finding 3, 2026-07-30 comment: local remote-tracking
+staleness alone overcounts "unresolvable" by orders of magnitude, so only
+`gh api` is a sound oracle, and that is not a cheap corpus-wide sweep to run
+from a gate). Instead this rule uses its own cutoff
+(``OMN_15461_CUTOFF``), the same "ratchet on NEW receipts, not a retro-block"
+shape as ``OMN_15710_CUTOFF`` above — the pre-existing corpus (including the
+13+ known-bad SHAs already named in the ticket) is legacy migration debt
+owned by its own repair/supersession follow-up, not retroactively blocked
+here. A receipt with a merged bad `commit_sha` remains correctable going
+forward via the same append-only supersession path every other rule in this
+file already honors (``_supersession_candidates`` /
+``_valid_supersession_replacement``) — nothing new was required for that.
+
+REPOSITORY AUTHORITY IS RESOLVED PER CITATION (OMN-17558)
+---------------------------------------------------------
+``_repo_hints`` UNIONS every trusted-repo reference across ``check_value``
+and ``probe_command``, and OCC#8075 made a union of size > 1 a hard
+``[COMMIT_SHA_REPOSITORY]`` refusal. That refusal is correct in principle —
+picking one of several candidate repositories by textual order is the
+fail-open hazard this rule exists to close — but as written it froze every
+ticket in the fleet at ONE product PR.
+
+Mechanism. When a ticket takes a second product PR, the OCC autobind mints
+one ``<check_type>.supersede.<consumer-pr>.yaml`` per already-bound evidence
+item. In every one of those records two required rules pull in opposite
+directions:
+
+* ``S2`` family binding (above) REQUIRES ``replacement.check_value`` to keep
+  referencing the SUPERSEDED item — i.e. to keep naming that item's own
+  repository;
+* the replacement's ``commit_sha`` is the NEW consumer PR's head, and only
+  ``probe_command`` names that PR's repository.
+
+Two trusted hints, unconditionally, on every second-consumer supersede.
+Proven live on both shapes, and both companions closed unmerged:
+
+* ``OCC#8099`` (OMN-17549) — consumers ``omnimarket#2274`` then
+  ``omnibase_infra#3148``; CI ``Pre-commit`` run 33716058544 reported hints
+  ``['OmniNode-ai/omnibase_infra', 'OmniNode-ai/omnimarket']``.
+* ``OCC#8105`` (OMN-17695) — consumers ``omnibase_infra#3148`` then
+  ``omnibase_infra#3151``, i.e. BOTH IN THE SAME REPOSITORY, and still
+  ambiguous: the ``occ-self-bind-*`` entry's ``check_value`` is inherently
+  ``onex_change_control``-scoped (``gh pr view <occ-pr> --repo
+  OmniNode-ai/onex_change_control``) while its ``probe_command`` names the
+  product consumer. So this was never a cross-repo-only defect.
+
+The fix keeps the refusal and adds evidence-based disambiguation, in
+``_repo_authority``: when — and only when — a receipt cites more than one
+trusted repository, the authority is the repository whose OWN command
+segment binds one of the receipt's own identifiers, in a fixed two-tier
+order: (1) ``commit_sha`` itself, via ``repos/<owner>/<repo>/commits/<sha>``
+or ``?ref=<sha>``; failing that, (2) the receipt's declared ``pr_number``,
+via ``gh pr <cmd> <n>`` or ``repos/<owner>/<repo>/pulls/<n>``. Citations are
+segment-scoped (``_repo_citations`` splits on unquoted ``;|&`` exactly as
+``_trusted_terminal_segment`` does), so a ref SHA in one command does not
+attach to a repository named in another. A tier matching two or more trusted
+repositories is still ambiguous and refuses immediately — it does NOT fall
+through to the weaker tier — and ``actual_output`` remains excluded.
+
+The SAME contradiction has a second surface, on receipts that cite only ONE
+repository and so never reach the ambiguity branch. There the S2-mandated
+inherited ``check_value`` pins a ``?ref=``/``/commits/`` SHA to the FIRST
+consumer's artifact while the replacement's ``commit_sha`` is the SECOND
+consumer's head, and ``_product_ref_binds_commit`` refuses. Measured live on
+OCC#8109 (OMN-17292, 2nd consumer ``omnibase_infra#3153``), which fails with
+nine violations: eight ambiguity refusals plus one of this second class on
+``dod-OmniNode-ai-omnibase_infra-pr-3075/command.supersede.3153.yaml``
+(``?ref=021a590f...`` against ``commit_sha: 792c0014...``). That branch is
+therefore relaxed too, but ONLY for a supersession ``replacement`` — the flag
+is threaded from ``_valid_supersession_replacement``, never inferred — and
+only when the same repository is also cited in a segment naming the receipt's
+own ``pr_number``. Base receipts keep the strict rule byte-for-byte.
+
+Both relaxations are of the refusal only. Every other property is untouched:
+a candidate must still appear in a contract-bound
+``check_value``/``probe_command`` field AND be in ``_KNOWN_REPO_HINTS`` before
+it can be considered at all (so probe text naming ``torvalds/linux`` is still
+not an authority, with or without a matching ``pr_number``), and the selected
+repository must still return the exact ``commit_sha`` from the GitHub commits
+API. Nothing that previously passed now passes on weaker evidence; only
+receipts that previously could not pass at all can now resolve.
+
+Documented residual: a supersession replacement may cite a product artifact at
+an older ref while claiming a newer ``commit_sha``. That is the declared
+semantic of the merged-path re-bind (the record's own ``reason`` says it
+re-binds a prior entry to a new product PR *without editing the merged base
+receipt*), not a laundering channel — the inherited probe text is preserved
+verbatim rather than rewritten, and the commit must still exist remotely.
+
+Exit codes: 0 = all enforced receipts clean; 1 = definitive receipt defects;
+2 = commit-resolution infrastructure unavailable.
+"""
+
+from __future__ import annotations
+
+import argparse
+import ast
+import hashlib
+import json
+import os
+import re
+import subprocess
+import sys
+import tempfile
+from datetime import UTC, datetime
+from functools import cache, lru_cache
+from pathlib import Path
+from typing import TYPE_CHECKING, NamedTuple
+
+import yaml
+from omnibase_core.enums.ticket.enum_receipt_status import EnumReceiptStatus
+from omnibase_core.models.contracts.ticket.model_dod_receipt import ModelDodReceipt
+from omnibase_core.models.contracts.ticket.model_receipt_supersession import (
+    ModelReceiptSupersession,
+)
+from omnibase_core.validation.validator_receipt_gate import (
+    ContractEntryNotFoundError,
+    compute_contract_entry_sha256,
+    compute_contract_sha256,
+)
+
+from onex_change_control.validation.commit_sha_resolver import (
+    CommitShaResolution,
+    CommitShaResolver,
+    EnumCommitShaOutcome,
+    EnumCommitShaUnavailableCategory,
+    is_full_commit_sha,
+)
+
+if TYPE_CHECKING:
+    from collections.abc import Callable
+from pydantic import ValidationError
+
+# Receipts produced on/after this UTC instant are subject to the gate.
+# Earlier receipts are legacy migration debt (see module docstring).
+HARDENING_CUTOFF = datetime(2026, 6, 12, 0, 0, 0, tzinfo=UTC)
+
+# OMN-15710: ABS_PATH + STDOUT_EMIT are subject to their OWN, LATER cutoff,
+# separate from HARDENING_CUTOFF. A corpus-wide dry run against every
+# post-HARDENING_CUTOFF receipt on dev (OMN-15710 verification) found ~200
+# pre-existing receipts, spanning 2026-06-12 through 2026-07-30, that predate
+# these two rules and do not comply with them — largely two established,
+# legitimate corpus conventions these rules did not anticipate: OCC
+# self-binding receipts routinely embed the authoring worktree's absolute
+# path, and "content-bound differential probe" receipts routinely record a
+# narrative/JSON summary in probe_stdout rather than a literal single-command
+# capture. Retro-blocking ~200 already-merged receipts is exactly what this
+# file's own migration-debt philosophy exists to avoid (see module
+# docstring: "a ratchet on NEW receipts, not a retro-block"). The latest
+# such pre-existing receipt is timestamped 2026-07-30T23:05:00Z; the three
+# receipts OMN-15710 was filed to fix (and the propagated-defect supersede
+# file AC1 discusses) are all timestamped 2026-08-04/05 — a clean gap.
+OMN_15710_CUTOFF = datetime(2026, 8, 1, 0, 0, 0, tzinfo=UTC)
+
+
+def _after_omn_15710_cutoff(run_timestamp: datetime) -> bool:
+    ts = run_timestamp if run_timestamp.tzinfo else run_timestamp.replace(tzinfo=UTC)
+    return ts >= OMN_15710_CUTOFF
+
+
+# Session-local / generic verifier aliases that cannot satisfy independent
+# verification for a PASS receipt. Exact match after strip().lower().
+# Seeded from the 2026-06-12 verifier survey on OCC dev (retro A-5(c)).
+DENYLISTED_VERIFIERS = frozenset(
+    {
+        "agent",
+        "automated",
+        "self",
+        "local",
+        "session",
+        "manual",
+        "human",
+        "foreground-orchestrator",
+        "local-pytest",
+        "local-pre-push",
+        "runner-session",
+    }
+)
+
+# Pattern-based denials: bare docker container ids and runner-session-scoped
+# aliases are container names, not verifier identities.
+DENYLISTED_VERIFIER_PATTERNS = (
+    re.compile(r"^[0-9a-f]{12}$"),  # bare docker container id
+    re.compile(r"^runner-session\b"),
+    re.compile(r"^session-"),
+)
+
+
+def _is_denylisted_verifier(verifier: str) -> bool:
+    normalized = verifier.strip().lower()
+    if normalized in DENYLISTED_VERIFIERS:
+        return True
+    return any(p.match(normalized) for p in DENYLISTED_VERIFIER_PATTERNS)
+
+
+# ---------------------------------------------------------------------------
+# OMN-18778 rule DERIVED_VERIFIER — a verifier handle derived from the runner
+# handle names the same actor.
+# ---------------------------------------------------------------------------
+#
+# The denylist above rejects GENERIC verifier aliases. It says nothing about
+# the relationship between the two handles, and neither did anything else:
+# before this rule, ``runner`` and ``verifier`` were never compared to each
+# other anywhere in this gate.
+#
+# ``ModelDodReceipt.enforce_adversarial_invariants`` does compare them, by raw
+# string equality, downgrading PASS to ADVISORY when they match. Measured over
+# every receipt on dev carrying both fields (27,449 files, 2026-09-18), that
+# rule's surface is 28 files — 0.1% — and 0 in the last 14 days. It is not
+# that self-attestation is rare. It is that equality is defeated by one
+# character, and producers are built to spend it: the runner handle plus a
+# suffix is the natural thing an actor writes when it re-reads its own work.
+#
+# The measured shapes, PASS receipts at/after HARDENING_CUTOFF (n=15,965):
+#
+#   verifier extends runner   1,262   7.9%   'claude-code' -> 'claude-code-review'
+#   runner extends verifier      90   0.6%   'codex-local' -> 'codex'
+#   identical after normalizing  28   0.2%   'claude-omn15717-reland'
+#                                            -> 'claude/omn15717-reland'
+#   unrelated                14,529  91.0%
+#
+# The 91% that passes is not an accident of naming: it is where the mechanical
+# producers live. ``node_pr_lifecycle_fix_effect`` (5,440),
+# ``node_occ_companion_compute`` (4,827) and ``node_occ_observation_effect``
+# (1,138) all name ``occ-evidence-source-autobind`` / ``occ-observation-append``
+# and are untouched by this rule. Every shape it refuses is a hand-authored
+# session handle.
+#
+# WHAT THIS IS NOT. It is not an author-identity or independence check. That
+# axis was ruled out on 2026-07-21 (OMN-14890 Canceled, omnimarket#1851 closed
+# unmerged): with one developer, comparing the git author of the product commit
+# against the git author of the receipt commit blocks 78.9% of a corpus whose
+# authorship is CORRECT, and 54.4 of those points were inconclusive
+# repo-resolution failures rather than findings at all. Do not reintroduce it
+# here. This rule compares two strings the same actor writes, and its claim is
+# correspondingly narrow: it refuses a receipt that does not even CLAIM a
+# second actor. It cannot tell whether a claimed second actor is real.
+#
+# NORMALIZATION IS THE POINT, not incidental. Comparison is on
+# ``normalize_handle`` output, so ``claude-omn15717-reland`` and
+# ``claude/omn15717-reland`` are the same handle. The model's raw-string rule
+# misses exactly that pair.
+
+DERIVED_VERIFIER_TICKET = "OMN-18778"
+DERIVED_VERIFIER_RULE = "[DERIVED_VERIFIER]"
+DERIVED_VERIFIER_BASELINE_PATH = Path(
+    ".onex_ratchets/omn_18778_derived_verifier_baseline.yaml"
+)
+
+_HANDLE_SEPARATOR_RUN = re.compile(r"[^a-z0-9]+")
+
+
+def normalize_handle(value: str) -> str:
+    """Case-fold a runner/verifier handle and collapse separator runs to ``-``.
+
+    ``Claude/OMN-15717 reland`` and ``claude-omn-15717-reland`` normalize to
+    the same string. Pure function.
+    """
+    return _HANDLE_SEPARATOR_RUN.sub("-", value.strip().lower()).strip("-")
+
+
+def derived_verifier_relation(runner: str, verifier: str) -> str | None:
+    """Name how ``verifier`` derives from ``runner``, or ``None`` if it does not.
+
+    Three derivations, all of which mean one actor named itself twice:
+
+    * ``identical`` — same handle once separators are normalized.
+    * ``verifier extends runner`` — the runner handle plus a segment
+      (``x`` -> ``x-readback``, ``x`` -> ``x-verifier``).
+    * ``runner extends verifier`` — the converse (``codex-local`` -> ``codex``).
+
+    Extension is checked on a SEGMENT boundary, so ``codex`` -> ``codexter`` is
+    not a derivation and neither is ``manual`` -> ``lakshman-manual-focused``
+    (which shares a token but is not an affix). A handle that merely shares
+    tokens with the other is NOT refused: token-subset matching was measured
+    and rejected, because it flags ``manual`` -> ``lakshman-manual-focused-test``,
+    where the verifier names a different person. Pure function.
+    """
+    normalized_runner = normalize_handle(runner)
+    normalized_verifier = normalize_handle(verifier)
+    if not normalized_runner or not normalized_verifier:
+        return None
+    if normalized_runner == normalized_verifier:
+        return "identical"
+    if normalized_verifier.startswith(f"{normalized_runner}-"):
+        return "verifier extends runner"
+    if normalized_runner.startswith(f"{normalized_verifier}-"):
+        return "runner extends verifier"
+    return None
+
+
+def _derived_verifier_violation(receipt: ModelDodReceipt) -> str | None:
+    """The DERIVED_VERIFIER fragment for one receipt, or ``None`` if clean.
+
+    Scoped to PASS receipts, like the denylist rule beside it: an ADVISORY or
+    FAIL receipt makes no independence claim to refuse. Pure function.
+    """
+    if receipt.status is not EnumReceiptStatus.PASS:
+        return None
+    relation = derived_verifier_relation(receipt.runner, receipt.verifier)
+    if relation is None:
+        return None
+    return (
+        f"{DERIVED_VERIFIER_RULE} PASS receipt names verifier "
+        f"{receipt.verifier!r} against runner {receipt.runner!r} — "
+        f"{relation} under separator normalization "
+        f"({DERIVED_VERIFIER_TICKET}). A handle derived from the runner's is "
+        "the same actor re-reading its own work, and a PASS receipt may not "
+        "rest on it. Name a verifier the runner does not control, or record "
+        "the receipt as ADVISORY."
+    )
+
+
+# ---------------------------------------------------------------------------
+# OMN-15710 rule 1 — ABS_PATH: no machine-specific absolute paths in probes.
+# ---------------------------------------------------------------------------
+
+# Matches the path root plus at least one path segment, so a bare mention of
+# the word "Users" or "home" in prose does not false-positive. No allowlist
+# is honored here — see the module docstring for why receipt/contract probe
+# bodies are held to a stricter bar than source code.
+_ABS_PATH_RE = re.compile(
+    r"(/Users/[^\s'\"]+|/Volumes/[^\s'\"]+|/home/[^/\s'\"]+/[^\s'\"]*)"
+)
+
+
+def _absolute_path_violations(receipt: ModelDodReceipt) -> list[str]:
+    """Return ABS_PATH violation fragments for a receipt's probe fields.
+
+    Gated on ``OMN_15710_CUTOFF``, not ``HARDENING_CUTOFF`` — see that
+    constant's comment.
+    """
+    if not _after_omn_15710_cutoff(receipt.run_timestamp):
+        return []
+    violations: list[str] = []
+    for field_name in ("check_value", "probe_command"):
+        value = getattr(receipt, field_name, None)
+        if not isinstance(value, str):
+            continue
+        match = _ABS_PATH_RE.search(value)
+        if match is None:
+            continue
+        violations.append(
+            f"[ABS_PATH] {field_name} contains a machine-specific absolute "
+            f"path ({match.group(1)!r}) — a receipt probe must be "
+            "re-executable by CI on a fresh checkout of any host; no "
+            "allowlist is honored for receipt/contract check bodies "
+            "(OMN-15710). Use a repo-relative path or an env-var-resolved "
+            "path instead."
+        )
+    return violations
+
+
+CONTRACT_ABS_PATH_BASELINE_PATH = Path(
+    ".onex_ratchets/omn_15710_contract_abs_path_baseline.yaml"
+)
+
+
+def load_contract_abs_path_baseline(baseline_path: Path) -> frozenset[str]:
+    """Load the frozen, shrink-only baseline of pre-existing contract ABS_PATH hits.
+
+    Mirrors ``load_supersession_baseline``'s shape/semantics for the same
+    reason: contract files (unlike receipts) carry no ``run_timestamp``, so
+    ``OMN_15710_CUTOFF`` cannot gate them — a frozen baseline is this file's
+    only precedented mechanism for "pre-existing, not a retro-block" when a
+    time-based cutoff isn't available.
+    """
+    data = _load_mapping(baseline_path)
+    if data is None:
+        return frozenset()
+    entries = data.get("violations")
+    if not isinstance(entries, list):
+        return frozenset()
+    return frozenset(str(entry) for entry in entries if isinstance(entry, str))
+
+
+def _contract_dod_evidence_abs_path_violations(
+    contract_path: Path, data: dict[str, object], baseline: frozenset[str]
+) -> list[str]:
+    """Return ABS_PATH violation fragments for a contract's dod_evidence checks."""
+    entries = data.get("dod_evidence")
+    if not isinstance(entries, list):
+        return []
+    violations: list[str] = []
+    for entry in entries:
+        if not isinstance(entry, dict):
+            continue
+        item_id = entry.get("id", "<unknown>")
+        if f"{contract_path.as_posix()}::{item_id}" in baseline:
+            continue
+        checks = entry.get("checks")
+        if not isinstance(checks, list):
+            continue
+        for check in checks:
+            if not isinstance(check, dict):
+                continue
+            check_value = check.get("check_value")
+            if not isinstance(check_value, str):
+                continue
+            match = _ABS_PATH_RE.search(check_value)
+            if match is None:
+                continue
+            violations.append(
+                f"{contract_path}: [ABS_PATH] dod_evidence[{item_id!r}]."
+                f"check_value contains a machine-specific absolute path "
+                f"({match.group(1)!r}) — no allowlist is honored for "
+                "contract check bodies (OMN-15710). Use a repo-relative "
+                "path or an env-var-resolved path instead."
+            )
+    return violations
+
+
+def check_contract_file(
+    contract_path: Path, baseline: frozenset[str] | None = None
+) -> list[str]:
+    """Return ABS_PATH violations for one contract YAML (empty = clean).
+
+    ``baseline`` suppresses pre-existing ``<path>::<item_id>`` entries
+    frozen in ``CONTRACT_ABS_PATH_BASELINE_PATH`` — see
+    ``load_contract_abs_path_baseline``.
+    """
+    if not contract_path.is_file():
+        return []
+    try:
+        data = yaml.safe_load(contract_path.read_text())
+    except (OSError, yaml.YAMLError) as exc:
+        return [f"{contract_path}: unreadable contract YAML: {exc}"]
+    if not isinstance(data, dict):
+        return []
+    return _contract_dod_evidence_abs_path_violations(
+        contract_path, data, baseline if baseline is not None else frozenset()
+    )
+
+
+# ---------------------------------------------------------------------------
+# OMN-15710 rule 2 — STDOUT_EMIT: bounded shape-consistency of recorded output
+# against a closed, documented registry of terminal-command shapes.
+# ---------------------------------------------------------------------------
+
+
+def _split_top_level(command: str, seps: str) -> list[str]:
+    """Split ``command`` on unquoted characters in ``seps``.
+
+    Quote-aware so a separator character inside ``'...'``/``"..."`` does not
+    split. Does not handle nested subshells or backslash-escaped quotes —
+    documented residual scope, see module docstring.
+    """
+    parts: list[str] = []
+    buf: list[str] = []
+    quote: str | None = None
+    for ch in command:
+        if quote is not None:
+            buf.append(ch)
+            if ch == quote:
+                quote = None
+            continue
+        if ch in ("'", '"'):
+            quote = ch
+            buf.append(ch)
+            continue
+        if ch in seps:
+            parts.append("".join(buf))
+            buf = []
+            continue
+        buf.append(ch)
+    parts.append("".join(buf))
+    return parts
+
+
+def _trusted_terminal_segment(probe_command: str) -> str | None:
+    """Return the terminal command segment IF this file trusts its context.
+
+    Returns ``None`` (undetectable — not a violation) when:
+
+    * ``probe_command`` spans multiple physical lines (heredocs/multi-line
+      scripts routinely carry visible intermediate output this splitter
+      cannot reason about);
+    * the terminal segment carries an unquoted ``#`` — this corpus uses
+      trailing ``# ...`` prose to describe ADDITIONAL steps/refs not shown
+      as real shell syntax (a narrated methodology, not a literal
+      one-command probe); a ``#`` here means the field is not what it looks
+      like to this naive splitter.
+
+    This does NOT additionally require every ``;``/``&``-joined prefix
+    statement to be provably silent (an earlier design in this ticket's own
+    verification history did, and it silently excluded the exact OCC#6084(a)
+    shape — a non-silent ``gh pr view ...`` prefix before the terminal
+    ``grep -c`` — from detection at all). A ``;``-chain's LAST statement
+    still contributes only its own lines to the tail of combined stdout
+    regardless of what an earlier statement wrote, so "last non-empty line"
+    validation on the terminal command's own class remains sound even with a
+    non-silent prefix. Residual noise from receipts whose ``probe_stdout``
+    is a narrative/summary rather than a literal capture (a real,
+    widespread convention in this corpus — see the frozen baseline below)
+    is absorbed by ``ABS_PATH_STDOUT_EMIT_BASELINE_PATH``, not by
+    over-narrowing detection here.
+    """
+    if "\n" in probe_command:
+        return None
+
+    parts = [p.strip() for p in _split_top_level(probe_command, ";|&") if p.strip()]
+    terminal_segment = parts[-1] if parts else probe_command.strip()
+
+    if len(_split_top_level(terminal_segment, "#")) > 1:
+        return None
+
+    return terminal_segment
+
+
+_PRINTF_LITERAL_RE = re.compile(r"printf\s+(['\"])((?:(?!\1).)*)\1\s*$")
+_ECHO_LITERAL_RE = re.compile(r"echo\s+(['\"])((?:(?!\1).)*)\1\s*$")
+
+
+def _decode_printf_literal(raw: str) -> str:
+    return raw.replace("\\n", "\n").replace("\\t", "\t")
+
+
+_JQ_SCALAR_ARG_RE = re.compile(r"--jq\s+(['\"])(?P<expr>[^'\"]+)\1")
+_JQ_SIMPLE_PATH_RE = re.compile(r"\.[A-Za-z_][A-Za-z0-9_.]*$")
+
+
+def _is_jq_sha_segment(segment: str) -> bool:
+    """True when ``segment`` ends in ``--jq '<simple scalar path>'`` naming a sha/oid.
+
+    Deliberately excludes any expression containing ``|``, ``,``, or ``[`` —
+    a compound/array jq filter (e.g. ``[.state,.mergeCommit.oid] | @tsv``) is
+    out of scope for this closed registry; see module docstring.
+    """
+    match = _JQ_SCALAR_ARG_RE.search(segment)
+    if match is None:
+        return False
+    expr = match.group("expr").strip()
+    if any(c in expr for c in "|,[]"):
+        return False
+    if _JQ_SIMPLE_PATH_RE.fullmatch(expr) is None:
+        return False
+    last_field = expr.rsplit(".", maxsplit=1)[-1]
+    return re.search(r"sha|oid", last_field, re.IGNORECASE) is not None
+
+
+class EmittabilitySpec(NamedTuple):
+    """One entry in the closed, documented terminal-command shape registry."""
+
+    name: str
+    matches: Callable[[str], bool]
+    validate: Callable[[str], bool]
+    expectation: str
+
+
+_EMITTABILITY_REGISTRY: tuple[EmittabilitySpec, ...] = (
+    EmittabilitySpec(
+        name="GREP_COUNT",
+        matches=lambda seg: (
+            bool(re.match(r"^grep\b", seg))
+            and re.search(r"(?:^|\s)-c(?:\s|$)", seg) is not None
+        ),
+        validate=lambda line: re.fullmatch(r"\d+", line) is not None,
+        expectation="a bare non-negative integer (grep -c line count)",
+    ),
+    EmittabilitySpec(
+        name="WC_LINES",
+        matches=lambda seg: (
+            bool(re.match(r"^wc\b", seg))
+            and re.search(r"(?:^|\s)-l(?:\s|$)", seg) is not None
+        ),
+        validate=lambda line: re.fullmatch(r"\d+(?:\s+\S+)?", line) is not None,
+        expectation="a bare integer, optionally followed by a filename (wc -l)",
+    ),
+    EmittabilitySpec(
+        name="JQ_SHA",
+        matches=_is_jq_sha_segment,
+        validate=lambda line: re.fullmatch(r"[0-9a-fA-F]{7,64}", line) is not None,
+        expectation="a hex SHA (--jq path whose final segment is sha/oid)",
+    ),
+)
+
+
+def _last_nonempty_line(text: str) -> str:
+    for line in reversed(text.strip().splitlines()):
+        if line.strip():
+            return line.strip()
+    return ""
+
+
+def _is_json_shaped(value: str) -> bool:
+    """True when ``value`` parses as a JSON object/array.
+
+    A JSON evidence bundle (e.g. ``{"evidence_ref": ..., "green_exit": 0,
+    "red_exit": 1, "red_ref": ...}``) is a distinct, structured proof format
+    used across this corpus for RED/GREEN differential probes — legitimately
+    not the bare scalar shape any entry in ``_EMITTABILITY_REGISTRY``
+    describes. Out of scope for this closed registry; see module docstring.
+    """
+    stripped = value.strip()
+    if not stripped or stripped[0] not in "{[":
+        return False
+    try:
+        json.loads(stripped)
+    except ValueError:
+        return False
+    return True
+
+
+def _literal_emit_match(segment: str) -> tuple[str, str] | None:
+    """Return ``(kind, raw_literal)`` for a terminal printf/echo literal, else None."""
+    match = _PRINTF_LITERAL_RE.search(segment)
+    if match is not None:
+        return "printf", match.group(2)
+    match = _ECHO_LITERAL_RE.search(segment)
+    if match is not None:
+        return "echo", match.group(2)
+    return None
+
+
+def _literal_emit_violations(segment: str, receipt: ModelDodReceipt) -> list[str]:
+    """STDOUT_EMIT violations for a terminal printf/echo literal command.
+
+    ``probe_stdout`` ONLY — see module docstring for why ``actual_output`` is
+    out of scope for every STDOUT_EMIT class, not just this one.
+    """
+    matched = _literal_emit_match(segment)
+    if matched is None:
+        return []
+    literal_kind, raw_literal = matched
+    if "%" in raw_literal:
+        # Contains a format specifier this file does not evaluate —
+        # undetectable, not clean. Documented residual.
+        return []
+    literal = (
+        _decode_printf_literal(raw_literal) if literal_kind == "printf" else raw_literal
+    ).strip()
+
+    value = receipt.probe_stdout
+    if not value or value.strip() == literal:
+        return []
+    return [
+        f"[STDOUT_EMIT] probe_stdout does not equal the terminal "
+        f"command's own literal output — probe_command ends in "
+        f"{literal_kind} {raw_literal!r}, which can only emit "
+        f"{literal!r}, but probe_stdout is {value.strip()!r}. Rerun "
+        "the declared command and record its byte-exact output; do "
+        "not paraphrase (OMN-15710)."
+    ]
+
+
+def _registry_emit_violations(segment: str, receipt: ModelDodReceipt) -> list[str]:
+    """STDOUT_EMIT violations against the closed terminal-command registry.
+
+    ``probe_stdout`` ONLY — see module docstring.
+    """
+    spec = next((s for s in _EMITTABILITY_REGISTRY if s.matches(segment)), None)
+    if spec is None:
+        return []
+
+    value = receipt.probe_stdout
+    if not value or _is_json_shaped(value):
+        return []
+    last_line = _last_nonempty_line(value)
+    if spec.validate(last_line):
+        return []
+    return [
+        f"[STDOUT_EMIT] probe_stdout is not shape-consistent with "
+        f"the terminal command {segment!r} (detected class: "
+        f"{spec.name}, expected {spec.expectation}) — got "
+        f"{last_line!r}. Rerun the declared command and record its "
+        "actual output (OMN-15710)."
+    ]
+
+
+def _stdout_emittability_violations(receipt: ModelDodReceipt) -> list[str]:
+    """Return STDOUT_EMIT violation fragments (empty = clean or undetectable class).
+
+    Scoped to ``probe_stdout`` only — deliberately excludes ``actual_output``.
+    ``ModelDodReceipt.actual_output`` is documented (see the field's own
+    docstring in omnibase_core) as "distinct from probe_stdout... may be a
+    structured / truncated rendering" — i.e. schema-sanctioned to diverge
+    from the literal captured stream. A corpus-wide dry run of this rule
+    against ``actual_output`` (OMN-15710 verification) found dozens of
+    pre-existing, legitimate receipts across many tickets using
+    ``actual_output`` for exactly that documented purpose — a narrative
+    summary, sometimes describing a second (RED) probe leg not shown in
+    ``probe_command`` at all. Checking ``actual_output`` for literal
+    equality is incompatible with that schema-sanctioned use and was a
+    systemic false positive, not a defect signal — narrowed accordingly.
+    Documented residual: the occ6080-grammar-repair-note defect shape
+    (probe_stdout correct, actual_output paraphrased) is therefore NOT
+    caught by this mechanism; OMN-15710 AC1 tracks that pair's closure via
+    independent verification instead.
+
+    Gated on ``OMN_15710_CUTOFF``, not ``HARDENING_CUTOFF`` — see that
+    constant's comment.
+    """
+    if not _after_omn_15710_cutoff(receipt.run_timestamp):
+        return []
+    if receipt.status is not EnumReceiptStatus.PASS:
+        return []
+
+    segment = _trusted_terminal_segment(receipt.probe_command)
+    if segment is None:
+        return []
+
+    # The printf/echo literal class and the registry classes are mutually
+    # exclusive by construction: a terminal command is either a bare literal
+    # emitter or a shape checked by the registry, never both.
+    if _literal_emit_match(segment) is not None:
+        return _literal_emit_violations(segment, receipt)
+    return _registry_emit_violations(segment, receipt)
+
+
+# ---------------------------------------------------------------------------
+# OMN-15461 — COMMIT_SHA_EXISTS: receipt commit_sha must resolve to a real,
+# remote-reachable commit, not merely a locally-existing git object.
+# ---------------------------------------------------------------------------
+
+OMN_15461_CUTOFF = datetime(2026, 8, 19, 12, 0, 0, tzinfo=UTC)
+
+_DEFAULT_COMMIT_SHA_REPO = "OmniNode-ai/onex_change_control"
+
+# A cross-repo citation embedded in probe text. Two corpus conventions,
+# both observed in the live 2026-08-19 bounded audit of this-week receipts:
+# the `gh api repos/<owner>/<repo>/...` URL-path form, and the far more
+# common `gh pr view <n> --repo <owner>/<repo> ...` CLI-flag form (the
+# `occ-evidence-source-autobind` verifier's standard probe shape —
+# corroborated live: 109 of 162 audited receipt files matched via
+# `evidence_item_id` alone, and the `--repo` flag form additionally covers
+# their `dod-occ-evidence-admissibility-validator`-shaped cohort siblings,
+# which reuse the SAME probe_command text). commit_sha itself carries no
+# repo attribution (2026-07-30 ticket finding): for an OCC self-bind receipt
+# it is implicitly this repo; for a receipt documenting a check against a
+# PRODUCT repo, a contract-bound check_value/probe_command citation is the
+# only recoverable hint of which repo to resolve it against. ``actual_output``
+# is intentionally excluded: it is free-form narrative rather than a bound
+# command/proof field and must never select the resolution repository.
+_REPO_HINT_RE = re.compile(
+    r"repos/([A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+)/|"
+    r"--repo[= ]([A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+)\b"
+)
+
+# Fail-open guard (found in adversarial verification of this rule, 2026-08-19,
+# same day as the initial widening above): an unrestricted _REPO_HINT_RE match
+# lets ANY "<owner>/<repo>" string appearing in a non-authoritative field
+# resolve a commit_sha against an attacker-choosable repo. Demonstrated live:
+# probe text mentioning "--repo torvalds/linux" makes any real Linux kernel
+# commit hash resolve as "real", regardless of what the receipt is actually
+# about — the exact class of bypass this gate exists to close, reopened
+# through the hint fallback. A hint is only trustworthy when it names a repo
+# this organization actually owns/uses; an unrecognized "<owner>/<repo>" is
+# not a fallback signal, it is noise (or an attack), and must NOT be resolved
+# against. Mirrors the Repository Registry in CLAUDE.md plus the personal
+# repos observed live in the receipt corpus (steel_onslaught, omnicursor).
+_KNOWN_REPO_HINTS: frozenset[str] = frozenset(
+    f"OmniNode-ai/{name}"
+    for name in (
+        "knowledge-base",
+        "knowledge-base-internal",
+        "omniclaude",
+        "omniclaude-internal",
+        "omnibase_core",
+        "omnibase_infra",
+        "omnibase_internal",
+        "omnibase_spi",
+        "omnidash",
+        "omnidash-archived",
+        "omniintelligence",
+        "omnimemory",
+        "omniweb",
+        "onex_change_control",
+        "omnibase_compat",
+        "omnimarket",
+        "omninode_infra",
+        "omnistream",
+        "omnidash-v2-new",
+        "omnicrush",
+        "omninode_bridge",
+        "omnicursor",
+        # OMN-18426: RSD carries org hook config and its PRs get hand-authored
+        # OCC companions; without it a real RSD commit_sha resolves against
+        # onex_change_control and reads as fabricated.
+        "RSD",
+    )
+) | frozenset({"jonahgabriel/steel_onslaught"})
+
+
+def _after_omn_15461_cutoff(run_timestamp: datetime) -> bool:
+    ts = run_timestamp if run_timestamp.tzinfo else run_timestamp.replace(tzinfo=UTC)
+    return ts >= OMN_15461_CUTOFF
+
+
+# The `occ-evidence-source-autobind` verifier's standard item-id shape,
+# e.g. "dod-OmniNode-ai-omnimarket-pr-2087" or its "-ci" cohort sibling.
+# Falls back to this when neither probe-text pattern in _REPO_HINT_RE
+# matches (a receipt whose own check_value carries no repo-identifying
+# text at all — audit found this shape too, alongside the flag-form gap).
+_ITEM_ID_REPO_RE = re.compile(r"^dod-OmniNode-ai-([A-Za-z0-9_.-]+)-pr-\d+")
+_PRODUCT_REF_SHA_RE = re.compile(r"(?:/commits/|[?&]ref=)([0-9a-fA-F]{40})\b")
+
+
+def _repo_hints(receipt: ModelDodReceipt) -> frozenset[str]:
+    """Return every trusted repository cited by contract-bound receipt fields.
+
+    ``actual_output`` is intentionally excluded: it is free-form narrative,
+    not a contract-bound proof field. An unrecognized candidate is noise, not
+    an authority signal. The caller must reject multiple trusted candidates
+    rather than choosing one by textual order.
+    """
+    hints: set[str] = set()
+    for field_name in ("check_value", "probe_command"):
+        value = getattr(receipt, field_name, None)
+        if not isinstance(value, str):
+            continue
+        for match in _REPO_HINT_RE.finditer(value):
+            candidate = match.group(1) or match.group(2)
+            if candidate in _KNOWN_REPO_HINTS:
+                hints.add(candidate)
+    if hints:
+        return frozenset(hints)
+    id_match = _ITEM_ID_REPO_RE.match(receipt.evidence_item_id)
+    if id_match is not None:
+        candidate = f"OmniNode-ai/{id_match.group(1)}"
+        if candidate in _KNOWN_REPO_HINTS:
+            return frozenset({candidate})
+    return frozenset()
+
+
+# A PR citation embedded in probe text: the ``gh pr <subcommand> <n>`` CLI
+# form and the ``repos/<owner>/<repo>/pulls/<n>`` REST form. Used ONLY to
+# decide which of SEVERAL already-trusted repositories a receipt's own
+# declared ``pr_number`` binds to — never to admit a repository that
+# ``_KNOWN_REPO_HINTS`` does not already trust (OMN-17558).
+_PR_REF_RE = re.compile(r"\bpr\s+[a-z][a-z-]*\s+(\d+)\b|/pulls/(\d+)\b")
+
+
+class _RepoCitation(NamedTuple):
+    """One trusted-repo reference plus the SHAs/PRs in its own command segment.
+
+    Segment-scoped, so ``gh api repos/<A>/contents/x?ref=<sha> | grep -c y &&
+    gh pr view <n> --repo <B>`` attributes ``<sha>`` to A and ``<n>`` to B
+    rather than pooling both against the whole field.
+    """
+
+    repo: str
+    shas: frozenset[str]
+    pr_numbers: frozenset[int]
+
+
+def _repo_citations(receipt: ModelDodReceipt) -> tuple[_RepoCitation, ...]:
+    """Return every trusted-repo citation found in contract-bound probe fields.
+
+    Same two fields, same trust list and same ``actual_output`` exclusion as
+    ``_repo_hints`` — this only adds *where inside the field* each reference
+    sits, which is what makes disambiguation evidence rather than word order.
+    """
+    citations: list[_RepoCitation] = []
+    for field_name in ("check_value", "probe_command"):
+        value = getattr(receipt, field_name, None)
+        if not isinstance(value, str):
+            continue
+        for segment in _split_top_level(value, ";|&"):
+            repos = {
+                candidate
+                for match in _REPO_HINT_RE.finditer(segment)
+                if (candidate := (match.group(1) or match.group(2)))
+                in _KNOWN_REPO_HINTS
+            }
+            if not repos:
+                continue
+            shas = frozenset(
+                match.group(1).lower()
+                for match in _PRODUCT_REF_SHA_RE.finditer(segment)
+            )
+            pr_numbers = frozenset(
+                int(match.group(1) or match.group(2))
+                for match in _PR_REF_RE.finditer(segment)
+            )
+            citations.extend(
+                _RepoCitation(repo, shas, pr_numbers) for repo in sorted(repos)
+            )
+    return tuple(citations)
+
+
+def _repo_authority(receipt: ModelDodReceipt) -> str | None:
+    """Return the single trusted repository this receipt's commit_sha lives in.
+
+    One hint stays one authority. When a receipt cites MORE than one trusted
+    repository, the authority is decided by which citation actually binds
+    this receipt's own identifiers, in a fixed two-tier order — never by
+    textual position, and never by widening the trusted set:
+
+    1. a citation whose own segment names ``commit_sha`` itself
+       (``repos/<repo>/commits/<sha>`` or ``?ref=<sha>``) — a direct
+       assertion about where the commit lives;
+    2. failing that, a citation whose own segment names the receipt's
+       declared ``pr_number`` (``gh pr <cmd> <n>`` / ``/pulls/<n>``) — the
+       PR whose head this ``commit_sha`` is.
+
+    A tier that matches two or more trusted repositories is ambiguous and
+    returns ``None`` immediately; it does NOT fall through to the weaker
+    tier. ``None`` means the caller fails closed exactly as before.
+
+    WHY (OMN-17558). The union in ``_repo_hints`` made a whole class of
+    well-formed receipts permanently unresolvable: the OCC autobind mints one
+    ``.supersede.<consumer-pr>.yaml`` per already-bound evidence item when a
+    ticket takes a SECOND product PR, and in every one of those the S2 family
+    binding (OMN-15459, ``_supersession_binding_violations``) REQUIRES
+    ``replacement.check_value`` to keep naming the superseded item's own repo,
+    while ``probe_command`` names the new consumer PR's repo. Two trusted
+    hints, always. Proven live on both shapes: OCC#8099 (consumers
+    ``omnimarket#2274`` then ``omnibase_infra#3148`` — cross-repo) and
+    OCC#8105 (consumers ``omnibase_infra#3148`` then ``omnibase_infra#3151``
+    — SAME repo, still ambiguous via the ``occ-self-bind-*`` entry whose
+    ``check_value`` is inherently onex_change_control-scoped). Both closed
+    unmerged; every ticket in the fleet was frozen at one product PR.
+
+    This is strictly a RELAXATION of the ambiguity refusal added in OCC#8075,
+    and only of that: nothing that previously passed now passes on weaker
+    evidence. The fail-open hazard OCC#8075 closed — free-form text choosing
+    an attacker-supplied repository — is untouched, because a candidate must
+    still appear in a contract-bound ``check_value``/``probe_command`` field
+    AND be in ``_KNOWN_REPO_HINTS`` before it can be disambiguated at all,
+    and the chosen repository must still return the exact commit from the
+    GitHub commits API.
+    """
+
+    hints = _repo_hints(receipt)
+    if len(hints) <= 1:
+        return next(iter(hints), None)
+
+    citations = _repo_citations(receipt)
+    receipt_sha = receipt.commit_sha.lower()
+    sha_bound = {c.repo for c in citations if receipt_sha in c.shas}
+    if sha_bound:
+        return next(iter(sha_bound)) if len(sha_bound) == 1 else None
+
+    if receipt.pr_number is not None:
+        pr_bound = {c.repo for c in citations if receipt.pr_number in c.pr_numbers}
+        if pr_bound:
+            return next(iter(pr_bound)) if len(pr_bound) == 1 else None
+
+    return None
+
+
+def _pr_bound_citation(receipt: ModelDodReceipt, repo: str) -> bool:
+    """True when ``repo`` is cited in a segment naming this receipt's pr_number."""
+
+    if receipt.pr_number is None:
+        return False
+    return any(
+        citation.repo == repo and receipt.pr_number in citation.pr_numbers
+        for citation in _repo_citations(receipt)
+    )
+
+
+def _product_ref_binds_commit(
+    receipt: ModelDodReceipt,
+    repo: str,
+    *,
+    is_supersession_replacement: bool = False,
+) -> bool:
+    """Require an exposed full product ref to name this receipt's commit SHA.
+
+    A product command that exposes only a PR number has no commit ref to bind
+    here. When it does expose one or more full SHA refs, the receipt SHA must
+    be among them. This permits a deliberate red comparator alongside the
+    green product head without silently accepting an unrelated receipt SHA.
+
+    ONE exception, and only for a supersession ``replacement`` (OMN-17558).
+    A merged-path second-consumer supersede (OMN-14623) re-binds a prior
+    evidence item to a NEW product PR *without editing the merged base
+    receipt*, and the S2 family binding (OMN-15459) REQUIRES the replacement
+    to keep referencing the superseded item's own declared check — which is
+    pinned to the FIRST consumer's artifact ref. Its ``commit_sha`` is the
+    SECOND consumer's head. Demanding the inherited ref expose that head puts
+    S2 and this rule in direct contradiction and makes the record
+    unsatisfiable; measured live on OCC#8109 (OMN-17292, 2nd consumer
+    ``omnibase_infra#3153``), whose
+    ``dod-OmniNode-ai-omnibase_infra-pr-3075/command.supersede.3153.yaml``
+    carries ``?ref=021a590f...`` (the pr-3075 artifact) against
+    ``commit_sha: 792c0014...`` (the #3153 head) and fails here.
+
+    So on a replacement, an exposed ref that does not name ``commit_sha`` is
+    accepted only when the SAME repository is also cited in a segment naming
+    the receipt's own ``pr_number`` — i.e. the record itself identifies the
+    consumer PR whose head that ``commit_sha`` is. Base receipts keep the
+    strict rule unchanged.
+
+    Documented residual: a supersession replacement may therefore cite a
+    product artifact at an older ref while claiming a newer ``commit_sha``.
+    That is the declared semantic of the merged-path re-bind, not a laundering
+    channel — the probe text is preserved verbatim rather than rewritten, the
+    PR citation is contract-bound, and the ``commit_sha`` must still resolve
+    in the authority repository through the GitHub commits API.
+    """
+    receipt_sha = receipt.commit_sha.lower()
+    exposed_shas: set[str] = set()
+    for field_name in ("check_value", "probe_command"):
+        value = getattr(receipt, field_name, None)
+        if not isinstance(value, str) or repo not in value:
+            continue
+        exposed_shas.update(
+            match.group(1).lower() for match in _PRODUCT_REF_SHA_RE.finditer(value)
+        )
+    if not exposed_shas or receipt_sha in exposed_shas:
+        return True
+    return is_supersession_replacement and _pr_bound_citation(receipt, repo)
+
+
+def _repository_authority_violation(
+    receipt: ModelDodReceipt, *, is_supersession_replacement: bool = False
+) -> str | None:
+    """Return a deterministic-authority violation before network resolution."""
+    repo = _repo_authority(receipt)
+    if repo is None:
+        hints = _repo_hints(receipt)
+        if len(hints) > 1:
+            return (
+                "[COMMIT_SHA_REPOSITORY] multiple trusted product repository hints "
+                f"{sorted(hints)!r}, and no single one of them is bound to this "
+                "receipt's own identifiers: name commit_sha in its repository's "
+                "own command segment (repos/<owner>/<repo>/commits/<sha> or "
+                "?ref=<sha>), or name the receipt's pr_number there (gh pr view "
+                "<n> --repo <owner>/<repo> or repos/<owner>/<repo>/pulls/<n>). "
+                "Receipt authority is ambiguous and must be made singular in "
+                "check_value/probe_command."
+            )
+        return None
+    if repo != _DEFAULT_COMMIT_SHA_REPO and not _product_ref_binds_commit(
+        receipt, repo, is_supersession_replacement=is_supersession_replacement
+    ):
+        return (
+            "[COMMIT_SHA_REPOSITORY] product command/ref exposes a full SHA "
+            "that does not bind receipt commit_sha; rerun against the exact "
+            "product artifact."
+        )
+    return None
+
+
+def _commit_sha_repositories(receipt: ModelDodReceipt) -> tuple[str, ...]:
+    """Return the one deterministic authority for a receipt commit claim."""
+
+    authority = _repo_authority(receipt)
+    return (authority,) if authority is not None else (_DEFAULT_COMMIT_SHA_REPO,)
+
+
+def _commit_sha_existence_violations(
+    receipt: ModelDodReceipt,
+    resolver: CommitShaResolver,
+    infrastructure_diagnostics: list[str],
+    *,
+    is_supersession_replacement: bool = False,
+) -> list[str]:
+    """Return definitive SHA receipt defects, collecting infra separately.
+
+    Gated on ``OMN_15461_CUTOFF``, not ``HARDENING_CUTOFF`` or retroactively
+    baselined — see the module docstring for why a full-corpus baseline was
+    deliberately not built.
+
+    ``resolver`` is the invocation-owned session shared by base and
+    replacement validation. It is passed explicitly so its local index,
+    bounded REST budget, and caches cannot reset per receipt.
+    """
+    if not _after_omn_15461_cutoff(receipt.run_timestamp):
+        return []
+    authority_violation = _repository_authority_violation(
+        receipt, is_supersession_replacement=is_supersession_replacement
+    )
+    if authority_violation is not None:
+        return [authority_violation]
+    result = resolver.resolve(receipt.commit_sha, _commit_sha_repositories(receipt))
+    if result.outcome is EnumCommitShaOutcome.REACHABLE_REMOTE:
+        return []
+    if result.outcome is EnumCommitShaOutcome.UNAVAILABLE:
+        infrastructure_diagnostics.append(_commit_sha_unavailable_message(result))
+        return []
+    if result.outcome is EnumCommitShaOutcome.INVALID:
+        return [
+            f"[COMMIT_SHA_FORMAT] commit_sha {receipt.commit_sha!r} must be a "
+            "full 40-character hexadecimal commit SHA."
+        ]
+    return [
+        f"[COMMIT_SHA_EXISTS] commit_sha {receipt.commit_sha!r} does not "
+        "resolve to a real, remote-reachable commit — it is fabricated, "
+        "truncated (including a plausible-prefix fabrication that a "
+        "well-formed-hex check cannot catch — OCC#6725), or local-only/"
+        "never-pushed (local git object existence is not sufficient; see "
+        "OMN-15461). If this receipt documents a check against a different "
+        "repo, embed a 'repos/<owner>/<repo>/...' reference in check_value/"
+        "probe_command so the gate can resolve it there. Rerun probes "
+        "against a pushed commit and regenerate the receipt; a merged "
+        "receipt with an unresolvable commit_sha is immutable and can only "
+        "be corrected via a net-new .supersede.<NNNN>.yaml record."
+    ]
+
+
+_UNAVAILABLE_REMEDIES: dict[EnumCommitShaUnavailableCategory, str] = {
+    EnumCommitShaUnavailableCategory.RATE_LIMIT_PRIMARY: (
+        "the calling identity's hourly REST quota is spent; re-run after "
+        "rate_limit_reset — this is NOT a permission or credential fault. "
+        "Do not try to confirm it with 'gh api rate_limit': that reports the "
+        "primary bucket of whoever runs it, which in CI is a different "
+        "identity from this step's token"
+    ),
+    EnumCommitShaUnavailableCategory.RATE_LIMIT_SECONDARY: (
+        "GitHub applied a secondary/abuse limit; honour retry_after before "
+        "re-running, and reduce concurrent API pressure. 'gh api rate_limit' "
+        "cannot see a secondary limit at all and will report a full quota "
+        "while calls are still being refused"
+    ),
+    EnumCommitShaUnavailableCategory.PERMISSION: (
+        "the credential is valid but is not scoped to this repository; widen "
+        "the App installation or token scope — re-running will not help"
+    ),
+    EnumCommitShaUnavailableCategory.AUTHENTICATION: (
+        "the credential was absent, expired or rejected; check that the step "
+        "exports a token — re-running will not help"
+    ),
+    EnumCommitShaUnavailableCategory.UPSTREAM_ERROR: (
+        "GitHub returned a server error; re-run once it recovers"
+    ),
+    EnumCommitShaUnavailableCategory.MALFORMED_RESPONSE: (
+        "the API answer could not be read as the requested commit object"
+    ),
+    EnumCommitShaUnavailableCategory.TRANSPORT: (
+        "the API subprocess did not complete; check runner network and the gh CLI"
+    ),
+    EnumCommitShaUnavailableCategory.BUDGET_EXHAUSTED: (
+        "this invocation's bounded REST budget is spent; raise "
+        "--commit-sha-rest-budget or reduce the changed-receipt set"
+    ),
+    EnumCommitShaUnavailableCategory.SESSION_HALTED: (
+        "this SHA was NOT probed — an earlier probe halted the session; fix "
+        "that probe's cause and this claim resolves with it"
+    ),
+    EnumCommitShaUnavailableCategory.LOCAL_INDEX: (
+        "the local remote-tracking index could not be built; check the checkout"
+    ),
+}
+
+
+def _commit_sha_unavailable_message(result: CommitShaResolution) -> str:
+    """Render an operator diagnostic without a receipt-defect label.
+
+    OMN-16360: the category and the remedy are the point. Every cause here
+    renders the same fail-closed refusal, but a spent quota clears itself at
+    the next reset while a permission refusal never does, and a reader who
+    cannot tell them apart investigates the wrong one. On 2026-09-20 an
+    undifferentiated "GitHub API returned HTTP 403" sent a lane looking for a
+    token fault; the quota reset four minutes later and the same gate passed.
+    """
+
+    metadata = [
+        f"repo={result.repo or _DEFAULT_COMMIT_SHA_REPO}",
+        f"sha={result.sha}",
+    ]
+    if result.category is not None:
+        metadata.append(f"category={result.category.value}")
+    if result.status_code is not None:
+        metadata.append(f"http_status={result.status_code}")
+    if result.rate_limit_remaining is not None:
+        metadata.append(f"rate_limit_remaining={result.rate_limit_remaining}")
+    if result.reset_at is not None:
+        metadata.append(f"rate_limit_reset={result.reset_at}")
+    if result.retry_after is not None:
+        metadata.append(f"retry_after={result.retry_after}")
+    if result.api_message is not None:
+        metadata.append(f"api_message={result.api_message}")
+    # A replayed halt names the probe that actually failed, so the diagnostic
+    # is never read as a measurement of this repository and SHA.
+    if result.halted_by_repo is not None and result.halted_by_sha is not None:
+        metadata.append(
+            f"not_probed=true, halted_by={result.halted_by_repo}@{result.halted_by_sha}"
+        )
+    if result.detail is not None:
+        metadata.append(f"detail={result.detail}")
+    if (
+        result.category is not None
+        and (remedy := _UNAVAILABLE_REMEDIES.get(result.category)) is not None
+    ):
+        metadata.append(f"remedy={remedy}")
+    return (
+        "[INFRASTRUCTURE_UNAVAILABLE] commit SHA resolution unavailable ("
+        + ", ".join(metadata)
+        + ")"
+    )
+
+
+def _supersession_candidates(receipt_path: Path) -> list[Path]:
+    """Return append-only supersession files that may replace receipt_path."""
+    if receipt_path.suffix != ".yaml":
+        return []
+    stem = receipt_path.name[: -len(receipt_path.suffix)]
+    return sorted(receipt_path.parent.glob(f"{stem}.supersede.*{receipt_path.suffix}"))
+
+
+def _active_supersession_candidate(receipt_path: Path) -> Path | None:
+    """Select the highest-sequence direct supersession for ``receipt_path``.
+
+    A lower clean record must never mask a newer broken record: the receipt
+    supersession model resolves the highest token as authoritative.
+
+    OMN-19050: ordering is by dotted-numeric sequence, not by ``int(token)``,
+    so an attempt-scoped correction outranks the record it corrects. Under
+    the prior form a re-executed record was skipped outright — its token was
+    non-digit — and the FAIL it was filed against stayed active forever.
+
+    THIS DELIBERATELY APPLIES NO COMMIT-IDENTITY GUARD, and that is a
+    divergence from ``omnibase_core``'s ``resolve_supersession``, not an
+    oversight. Measured over four cases while countersigning OMN-19050, the
+    two agree on three and disagree on one: a PASS record re-filed at the
+    FAIL's own ``commit_sha``. The resolver refuses it; this selects it.
+
+    Keep it that way. The two answer different questions:
+
+    * the resolver decides which receipt is ACTIVE for merge eligibility,
+      where refusing a same-head PASS is the entire point of its guard — a
+      chain must not become a retry-until-green channel;
+    * this decides which record must be REVIEWED, and its invariant, stated
+      in the first paragraph above, is that a lower clean record must never
+      mask a newer broken one. It selects the highest and refuses nothing.
+
+    Adding the guard here would not harden this gate, it would open a hole.
+    A deselected same-head PASS stops being the validation target, and per
+    the comment in ``_effective_check_path`` a non-selected supersession
+    keeps its own S1/S2 checks but cannot validate its replacement — so the
+    NEWEST replacement receipt would go unhardened while an older one was
+    checked in its place.
+
+    If the duplicated ordering is ever collapsed (OMN-19111), share
+    ``_sequence_key`` and never ``_guarded_winner``: the ordering is the
+    shared part, and the commit-identity guard is the part that is not.
+    """
+
+    target = receipt_path.as_posix()
+    matches: list[tuple[tuple[int, ...], Path]] = []
+    for candidate in _supersession_candidates(receipt_path):
+        sequence = _supersede_sequence(_supersede_token(candidate))
+        data = _load_mapping(candidate)
+        if sequence is None or data is None:
+            continue
+        if data.get("supersedes") == target:
+            matches.append((sequence, candidate))
+    if not matches:
+        return None
+    return max(matches, key=lambda item: item[0])[1]
+
+
+def _chained_supersession_errors(receipt_path: Path) -> list[str]:
+    """Reject supersession-of-supersession records until chains are resolved.
+
+    The active-record rule is defined only for direct siblings of a base
+    receipt. Accepting a record that supersedes another supersession would let
+    a higher token escape that selection and silently bypass its replacement
+    validation. Fail closed instead of guessing a transitive authority model.
+    """
+
+    paths = [receipt_path]
+    paths.extend(
+        sorted(receipt_path.parent.glob(f"{receipt_path.stem}.supersede.*.yaml"))
+    )
+    errors: list[str] = []
+    seen: set[Path] = set()
+    for path in paths:
+        if path in seen:
+            continue
+        seen.add(path)
+        data = _load_mapping(path)
+        supersedes = data.get("supersedes") if data is not None else None
+        if isinstance(supersedes, str) and ".supersede." in Path(supersedes).name:
+            errors.append(
+                f"{path}: [SUPERSESSION_CHAIN] supersession chains are "
+                "unsupported and fail closed; supersedes must name the base "
+                "receipt, not another .supersede. record."
+            )
+    return errors
+
+
+ORPHAN_TICKET = "OMN-13888"
+ORPHAN_RULE = "[ORPHAN_BINDING]"
+ORPHAN_BASELINE_PATH = Path(".onex_ratchets/omn_13888_orphan_receipt_baseline.yaml")
+
+
+def _orphan_baseline_list(baseline_path: Path, key: str) -> frozenset[str]:
+    data = _load_mapping(baseline_path)
+    if data is None:
+        return frozenset()
+    entries = data.get(key)
+    if not isinstance(entries, list):
+        return frozenset()
+    return frozenset(str(entry) for entry in entries if isinstance(entry, str))
+
+
+def load_orphan_baseline(baseline_path: Path) -> frozenset[str]:
+    """The SUPPRESSED set: pre-existing orphan receipts the gate tolerates.
+
+    Mirrors ``load_supersession_baseline`` / ``load_contract_abs_path_baseline``
+    in shape and semantics. Entries are receipt POSIX paths — a receipt names
+    exactly one ``evidence_item_id``, so the path is the whole key.
+
+    Deliberately reads ``violations:`` ONLY. The file's second list,
+    ``open_repairs:``, names orphans that are ALSO pre-existing but are under
+    an active, recorded repair — they are corpus members (so the ratchet in
+    ``load_orphan_corpus_expected`` stays green and wireable) and are NOT
+    suppressed (so the gate names them to whichever lane next stages them,
+    which is the whole point of recording a repair as open).
+    """
+    return _orphan_baseline_list(baseline_path, "violations")
+
+
+def load_orphan_open_repairs(baseline_path: Path) -> frozenset[str]:
+    """Orphans recorded as under active repair — corpus members, NOT suppressed."""
+    return _orphan_baseline_list(baseline_path, "open_repairs")
+
+
+def load_orphan_corpus_expected(baseline_path: Path) -> frozenset[str]:
+    """Every orphan the corpus is expected to contain (suppressed + open)."""
+    return load_orphan_baseline(baseline_path) | load_orphan_open_repairs(baseline_path)
+
+
+def load_derived_verifier_baseline(baseline_path: Path) -> frozenset[str]:
+    """The SUPPRESSED set: pre-existing DERIVED_VERIFIER receipts (OMN-18778).
+
+    Same shape and semantics as ``load_orphan_baseline`` — receipt POSIX paths,
+    ``violations:`` only. A BASELINE and not a cutoff date for the reason the
+    orphan baseline gives and this rule inherits verbatim: ``run_timestamp`` is
+    producer-written, and the newest derived-verifier receipts in this corpus
+    were minted the same day the rule was written (2026-09-18T20:45:45Z), so no
+    date separates legacy from live. An enumerated path list does, and it names
+    the debt instead of hiding it behind a comparison.
+    """
+    return _orphan_baseline_list(baseline_path, "violations")
+
+
+def load_derived_verifier_open_repairs(baseline_path: Path) -> frozenset[str]:
+    """Derived-verifier receipts under active repair.
+
+    Corpus members, deliberately NOT suppressed.
+    """
+    return _orphan_baseline_list(baseline_path, "open_repairs")
+
+
+def load_derived_verifier_corpus_expected(baseline_path: Path) -> frozenset[str]:
+    """Every derived-verifier receipt the corpus is expected to contain."""
+    return load_derived_verifier_baseline(
+        baseline_path
+    ) | load_derived_verifier_open_repairs(baseline_path)
+
+
+def _contract_declares_item(contract_path: Path, evidence_item_id: str) -> bool | None:
+    """Whether ``contract_path`` declares ``evidence_item_id`` (None = unreadable)."""
+    try:
+        data = yaml.safe_load(contract_path.read_text())
+    except (OSError, yaml.YAMLError):
+        return None
+    if not isinstance(data, dict):
+        return None
+    items = data.get("dod_evidence")
+    if not isinstance(items, list):
+        return False
+    return any(
+        isinstance(item, dict) and item.get("id") == evidence_item_id for item in items
+    )
+
+
+def _orphan_binding_violation(
+    evidence_item_id: str, ticket_id: str, contract_path: Path
+) -> str | None:
+    """The ORPHAN_BINDING violation for a whole-file-bound receipt, or None.
+
+    THE ONE PREDICATE (OMN-13888). Called from ``_contract_hash_violation`` on
+    the gate path and from ``_orphan_receipt_findings`` in corpus mode, so the
+    two can never disagree about what an orphan is.
+    """
+    declared = _contract_declares_item(contract_path, evidence_item_id)
+    if declared is None or declared:
+        return None
+    return (
+        f"{ORPHAN_RULE} receipt carries no contract_entry_sha256 AND "
+        f"dod_evidence item {evidence_item_id!r} is not declared in "
+        f"{contract_path}. It is an ORPHAN: nothing in the contract binds it, "
+        f"so it pins sha256({contract_path}) instead and is invalidated by "
+        "every later append to that contract BY ANY LANE — which append-locks "
+        "the contract for everyone. It is also unrepairable through the "
+        "supersession path, because rule S2 derives a replacement's anchors "
+        "from the superseded item's OWN declared checks[*].check_value and an "
+        "undeclared item declares none. REPAIR: declare the item in "
+        f"contracts/{ticket_id}.yaml and re-mint this receipt with "
+        f"contract_entry_sha256 ({ORPHAN_TICKET}); do not pad the baseline."
+    )
+
+
+def _contract_hash_violation(
+    receipt: ModelDodReceipt, contract_path: Path
+) -> str | None:
+    """Return a violation string if receipt's contract hash binding is stale.
+
+    Honors the entry-hash-first dual-accept policy (OMN-13888 mint order,
+    OMN-14411 gate parity): the caller has already confirmed at least one of
+    ``contract_entry_sha256`` / ``contract_sha256`` is set. Returns ``None``
+    when the receipt is bound cleanly to the current contract.
+    """
+    contract_entry_sha256 = getattr(receipt, "contract_entry_sha256", None)
+    contract_sha256 = getattr(receipt, "contract_sha256", None)
+    if contract_entry_sha256 is not None:
+        try:
+            contract_data = yaml.safe_load(contract_path.read_text())
+        except (OSError, yaml.YAMLError) as exc:
+            return f"unreadable contract YAML at {contract_path}: {exc}"
+        try:
+            expected_entry = compute_contract_entry_sha256(
+                contract_data, receipt.evidence_item_id
+            )
+        except ContractEntryNotFoundError:
+            return (
+                f"dod_evidence item {receipt.evidence_item_id!r} not found in "
+                f"{contract_path}; contract_entry_sha256 cannot be validated. "
+                "The entry was removed or renamed after this receipt was "
+                "produced (append-only violation) — do not fabricate a hash."
+            )
+        if contract_entry_sha256 != expected_entry:
+            return (
+                "contract_entry_sha256 mismatch — receipt has "
+                f"{contract_entry_sha256!r} but "
+                f"dod_evidence[{receipt.evidence_item_id!r}] in {contract_path} "
+                f"hashes to {expected_entry!r}. That entry was edited after this "
+                "receipt was produced; rerun probes and regenerate the receipt."
+            )
+        return None
+
+    orphan = _orphan_binding_violation(
+        receipt.evidence_item_id, receipt.ticket_id or contract_path.stem, contract_path
+    )
+    if orphan is not None:
+        return orphan
+
+    expected_whole = f"sha256:{compute_contract_sha256(contract_path)}"
+    if contract_sha256 != expected_whole:
+        return (
+            f"contract_sha256 mismatch — receipt has {contract_sha256!r} "
+            f"but sha256({contract_path}) is {expected_whole!r}. The contract "
+            "mutated after this receipt was produced; rerun probes and "
+            "regenerate the receipt (mint contract_entry_sha256 per OMN-13888 "
+            "so future appends to other entries do not invalidate it again)."
+        )
+    return None
+
+
+def _receipt_binding_violations(
+    receipt: ModelDodReceipt,
+    contracts_dir: Path,
+    commit_sha_resolver: CommitShaResolver,
+    infrastructure_diagnostics: list[str],
+    *,
+    is_supersession_replacement: bool = False,
+) -> list[str]:
+    """Return contract-binding + verifier violation fragments for one receipt.
+
+    Shared core for both the primary per-file check and supersession
+    replacement validation (OMN-14411), so the two paths cannot drift out of
+    sync. Fragments carry no receipt/candidate path prefix; callers prepend
+    their own.
+    """
+    violations: list[str] = []
+
+    contract_entry_sha256 = getattr(receipt, "contract_entry_sha256", None)
+    contract_sha256 = getattr(receipt, "contract_sha256", None)
+    if contract_sha256 is None and contract_entry_sha256 is None:
+        violations.append(
+            "missing contract_sha256 (OMN-13060/A-5). Tool-generate the "
+            "receipt; never hand-author. Prefer contract_entry_sha256 "
+            f"(OMN-13888) — the per-entry hash of "
+            f"dod_evidence[{receipt.evidence_item_id!r}] in "
+            f"contracts/{receipt.ticket_id}.yaml — which survives later "
+            "appends to the contract; legacy contract_sha256 is "
+            f"sha256(contracts/{receipt.ticket_id}.yaml)."
+        )
+    else:
+        contract_path = contracts_dir / f"{receipt.ticket_id}.yaml"
+        if not contract_path.is_file():
+            violations.append(
+                f"contract {contract_path} does not exist for ticket "
+                f"{receipt.ticket_id}"
+            )
+        else:
+            mismatch = _contract_hash_violation(receipt, contract_path)
+            if mismatch is not None:
+                violations.append(mismatch)
+
+    if receipt.status is EnumReceiptStatus.PASS and _is_denylisted_verifier(
+        receipt.verifier
+    ):
+        violations.append(
+            f"PASS receipt uses session-local verifier alias "
+            f"{receipt.verifier!r} (OMN-13060/A-5). Name an identifiable "
+            "independent verifier."
+        )
+
+    derived_verifier = _derived_verifier_violation(receipt)
+    if derived_verifier is not None:
+        violations.append(derived_verifier)
+
+    violations.extend(_absolute_path_violations(receipt))
+    violations.extend(_stdout_emittability_violations(receipt))
+    violations.extend(
+        _commit_sha_existence_violations(
+            receipt,
+            commit_sha_resolver,
+            infrastructure_diagnostics,
+            is_supersession_replacement=is_supersession_replacement,
+        )
+    )
+
+    return violations
+
+
+def _tombstone_errors(candidate: Path, raw: dict[str, object]) -> list[str]:
+    """Validate an invalidation through the shared supersession contract."""
+    try:
+        ModelReceiptSupersession.model_validate(raw)
+    except ValidationError as exc:
+        return [f"{candidate}: invalid tombstone supersession: {exc}"]
+    return []
+
+
+def _valid_supersession_replacement(
+    receipt_path: Path,
+    contracts_dir: Path,
+    commit_sha_resolver: CommitShaResolver,
+    infrastructure_diagnostics: list[str],
+) -> tuple[bool, list[str]]:
+    """Return whether a sibling supersession cleanly replaces receipt_path.
+
+    OCC receipts are append-only: after a contract changes, the old receipt is
+    preserved and a net-new ``command.supersede.NNNN.yaml`` carries the rebound
+    receipt under ``replacement``. This gate should validate the authoritative
+    replacement instead of requiring mutation of the immutable base receipt.
+    """
+    chain_errors = _chained_supersession_errors(receipt_path)
+    if chain_errors:
+        return False, chain_errors
+    candidate = _active_supersession_candidate(receipt_path)
+    if candidate is None:
+        return False, []
+
+    errors: list[str] = []
+    try:
+        raw = yaml.safe_load(candidate.read_text())
+    except (OSError, yaml.YAMLError) as exc:
+        return False, [f"{candidate}: unreadable supersession YAML: {exc}"]
+    if not isinstance(raw, dict):
+        return False, [f"{candidate}: supersession YAML is not a mapping"]
+    if raw.get("tombstone") is True:
+        errors = _tombstone_errors(candidate, raw)
+        # A tombstone invalidates the key; it cannot carry a PASS replacement.
+        return not errors, errors
+    replacement = raw.get("replacement")
+    if not isinstance(replacement, dict):
+        return False, [f"{candidate}: supersession has no mapping replacement"]
+    replacement_sha = replacement.get("commit_sha")
+    replacement_run_timestamp = _coerce_timestamp(replacement.get("run_timestamp"))
+    if (
+        replacement_run_timestamp is not None
+        and _after_omn_15461_cutoff(replacement_run_timestamp)
+        and isinstance(replacement_sha, str)
+        and not is_full_commit_sha(replacement_sha)
+    ):
+        return False, [
+            f"{candidate}: replacement [COMMIT_SHA_FORMAT] commit_sha "
+            f"{replacement_sha!r} must be a full 40-character hexadecimal commit SHA."
+        ]
+    try:
+        receipt = ModelDodReceipt.model_validate(replacement)
+    except ValidationError as exc:
+        return False, [
+            f"{candidate}: replacement fails ModelDodReceipt validation: {exc}"
+        ]
+
+    violations = _receipt_binding_violations(
+        receipt,
+        contracts_dir,
+        commit_sha_resolver,
+        infrastructure_diagnostics,
+        is_supersession_replacement=True,
+    )
+    if violations:
+        errors.extend(f"{candidate}: replacement {v}" for v in violations)
+        return False, errors
+    return True, []
+
+
+def _validate_hardened_receipt(
+    receipt_path: Path,
+    receipt: ModelDodReceipt,
+    contracts_dir: Path,
+    commit_sha_resolver: CommitShaResolver,
+    infrastructure_diagnostics: list[str],
+) -> list[str]:
+    return [
+        f"{receipt_path}: {fragment}"
+        for fragment in _receipt_binding_violations(
+            receipt, contracts_dir, commit_sha_resolver, infrastructure_diagnostics
+        )
+    ]
+
+
+def _coerce_timestamp(raw: object) -> datetime | None:
+    if isinstance(raw, datetime):
+        return raw if raw.tzinfo else raw.replace(tzinfo=UTC)
+    if isinstance(raw, str):
+        try:
+            parsed = datetime.fromisoformat(raw.replace("Z", "+00:00"))
+        except ValueError:
+            return None
+        return parsed if parsed.tzinfo else parsed.replace(tzinfo=UTC)
+    return None
+
+
+_TIMESTAMP_KEYS = ("run_timestamp", "verified_at")
+
+
+def _extract_receipt_timestamp(raw: dict[str, object]) -> datetime | None:
+    """Extract the receipt's production timestamp from raw YAML data.
+
+    Prefers top-level ``run_timestamp`` (the ModelDodReceipt field), then
+    falls back to ``verified_at`` at any nesting depth — pre-schema legacy
+    receipts (e.g. ``OMN-10362/dod-00*``) carry only that key, sometimes
+    nested. Returns None when no parseable timestamp exists anywhere; the
+    caller exempts such files because a timestamp-less artifact cannot
+    parse as ModelDodReceipt and is already rejected as NONPASS by the
+    receipt gate — this hook is the sha/verifier ratchet, not the schema
+    enforcer.
+    """
+    top = _coerce_timestamp(raw.get("run_timestamp"))
+    if top is not None:
+        return top
+    return _walk_for_timestamp(raw)
+
+
+def _walk_for_timestamp(node: object) -> datetime | None:
+    """Depth-first search for the first parseable timestamp key."""
+    if isinstance(node, dict):
+        for key in _TIMESTAMP_KEYS:
+            found = _coerce_timestamp(node.get(key))
+            if found is not None:
+                return found
+        children: list[object] = list(node.values())
+    elif isinstance(node, list):
+        children = list(node)
+    else:
+        return None
+    for child in children:
+        found = _walk_for_timestamp(child)
+        if found is not None:
+            return found
+    return None
+
+
+def _validate_receipt_model(
+    receipt_path: Path, raw: dict[str, object]
+) -> tuple[ModelDodReceipt | None, str | None]:
+    """Validate a receipt across old/new omnibase_core receipt schemas."""
+    try:
+        return ModelDodReceipt.model_validate(raw), None
+    except ValidationError as exc:
+        if "contract_entry_sha256" not in raw:
+            return (
+                None,
+                f"{receipt_path}: receipt fails ModelDodReceipt validation: {exc}",
+            )
+        legacy_raw = dict(raw)
+        contract_entry_sha256 = legacy_raw.pop("contract_entry_sha256")
+        try:
+            receipt = ModelDodReceipt.model_validate(legacy_raw)
+        except ValidationError:
+            return (
+                None,
+                f"{receipt_path}: receipt fails ModelDodReceipt validation: {exc}",
+            )
+        object.__setattr__(receipt, "contract_entry_sha256", contract_entry_sha256)
+        return receipt, None
+
+
+# ---------------------------------------------------------------------------
+# OMN-15459 — supersession binding (wrong-item rebind)
+# ---------------------------------------------------------------------------
+
+SUPERSESSION_TICKET = "OMN-15459"
+SUPERSESSION_BASELINE_PATH = Path(
+    ".onex_ratchets/omn_15459_supersession_binding_baseline.yaml"
+)
+RECEIPTS_ROOT = Path("drift/dod_receipts")
+
+# OMN-19050: the token is everything between ".supersede." and the extension,
+# dots included. The prior "[^.]+" excluded them, so an ATTEMPT-SCOPED record —
+# "<check>.supersede.<pr>.<n>.yaml", which a re-executed check now mints —
+# matched nothing, returned a None token, and was skipped by every caller with
+# no error. That silent drop let the FAIL record it was filed to correct keep
+# being selected as the active one. Mirrors the same widening in
+# omnibase_core.validation.validator_receipt_supersession.
+_SUPERSEDE_TOKEN_RE = re.compile(r"\.supersede\.([^/]+)\.ya?ml$")
+_PATH_TOKEN_RE = re.compile(
+    r"[A-Za-z0-9_][A-Za-z0-9_./-]*"
+    r"\.(?:py|ts|tsx|js|jsx|ya?ml|sh|sql|md|toml|json|cfg|ini|txt)\b"
+)
+_QUOTED_RE = re.compile(r"""['"]([^'"\n]{3,})['"]""")
+_PR_IN_ID_RE = re.compile(r"pr-(\d+)")
+_PR_IN_CMD_RE = re.compile(r"(?:gh pr (?:view|checks|diff|merge|list)\s+|/pulls/)(\d+)")
+_SYMBOLISH_RE = re.compile(r"[A-Za-z_][A-Za-z0-9_]{3,}")
+
+# Basenames that identify no item in particular: every receipt lives in a
+# command.yaml, every ticket has a contract.yaml. Admitting these as anchors
+# would let "greps some receipt file" satisfy family binding for any item.
+_GENERIC_BASENAMES = frozenset(
+    {
+        "command.yaml",
+        "command.yml",
+        "contract.yaml",
+        "contract.yml",
+        "__init__.py",
+        "ci.yml",
+        "ci.yaml",
+        "pyproject.toml",
+        "readme.md",
+    }
+)
+
+# Quoted operands that are jq/format plumbing rather than an item's subject.
+_GENERIC_QUOTED = frozenset(
+    {
+        ".content",
+        ".state",
+        ".number",
+        "number,state",
+        ".[].filename",
+        ".files[].path",
+        "%s\\n",
+    }
+)
+
+
+class SupersessionRule:
+    """Rule identifiers used in violation strings and baseline entries."""
+
+    DISTINCTNESS = "S1"
+    FAMILY_BINDING = "S2"
+
+
+def _normalize_check(value: object) -> str:
+    """Collapse whitespace so YAML folding cannot mask an identical check."""
+    return " ".join(str(value).split())
+
+
+def _supersede_token(path: Path) -> str | None:
+    match = _SUPERSEDE_TOKEN_RE.search(path.name)
+    return match.group(1) if match else None
+
+
+def _supersede_sequence(token: str | None) -> tuple[int, ...] | None:
+    """Total order over a dotted-numeric supersede token (OMN-19050).
+
+    ``"2751"`` → ``(2751,)`` and ``"2751.0002"`` → ``(2751, 2)``, so an
+    attempt-scoped record sorts strictly after the bare-PR record it extends
+    by plain tuple comparison. A single-component token keys to a 1-tuple and
+    compares exactly as the prior ``int(token)`` did, so every existing chain
+    orders as before.
+
+    ``None`` for a non-numeric token (``"2010-head"``) or no token at all,
+    which keeps those out of the ordering exactly as ``str.isdigit`` did.
+
+    This must agree with ``_sequence_key`` in
+    ``omnibase_core.validation.validator_receipt_supersession``: that module
+    decides which record is ACTIVE for merge eligibility, this one decides
+    which record gets validated. The two disagreeing is how a broken record
+    passes the gate and then decides a merge.
+    """
+    if token is None:
+        return None
+    parts = token.split(".")
+    if not all(part.isdigit() for part in parts):
+        return None
+    return tuple(int(part) for part in parts)
+
+
+@cache
+def _load_mapping(path: Path) -> dict[str, object] | None:
+    """Parse a YAML mapping once per process.
+
+    Corpus mode touches every supersession's cohort siblings and every
+    contract; without memoisation the scan is quadratic in a 1,800-file
+    corpus and does not finish. Callers treat the result as read-only.
+    """
+    try:
+        raw = yaml.safe_load(path.read_text())
+    except (OSError, yaml.YAMLError):
+        return None
+    return raw if isinstance(raw, dict) else None
+
+
+def _supersession_item_id(path: Path, data: dict[str, object]) -> str:
+    item = data.get("evidence_item_id")
+    if isinstance(item, str) and item:
+        return item
+    replacement = data.get("replacement")
+    if isinstance(replacement, dict):
+        nested = replacement.get("evidence_item_id")
+        if isinstance(nested, str) and nested:
+            return nested
+    return path.parent.name
+
+
+def _supersession_check_value(data: dict[str, object]) -> str | None:
+    replacement = data.get("replacement")
+    if not isinstance(replacement, dict):
+        return None
+    check_value = replacement.get("check_value")
+    if not isinstance(check_value, str) or not check_value.strip():
+        return None
+    return _normalize_check(check_value)
+
+
+@cache
+def _contract_entry(
+    contracts_dir: Path, ticket_id: str, item_id: str
+) -> dict[str, object] | None:
+    contract = _load_mapping(contracts_dir / f"{ticket_id}.yaml")
+    if contract is None:
+        return None
+    entries = contract.get("dod_evidence")
+    if not isinstance(entries, list):
+        return None
+    for entry in entries:
+        if isinstance(entry, dict) and entry.get("id") == item_id:
+            return entry
+    return None
+
+
+@cache
+def _item_anchors(
+    contracts_dir: Path, ticket_id: str, item_id: str
+) -> tuple[frozenset[str], frozenset[str]]:
+    """Return (text anchors lowercased, PR-number anchors) for a superseded item.
+
+    Anchors are what makes a replacement *about this item*: the paths,
+    symbols and test targets the item's own declared checks name, the PR
+    number its id embeds, and the item id itself. Generic plumbing
+    (command.yaml, jq selectors) is excluded — admitting it would let any
+    receipt-shaped grep satisfy the rule for every item.
+    """
+    entry = _contract_entry(contracts_dir, ticket_id, item_id)
+    text_anchors: set[str] = {item_id.lower()}
+    pr_anchors: set[str] = set(_PR_IN_ID_RE.findall(item_id))
+
+    checks = (entry or {}).get("checks")
+    if not isinstance(checks, list):
+        checks = []
+    for check in checks:
+        if not isinstance(check, dict):
+            continue
+        declared = check.get("check_value")
+        if not isinstance(declared, str):
+            continue
+        for match in _PATH_TOKEN_RE.finditer(declared):
+            token = match.group(0)
+            basename = token.rsplit("/", maxsplit=1)[-1]
+            if basename.lower() in _GENERIC_BASENAMES:
+                continue
+            text_anchors.add(token.lower())
+            text_anchors.add(basename.lower())
+        for quoted in _QUOTED_RE.findall(declared):
+            operand = quoted.strip()
+            if operand in _GENERIC_QUOTED or operand.startswith("."):
+                continue
+            if not _SYMBOLISH_RE.search(operand):
+                continue
+            text_anchors.add(operand.lower())
+        pr_anchors.update(_PR_IN_CMD_RE.findall(declared))
+
+    return frozenset(text_anchors), frozenset(pr_anchors)
+
+
+def _check_references_item(
+    check_value: str, text_anchors: frozenset[str], pr_anchors: frozenset[str]
+) -> bool:
+    lowered = check_value.lower()
+    if any(anchor in lowered for anchor in text_anchors):
+        return True
+    return any(
+        re.search(rf"\b{re.escape(pr)}\b", check_value) is not None for pr in pr_anchors
+    )
+
+
+@cache
+def _cohort_members(path: Path) -> tuple[Path, ...]:
+    """Supersessions minted together with ``path`` for the same consuming PR.
+
+    A cohort is (ticket directory, ``.supersede.<TOKEN>.`` suffix). That is
+    the unit the producer emits in one shot, and the unit across which one
+    probe was reused for N items.
+    """
+    token = _supersede_token(path)
+    if token is None:
+        return (path,)
+    ticket_dir = path.parent.parent
+    if not ticket_dir.is_dir():
+        return (path,)
+    return tuple(sorted(ticket_dir.glob(f"*/*.supersede.{token}.yaml")))
+
+
+@cache
+def _repaired_targets(item_dir: Path, contracts_dir: Path) -> frozenset[str]:
+    """Paths in ``item_dir`` cured by a net-new, itself-clean repair record.
+
+    Merged receipts are immutable, so a mis-paired supersession is repaired by
+    APPENDING a sibling whose ``supersedes:`` names *that supersession record*
+    rather than the base receipt — the shape ``ModelReceiptSupersession``
+    already sanctions ("path of the receipt **or record** this one replaces").
+    ``corrects:`` is not an option: the model is ``extra="forbid"``, so an
+    unknown key would make the record itself invalid.
+
+    Two conditions, both required:
+
+    * the repair is itself clean under S1+S2 — otherwise "repair" is a second
+      rebind wearing a different hat;
+    * the repair's ``.supersede.<NNNN>.`` token is HIGHER than its target's.
+      ``omnibase_core.validation.validator_receipt_supersession`` resolves the
+      active receipt as the highest ``NNNN`` in the chain, so a lower-numbered
+      repair would leave the wrong-item record authoritative — cosmetic, not a
+      cure.
+    """
+    repaired: set[str] = set()
+    if not item_dir.is_dir():
+        return frozenset(repaired)
+    for candidate in sorted(item_dir.glob("*.supersede.*.yaml")):
+        data = _load_mapping(candidate)
+        if data is None:
+            continue
+        superseded = data.get("supersedes")
+        if not isinstance(superseded, str) or ".supersede." not in superseded:
+            continue
+        declared = Path(superseded.strip())
+        # ``supersedes`` is OCC-root-relative while ``item_dir`` may be
+        # absolute or relative depending on how the gate was invoked. Match on
+        # the <ticket>/<item> tail and resolve the file inside item_dir, so the
+        # cure works identically from pre-commit (relative paths), CI corpus
+        # mode, and an absolute-path invocation.
+        if (
+            declared.parent.name != item_dir.name
+            or declared.parent.parent.name != item_dir.parent.name
+        ):
+            continue
+        target = item_dir / declared.name
+        if target == candidate or not target.is_file():
+            continue
+        # OMN-19050: dotted-numeric sequence, so an attempt-scoped repair
+        # ("<pr>.<n>") outranks the bare-PR record it repairs. The prior
+        # int() comparison refused both tokens outright as non-digit.
+        repair_sequence = _supersede_sequence(_supersede_token(candidate))
+        target_sequence = _supersede_sequence(_supersede_token(target))
+        if repair_sequence is None or target_sequence is None:
+            continue
+        if repair_sequence <= target_sequence:
+            continue
+        if _supersession_violations(
+            candidate, contracts_dir, baseline=frozenset(), follow_repairs=False
+        ):
+            continue
+        repaired.add(target.as_posix())
+    return frozenset(repaired)
+
+
+_SUPERSEDES_DOD_EVIDENCE_PREFIX = "supersedes_dod_evidence:"
+
+
+def _declared_lineage_target(
+    contracts_dir: Path, ticket_id: str, item_id: str
+) -> str | None:
+    """Return the id ``item_id``'s OWN contract entry names via ``evidence_artifact``.
+
+    Reads the CONTRACT-level ``evidence_artifact: "supersedes_dod_evidence:<id>"``
+    declaration via :func:`_contract_entry` — the authoring-time lineage
+    marker, distinct from this file's own receipt-level ``supersedes:`` /
+    ``.supersede.<NNNN>.yaml`` repair chain (:func:`_repaired_targets`).
+    ``None`` when the item is absent, declares no marker, or the marker
+    doesn't match the exact prefix.
+    """
+    entry = _contract_entry(contracts_dir, ticket_id, item_id)
+    if entry is None:
+        return None
+    marker = entry.get("evidence_artifact")
+    if not isinstance(marker, str) or not marker.startswith(
+        _SUPERSEDES_DOD_EVIDENCE_PREFIX
+    ):
+        return None
+    target = marker[len(_SUPERSEDES_DOD_EVIDENCE_PREFIX) :].strip()
+    return target or None
+
+
+def _s1_collisions(  # noqa: PLR0913 - one cohort file's identity IS path+item+check+ticket
+    path: Path,
+    item_id: str,
+    check_value: str,
+    contracts_dir: Path,
+    ticket_id: str,
+    *,
+    follow_repairs: bool,
+) -> set[str]:
+    """Sibling items in ``path``'s cohort that collide on ``check_value``.
+
+    A byte-identical check across DIFFERENT items is a collision unless a
+    declared lineage ties them together (see :func:`_declared_lineage_target`)
+    — OMN-16148's same-bar-relabel exemption — or the sibling is itself a
+    cured wrong-item rebind (:func:`_repaired_targets`).
+    """
+    collisions: set[str] = set()
+    for sibling in _cohort_members(path):
+        if sibling == path:
+            continue
+        sibling_data = _load_mapping(sibling)
+        if sibling_data is None:
+            continue
+        if _supersession_check_value(sibling_data) != check_value:
+            continue
+        sibling_item = _supersession_item_id(sibling, sibling_data)
+        if sibling_item == item_id:
+            continue
+        if follow_repairs and (
+            sibling.as_posix() in _repaired_targets(sibling.parent, contracts_dir)
+        ):
+            continue
+        # OMN-16148: a DECLARED same-lineage relabel — one item's own contract
+        # entry naming the other via evidence_artifact — is not a wrong-item
+        # rebind. It is a deliberate same-bar correction (OMN-15800's
+        # dod-source-presence-probe-pr-2032-rebind-f2958714 fixes only the
+        # evidence_item_id of dod-deploy-live-probe-pr-2032-rebind-f2958714,
+        # keeping the identical check_value on purpose). Symmetric with the
+        # matching producer-side exemption in omnimarket's
+        # assert_supersession_checks_are_item_bound — fixing only one side
+        # would just relocate this refusal, not resolve it.
+        if (
+            _declared_lineage_target(contracts_dir, ticket_id, item_id) == sibling_item
+            or _declared_lineage_target(contracts_dir, ticket_id, sibling_item)
+            == item_id
+        ):
+            continue
+        collisions.add(sibling_item)
+    return collisions
+
+
+def _supersession_violations(
+    path: Path,
+    contracts_dir: Path,
+    baseline: frozenset[str],
+    *,
+    follow_repairs: bool = True,
+) -> list[tuple[str, str]]:
+    """Return [(rule, message)] for one supersession file (empty = clean)."""
+    posix = path.as_posix()
+    data = _load_mapping(path)
+    if data is None:
+        return []
+    check_value = _supersession_check_value(data)
+    if check_value is None:
+        # No replacement check to pair with anything. Malformed replacements
+        # are the base gate's job (_valid_supersession_replacement), not this
+        # rule's.
+        return []
+
+    if follow_repairs and posix in _repaired_targets(path.parent, contracts_dir):
+        return []
+
+    item_id = _supersession_item_id(path, data)
+    ticket_id = data.get("ticket_id")
+    if not isinstance(ticket_id, str) or not ticket_id:
+        ticket_id = path.parent.parent.name
+
+    violations: list[tuple[str, str]] = []
+
+    # S1 — distinctness across the cohort.
+    collisions = _s1_collisions(
+        path,
+        item_id,
+        check_value,
+        contracts_dir,
+        ticket_id,
+        follow_repairs=follow_repairs,
+    )
+    if collisions:
+        violations.append(
+            (
+                SupersessionRule.DISTINCTNESS,
+                f"replacement.check_value is byte-identical to the supersession "
+                f"for {len(collisions)} DIFFERENT evidence item(s) minted in the "
+                f"same cohort ({', '.join(sorted(collisions))}). One probe cannot "
+                f"be the authoritative proof of several distinct bars — that is "
+                f"the {SUPERSESSION_TICKET} wrong-item rebind. Give each "
+                "superseded item a check that discriminates it, or supersede "
+                "only the one item this probe actually proves. (A declared "
+                "same-lineage relabel — one item's evidence_artifact naming "
+                "the other — is exempt; neither item here declares one.)",
+            )
+        )
+
+    # S2 — family binding to the superseded item.
+    text_anchors, pr_anchors = _item_anchors(contracts_dir, ticket_id, item_id)
+    if not _check_references_item(check_value, text_anchors, pr_anchors):
+        sample = sorted(a for a in text_anchors if a != item_id.lower())[:4]
+        violations.append(
+            (
+                SupersessionRule.FAMILY_BINDING,
+                f"replacement.check_value references nothing the superseded item "
+                f"{item_id!r} declares. Expected at least one anchor from that "
+                f"item's own dod_evidence entry in "
+                f"contracts/{ticket_id}.yaml — paths/symbols "
+                f"{sample or '(none declared)'}, PR number(s) "
+                f"{sorted(pr_anchors) or '(none)'}, or the item id itself — but "
+                f"the replacement runs: {check_value[:160]!r}. A substantive "
+                "probe of the WRONG item is still a wrong-item rebind "
+                f"({SUPERSESSION_TICKET}).",
+            )
+        )
+
+    # Baseline suppression is per (path, RULE), not per path: a file carried as
+    # a known S1 violation that later also trips S2 must still be reported.
+    suppressed = _baseline_index(baseline).get(posix)
+    if suppressed is None:
+        return violations
+    if not suppressed:
+        return []
+    return [item for item in violations if item[0] not in suppressed]
+
+
+@lru_cache(maxsize=8)
+def _baseline_index(baseline: frozenset[str]) -> dict[str, frozenset[str]]:
+    """Map baselined path -> suppressed rule codes.
+
+    Entries are ``<path>::S1+S2``. A bare ``<path>`` (the shape a
+    hand-written entry tends to take) maps to the empty set, meaning
+    "suppress every rule for this file".
+    """
+    index: dict[str, set[str]] = {}
+    for entry in baseline:
+        path_part, _, rules_part = entry.partition("::")
+        rules = index.setdefault(path_part, set())
+        if rules_part:
+            rules.update(rules_part.split("+"))
+    return {path: frozenset(rules) for path, rules in index.items()}
+
+
+def load_supersession_baseline(baseline_path: Path) -> frozenset[str]:
+    """Load the frozen, shrink-only baseline of pre-existing violations."""
+    data = _load_mapping(baseline_path)
+    if data is None:
+        return frozenset()
+    entries = data.get("violations")
+    if not isinstance(entries, list):
+        return frozenset()
+    return frozenset(str(entry) for entry in entries if isinstance(entry, str))
+
+
+def check_supersession_file(
+    path: Path, contracts_dir: Path, baseline: frozenset[str]
+) -> list[str]:
+    """Return violation strings for one supersession file (empty = clean)."""
+    return [
+        f"{path}: [{rule}] {message}"
+        for rule, message in _supersession_violations(path, contracts_dir, baseline)
+    ]
+
+
+def scan_supersession_corpus(
+    receipts_root: Path, contracts_dir: Path
+) -> dict[str, list[str]]:
+    """Return {posix path: [rules]} for every violating supersession on disk."""
+    findings: dict[str, list[str]] = {}
+    for path in sorted(receipts_root.glob("*/*/*.supersede.*.yaml")):
+        violations = _supersession_violations(path, contracts_dir, baseline=frozenset())
+        if violations:
+            findings[path.as_posix()] = sorted({rule for rule, _ in violations})
+    return findings
+
+
+def _baseline_entries(findings: dict[str, list[str]]) -> list[str]:
+    return sorted(f"{path}::{'+'.join(rules)}" for path, rules in findings.items())
+
+
+def run_supersession_corpus(
+    receipts_root: Path, contracts_dir: Path, baseline_path: Path
+) -> int:
+    """Corpus ratchet: set-equality against the frozen baseline, both ways."""
+    findings = scan_supersession_corpus(receipts_root, contracts_dir)
+    observed = set(_baseline_entries(findings))
+    baseline = load_supersession_baseline(baseline_path)
+
+    new_violations = sorted(observed - baseline)
+    stale_baseline = sorted(baseline - observed)
+
+    print(
+        f"Supersession binding corpus ({SUPERSESSION_TICKET}): "
+        f"{len(observed)} violating file(s); baseline {len(baseline)}."
+    )
+    if not new_violations and not stale_baseline:
+        print("Corpus matches the frozen baseline exactly.")
+        return 0
+
+    if new_violations:
+        print(f"\nNEW violations absent from {baseline_path} ({len(new_violations)}):")
+        for entry in new_violations:
+            print(f"  + {entry}")
+        for entry in new_violations[:20]:
+            path = Path(entry.split("::", maxsplit=1)[0])
+            for line in check_supersession_file(path, contracts_dir, frozenset()):
+                print(f"      {line}")
+        print(
+            "\nDo NOT pad the baseline. Either give each superseded item a check "
+            "that discriminates it, or append a `corrects:` repair record."
+        )
+    if stale_baseline:
+        print(
+            f"\nBaseline entries that no longer violate ({len(stale_baseline)}) — "
+            "shrink the baseline in the same PR that repaired them:"
+        )
+        for entry in stale_baseline:
+            print(f"  - {entry}")
+    return 1
+
+
+_ORPHAN_OPEN_REPAIRS_HEADER = (
+    "#\n"
+    "# open_repairs: orphans that are pre-existing but are under an ACTIVE,\n"
+    "# recorded repair. They are corpus members (so --orphan-corpus stays a\n"
+    "# meaningful set-equality ratchet) but are deliberately NOT suppressed, so\n"
+    "# the gate names them to whichever lane next stages them. Preserved verbatim\n"
+    "# by --write-orphan-baseline; move an entry here by hand when a repair is\n"
+    "# opened, and delete it outright when the repair lands.\n"
+)
+
+
+def _orphan_receipt_findings(receipts_root: Path, contracts_dir: Path) -> list[str]:
+    """Every post-cutoff orphan receipt in the corpus, as POSIX paths.
+
+    Uses the SAME eligibility the gate uses — supersession redirection via
+    ``_effective_check_path``, the ``HARDENING_CUTOFF`` legacy exemption, and
+    ``_orphan_binding_violation`` as the one predicate — so a path this returns
+    is exactly a path the gate would flag if the file were in a PR's changed
+    set, and the baseline cannot drift from the rule it suppresses.
+    """
+    findings: list[str] = []
+    seen: set[Path] = set()
+    for path in sorted(receipts_root.rglob("*.yaml")):
+        effective = _effective_check_path(path)
+        if effective in seen or not effective.is_file():
+            continue
+        seen.add(effective)
+        raw = _load_mapping(effective)
+        if raw is None:
+            continue
+        node = (
+            raw.get("replacement") if isinstance(raw.get("replacement"), dict) else raw
+        )
+        if not isinstance(node, dict):
+            continue
+        run_ts = _extract_receipt_timestamp(node)
+        if run_ts is None or run_ts < HARDENING_CUTOFF:
+            continue
+        if node.get("contract_entry_sha256") is not None:
+            continue
+        ticket_id = node.get("ticket_id") or raw.get("ticket_id")
+        evidence_item_id = node.get("evidence_item_id")
+        if not isinstance(ticket_id, str) or not isinstance(evidence_item_id, str):
+            continue
+        contract_path = contracts_dir / f"{ticket_id}.yaml"
+        if not contract_path.is_file():
+            continue
+        if _orphan_binding_violation(evidence_item_id, ticket_id, contract_path):
+            findings.append(effective.as_posix())
+    return findings
+
+
+def run_orphan_corpus(
+    receipts_root: Path, contracts_dir: Path, baseline_path: Path
+) -> int:
+    """Corpus ratchet: set-equality against the frozen orphan baseline, both ways."""
+    observed = set(_orphan_receipt_findings(receipts_root, contracts_dir))
+    baseline = load_orphan_corpus_expected(baseline_path)
+    new_violations = sorted(observed - baseline)
+    stale_baseline = sorted(baseline - observed)
+    print(
+        f"Scanned {receipts_root} for {ORPHAN_TICKET} orphan receipts: "
+        f"{len(observed)} orphan(s); baseline {len(baseline)}."
+    )
+    if not new_violations and not stale_baseline:
+        print("Corpus matches the frozen orphan baseline exactly.")
+        return 0
+    if new_violations:
+        print(
+            f"\nNEW orphan receipts absent from {baseline_path} "
+            f"({len(new_violations)}):"
+        )
+        for entry in new_violations:
+            print(f"  - {entry}")
+        print(
+            "\nDo NOT pad the baseline. Declare the item in its ticket contract "
+            "and re-mint the receipt with contract_entry_sha256."
+        )
+    if stale_baseline:
+        print(
+            f"\nBaseline entries that are no longer orphans ({len(stale_baseline)}) — "
+            "shrink the baseline in the same PR that repaired them:"
+        )
+        for entry in stale_baseline:
+            print(f"  - {entry}")
+    return 1
+
+
+def _derived_verifier_findings(receipts_root: Path) -> list[str]:
+    """Every post-cutoff DERIVED_VERIFIER receipt in the corpus, as POSIX paths.
+
+    Uses the SAME eligibility the live rule uses — supersession redirection via
+    ``_effective_check_path``, the ``HARDENING_CUTOFF`` legacy exemption, the
+    PASS scoping, and ``derived_verifier_relation`` as the one predicate — so a
+    path this returns is exactly a path the gate would flag if the file were in
+    a PR's changed set, and the baseline cannot drift from the rule it
+    suppresses.
+    """
+    findings: list[str] = []
+    seen: set[Path] = set()
+    for path in sorted(receipts_root.rglob("*.yaml")):
+        effective = _effective_check_path(path)
+        if effective in seen or not effective.is_file():
+            continue
+        seen.add(effective)
+        raw = _load_mapping(effective)
+        if raw is None:
+            continue
+        node = (
+            raw.get("replacement") if isinstance(raw.get("replacement"), dict) else raw
+        )
+        if not isinstance(node, dict):
+            continue
+        run_ts = _extract_receipt_timestamp(node)
+        if run_ts is None or run_ts < HARDENING_CUTOFF:
+            continue
+        status = node.get("status") or raw.get("status")
+        if not isinstance(status, str) or status.strip().upper() != "PASS":
+            continue
+        runner = node.get("runner") or raw.get("runner")
+        verifier = node.get("verifier") or raw.get("verifier")
+        if not isinstance(runner, str) or not isinstance(verifier, str):
+            continue
+        if derived_verifier_relation(runner, verifier) is not None:
+            findings.append(effective.as_posix())
+    return findings
+
+
+def run_derived_verifier_corpus(receipts_root: Path, baseline_path: Path) -> int:
+    """Corpus ratchet: set-equality against the frozen baseline, both directions."""
+    observed = set(_derived_verifier_findings(receipts_root))
+    baseline = load_derived_verifier_corpus_expected(baseline_path)
+    new_violations = sorted(observed - baseline)
+    stale_baseline = sorted(baseline - observed)
+    print(
+        f"Scanned {receipts_root} for {DERIVED_VERIFIER_TICKET} derived-verifier "
+        f"receipts: {len(observed)} finding(s); baseline {len(baseline)}."
+    )
+    if not new_violations and not stale_baseline:
+        print("Corpus matches the frozen derived-verifier baseline exactly.")
+        return 0
+    if new_violations:
+        print(
+            f"\nNEW derived-verifier receipts absent from {baseline_path} "
+            f"({len(new_violations)}):"
+        )
+        for entry in new_violations:
+            print(f"  - {entry}")
+        print(
+            "\nDo NOT pad the baseline. Mint the receipt naming a verifier the "
+            "runner does not control, or record it as ADVISORY."
+        )
+    if stale_baseline:
+        print(
+            f"\nBaseline entries that no longer derive ({len(stale_baseline)}) — "
+            "shrink the baseline in the same PR that repaired them:"
+        )
+        for entry in stale_baseline:
+            print(f"  - {entry}")
+    return 1
+
+
+def write_derived_verifier_baseline(receipts_root: Path, baseline_path: Path) -> int:
+    """Regenerate the frozen derived-verifier baseline (repair PRs only)."""
+    open_repairs = sorted(load_derived_verifier_open_repairs(baseline_path))
+    entries = [
+        entry
+        for entry in _derived_verifier_findings(receipts_root)
+        if entry not in set(open_repairs)
+    ]
+    header = (
+        "---\n"
+        "# SPDX-FileCopyrightText: 2026 OmniNode.ai Inc.\n"
+        "# SPDX-License-Identifier: MIT\n"
+        "#\n"
+        f"# Frozen, shrink-only baseline of pre-existing {DERIVED_VERIFIER_TICKET}\n"
+        "# DERIVED_VERIFIER receipts across drift/dod_receipts/**: post-\n"
+        "# HARDENING_CUTOFF PASS receipts whose verifier handle is the runner\n"
+        "# handle, or an affix extension of it, once separators are normalized.\n"
+        "#\n"
+        "# WHY A BASELINE AND NOT A CUTOFF DATE: run_timestamp is producer-written,\n"
+        "# and the newest entries here were minted the same day the rule landed,\n"
+        "# so no date separates 'legacy' from 'live'. An enumerated path list\n"
+        "# does, and it names the debt instead of hiding it behind a comparison.\n"
+        "#\n"
+        "# WHY NOT A BACK-FILL: rewriting a merged receipt's verifier field is\n"
+        "# exactly what the OCC Append-Only Gate rejects as receipt_file_mutated,\n"
+        "# and a relabelled verifier is the defect, not the repair. Repair is\n"
+        "# append-only: mint a net-new receipt (or supersession) naming a verifier\n"
+        "# the runner does not control, then shrink this file in the same PR.\n"
+        "#\n"
+        "# RATCHET DISCIPLINE: this list may only SHRINK. A newly minted\n"
+        "# derived-verifier receipt is a hard failure on the per-receipt rule.\n"
+        "#\n"
+        "# open_repairs: corpus members that are deliberately NOT suppressed, so\n"
+        "# the gate names them to whichever lane next stages them.\n"
+        "#\n"
+        "# Regenerate (repair PRs only):\n"
+        "#   uv run python scripts/validation/check_receipt_hardening.py \\\n"
+        "#     --write-derived-verifier-baseline\n"
+        "violations:\n"
+    )
+    body = "".join(f"  - {entry}\n" for entry in entries)
+    open_block = (
+        "open_repairs:\n" + "".join(f"  - {entry}\n" for entry in open_repairs)
+        if open_repairs
+        else "open_repairs: []\n"
+    )
+    baseline_path.parent.mkdir(parents=True, exist_ok=True)
+    baseline_path.write_text(header + body + open_block)
+    print(
+        f"Wrote {len(entries)} suppressed and {len(open_repairs)} open "
+        f"{DERIVED_VERIFIER_TICKET} entries to {baseline_path}."
+    )
+    return 0
+
+
+def write_orphan_baseline(
+    receipts_root: Path, contracts_dir: Path, baseline_path: Path
+) -> int:
+    """Regenerate the frozen orphan baseline (repair PRs only)."""
+    open_repairs = sorted(load_orphan_open_repairs(baseline_path))
+    entries = [
+        entry
+        for entry in _orphan_receipt_findings(receipts_root, contracts_dir)
+        if entry not in set(open_repairs)
+    ]
+    header = (
+        "---\n"
+        "# SPDX-FileCopyrightText: 2026 OmniNode.ai Inc.\n"
+        "# SPDX-License-Identifier: MIT\n"
+        "#\n"
+        f"# Frozen, shrink-only baseline of pre-existing {ORPHAN_TICKET} ORPHAN\n"
+        "# receipts across drift/dod_receipts/**: post-HARDENING_CUTOFF receipts\n"
+        "# that carry no contract_entry_sha256 AND whose evidence_item_id is not a\n"
+        "# declared dod_evidence item in their ticket contract.\n"
+        "#\n"
+        "# WHY A BASELINE AND NOT A CUTOFF DATE: run_timestamp is producer-written,\n"
+        "# and the newest orphans in this corpus were minted the same day the rule\n"
+        "# landed, so no date separates 'legacy' from 'live'. An enumerated path\n"
+        "# list does, and it names the debt instead of hiding it behind a\n"
+        "# comparison.\n"
+        "#\n"
+        "# WHY NOT A BACK-FILL MIGRATION: back-filling contract_entry_sha256 into\n"
+        "# these receipts would REWRITE merged receipt files, which the OCC\n"
+        "# Append-Only Gate rejects as receipt_file_mutated. Repair is append-only:\n"
+        "# declare the item in contracts/<ticket>.yaml and mint a NET-NEW receipt\n"
+        "# (or supersession) bound per entry, then shrink this file in the same PR.\n"
+        "#\n"
+        "# RATCHET DISCIPLINE: this list may only SHRINK. A newly minted orphan is a\n"
+        "# hard failure — node_occ_companion_compute refuses to mint one as of\n"
+        f"# {ORPHAN_TICKET}, so a new entry here means a producer regressed.\n"
+        "#\n"
+        "# Regenerate (repair PRs only):\n"
+        "#   uv run python scripts/validation/check_receipt_hardening.py \\\n"
+        "#     --write-orphan-baseline\n"
+        "violations:\n"
+    )
+    body = "".join(f"  - {entry}\n" for entry in entries)
+    open_block = (
+        "open_repairs:\n" + "".join(f"  - {entry}\n" for entry in open_repairs)
+        if open_repairs
+        else "open_repairs: []\n"
+    )
+    baseline_path.parent.mkdir(parents=True, exist_ok=True)
+    baseline_path.write_text(header + body + _ORPHAN_OPEN_REPAIRS_HEADER + open_block)
+    print(
+        f"Wrote {len(entries)} suppressed orphan entries and preserved "
+        f"{len(open_repairs)} open repair(s) to {baseline_path}."
+    )
+    return 0
+
+
+def write_supersession_baseline(
+    receipts_root: Path, contracts_dir: Path, baseline_path: Path
+) -> int:
+    """Regenerate the frozen baseline (repair PRs only; never to pass a new file)."""
+    findings = scan_supersession_corpus(receipts_root, contracts_dir)
+    entries = _baseline_entries(findings)
+    header = (
+        "---\n"
+        "# SPDX-FileCopyrightText: 2025 OmniNode.ai Inc.\n"
+        "# SPDX-License-Identifier: MIT\n"
+        "#\n"
+        f"# Frozen, shrink-only baseline of pre-existing {SUPERSESSION_TICKET}\n"
+        "# supersession-binding violations across drift/dod_receipts/**, as of the\n"
+        f"# {SUPERSESSION_TICKET} landing commit.\n"
+        "#\n"
+        "# Each entry is `<supersession path>::<rules>` where the rules are:\n"
+        "#   S1  distinctness  — byte-identical replacement.check_value shared with\n"
+        "#                       another item's supersession minted in the same cohort\n"  # noqa: E501
+        "#   S2  family binding — replacement.check_value references nothing the\n"
+        "#                       superseded item's own contract entry declares\n"
+        "#\n"
+        "# RATCHET DISCIPLINE: this list may only SHRINK. Do NOT add entries — a new\n"
+        "# wrong-item rebind is a hard failure of\n"
+        "# scripts/validation/check_receipt_hardening.py, full stop. Remove an entry\n"
+        "# only when the merged supersession has been repaired by an APPENDED sibling\n"
+        "# carrying `corrects: <that path>` (merged receipts are never rewritten);\n"
+        "# the gate then stops counting it and corpus mode fails until this file is\n"
+        "# shrunk to match. Both directions are asserted, so partial removal and\n"
+        "# padding each hard-fail\n"
+        "# tests/unit/scripts/test_supersession_binding_gate.py.\n"
+        "#\n"
+        "# Regenerate (repair PRs only):\n"
+        "#   uv run python scripts/validation/check_receipt_hardening.py \\\n"
+        "#     --write-supersession-baseline\n"
+        "violations:\n"
+    )
+    body = "".join(f"  - {entry}\n" for entry in entries)
+    baseline_path.parent.mkdir(parents=True, exist_ok=True)
+    baseline_path.write_text(header + body)
+    print(f"Wrote {len(entries)} baseline entries to {baseline_path}.")
+    return 0
+
+
+def _extract_strict_gate_jobs(gate_module_path: Path) -> tuple[str, ...] | None:
+    """Statically extract ``STRICT_GATE_JOBS`` from ci_summary_gate.py.
+
+    AST-parsed (not imported) so this never executes the target file and so a
+    test can point it at an isolated mutated copy. Returns ``None`` if the
+    file is missing/unparseable or the tuple assignment cannot be found.
+    """
+    if not gate_module_path.is_file():
+        return None
+    try:
+        tree = ast.parse(gate_module_path.read_text(encoding="utf-8"))
+    except SyntaxError:
+        return None
+    for node in ast.walk(tree):
+        name: str | None
+        if isinstance(node, ast.AnnAssign) and isinstance(node.target, ast.Name):
+            name = node.target.id
+            value_node = node.value
+        elif isinstance(node, ast.Assign):
+            names = [t.id for t in node.targets if isinstance(t, ast.Name)]
+            name = names[0] if names else None
+            value_node = node.value
+        else:
+            continue
+        if name != "STRICT_GATE_JOBS" or value_node is None:
+            continue
+        try:
+            value = ast.literal_eval(value_node)
+        except (ValueError, TypeError):
+            return None
+        if isinstance(value, tuple) and all(isinstance(v, str) for v in value):
+            return value
+    return None
+
+
+def check_supersession_wiring(
+    ci_yaml_path: Path, gate_module_path: Path | None = None
+) -> list[str]:
+    """Assert the corpus ratchet job exists, is unconditional, and gates CI Summary.
+
+    ``gate_module_path`` defaults to ``<repo_root>/scripts/ci/ci_summary_gate.py``
+    (repo root derived from ``ci_yaml_path``'s ``.github/workflows/`` ancestry);
+    tests override it to point at an isolated mutated copy.
+
+    Detection that is not a merge gate gets ignored (root CLAUDE.md rule 5),
+    and a gate whose two halves can be deleted in one edit is not a gate.
+    This runs both as a pre-commit hook scoped to ci.yml and as a step inside
+    the job itself, so the wiring is re-asserted on every PR rather than only
+    on PRs that happen to touch the workflow.
+    """
+    job_id = "supersession-binding-ratchet"
+    summary_id = "ci-summary"
+    try:
+        loaded = yaml.safe_load(ci_yaml_path.read_text())
+    except (OSError, yaml.YAMLError) as exc:
+        return [f"unreadable {ci_yaml_path}: {exc}"]
+    jobs = (loaded or {}).get("jobs")
+    if not isinstance(jobs, dict):
+        return [f"{ci_yaml_path} declares no `jobs:` mapping"]
+
+    job = jobs.get(job_id)
+    if not isinstance(job, dict):
+        return [
+            f"job `{job_id}` is absent from {ci_yaml_path.name}. It is the only "
+            "required-path surface that scans every supersession in "
+            "drift/dod_receipts/**; removing it re-opens the wrong-item rebind "
+            f"channel ({SUPERSESSION_TICKET})."
+        ]
+
+    failures: list[str] = []
+    if "needs" in job:
+        failures.append(
+            f"job `{job_id}` declares `needs:` ({job['needs']!r}). It must be "
+            "unconditional — a needs-chain lets an upstream skip silently skip "
+            "the ratchet."
+        )
+    if "if" in job:
+        failures.append(
+            f"job `{job_id}` declares `if:` ({job['if']!r}). It must be "
+            "unconditional — a skip here means something is wrong, not that the "
+            "gate legitimately opted out."
+        )
+
+    steps = job.get("steps")
+    run_blob = "\n".join(
+        str(step.get("run", ""))
+        for step in (steps if isinstance(steps, list) else [])
+        if isinstance(step, dict)
+    )
+    if "--supersession-corpus" not in run_blob:
+        failures.append(
+            f"job `{job_id}` does not run check_receipt_hardening.py "
+            "--supersession-corpus. The job name is not the gate; executing the "
+            "corpus ratchet is."
+        )
+    if "test_supersession_binding_gate.py" not in run_blob:
+        failures.append(
+            f"job `{job_id}` does not run "
+            "tests/unit/scripts/test_supersession_binding_gate.py, which holds "
+            "the RED/GREEN controls against the live OCC#5534 defect shape."
+        )
+    if "--check-supersession-wiring" not in run_blob:
+        failures.append(
+            f"job `{job_id}` does not re-run --check-supersession-wiring. The "
+            "job must re-assert its own wiring on every PR, not only on PRs that "
+            "edit ci.yml."
+        )
+
+    summary = jobs.get(summary_id)
+    if not isinstance(summary, dict):
+        failures.append(
+            f"job `{summary_id}` is absent — `CI Summary` is the required context "
+            "on OCC dev; without it nothing is enforced."
+        )
+        return failures
+
+    resolved_gate_path = gate_module_path or (
+        ci_yaml_path.resolve().parents[2] / "scripts" / "ci" / "ci_summary_gate.py"
+    )
+    return failures + _check_supersession_summary_registration(
+        job, job_id, summary, summary_id, resolved_gate_path
+    )
+
+
+def check_orphan_corpus_wiring(
+    ci_yaml_path: Path, gate_module_path: Path | None = None
+) -> list[str]:
+    """Assert the orphan corpus ratchet job exists, is unconditional, gates CI Summary.
+
+    The sibling of :func:`check_supersession_wiring`, and deliberately the same
+    shape — both anchor a whole-corpus ratchet whose two halves (the ci.yml job
+    and its STRICT_GATE_JOBS registration) can otherwise be deleted in one edit.
+
+    WHY THIS JOB EXISTS NOW AND NOT AT ``ORPHAN_TICKET``'s LANDING. The module
+    docstring records the measured reason the two-way ``--orphan-corpus`` check
+    was NOT wired on the day the rule landed: the producer that minted orphans
+    was still deployed, so ``dev`` gained roughly one new orphan per merged
+    second-consumer companion (439 -> 441 -> 442 in seventy minutes), and a
+    required two-way job under those conditions is red on every PR in the repo
+    within minutes — which teaches people to pad the baseline, the one thing the
+    baseline's own header forbids. The stated condition for wiring it was a
+    recount after the emitter fix had been deployed for a window of real
+    companion traffic, with the count unchanged.
+
+    That condition is met and measured, not asserted: between the landing commit
+    ``13b8c92192a74d45423971a7ef13d1a4c64559be`` and ``9ec59e4482``, 27 OCC PRs
+    merged and 72 net-new ``command.yaml`` receipts were added to
+    ``drift/dod_receipts/**``, and ``--orphan-corpus`` still reports exactly 444
+    orphans against a 444-entry baseline (441 suppressed + 3 open repairs). 72
+    new receipts, zero new orphans — the mint rate is zero, so the two-way check
+    is stable enough to be required.
+
+    The job lives in ``ci.yml`` rather than a standalone workflow ON PURPOSE:
+    ``CI Summary`` is the required context on OCC ``dev``, and a job in the same
+    workflow file inherits that context's trigger set exactly. A separate
+    workflow file would get its own ``on:`` block, which is how a required check
+    drifts into being skipped on an event the umbrella still fires for.
+    """
+    return _check_corpus_ratchet_wiring(
+        ci_yaml_path=ci_yaml_path,
+        job_id="orphan-corpus-ratchet",
+        absence_message=(
+            "job `orphan-corpus-ratchet` is absent from {ci_name}. It is the only "
+            "required-path surface asserting two-way set equality between the "
+            "orphan corpus and its frozen baseline; removing it lets a newly "
+            f"minted orphan land unobserved ({ORPHAN_TICKET})."
+        ),
+        required_run_fragments=(
+            (
+                "--orphan-corpus",
+                "does not run check_receipt_hardening.py --orphan-corpus. The "
+                "job name is not the gate; executing the corpus ratchet is.",
+            ),
+            (
+                "test_orphan_receipt_binding_gate_omn_13888.py",
+                "does not run tests/unit/scripts/"
+                "test_orphan_receipt_binding_gate_omn_13888.py, which holds the "
+                "RED/GREEN controls for the orphan detector and this ratchet.",
+            ),
+            (
+                "--check-orphan-corpus-wiring",
+                "does not re-run --check-orphan-corpus-wiring. The job must "
+                "re-assert its own wiring on every PR, not only on PRs that "
+                "edit ci.yml.",
+            ),
+        ),
+        gate_module_path=gate_module_path,
+    )
+
+
+def _check_corpus_ratchet_wiring(
+    *,
+    ci_yaml_path: Path,
+    job_id: str,
+    absence_message: str,
+    required_run_fragments: tuple[tuple[str, str], ...],
+    gate_module_path: Path | None,
+) -> list[str]:
+    """Shared shape check for a whole-corpus ratchet job and its CI Summary hold.
+
+    Factored out of :func:`check_supersession_wiring` when the second such
+    ratchet was wired, so the two anchors cannot drift apart: an assertion added
+    for one is an assertion added for both.
+    """
+    summary_id = "ci-summary"
+    try:
+        loaded = yaml.safe_load(ci_yaml_path.read_text())
+    except (OSError, yaml.YAMLError) as exc:
+        return [f"unreadable {ci_yaml_path}: {exc}"]
+    jobs = (loaded or {}).get("jobs")
+    if not isinstance(jobs, dict):
+        return [f"{ci_yaml_path} declares no `jobs:` mapping"]
+
+    job = jobs.get(job_id)
+    if not isinstance(job, dict):
+        return [absence_message.format(ci_name=ci_yaml_path.name)]
+
+    failures: list[str] = []
+    if "needs" in job:
+        failures.append(
+            f"job `{job_id}` declares `needs:` ({job['needs']!r}). It must be "
+            "unconditional — a needs-chain lets an upstream skip silently skip "
+            "the ratchet."
+        )
+    if "if" in job:
+        failures.append(
+            f"job `{job_id}` declares `if:` ({job['if']!r}). It must be "
+            "unconditional — a skip here means something is wrong, not that the "
+            "gate legitimately opted out."
+        )
+
+    steps = job.get("steps")
+    run_blob = "\n".join(
+        str(step.get("run", ""))
+        for step in (steps if isinstance(steps, list) else [])
+        if isinstance(step, dict)
+    )
+    for fragment, complaint in required_run_fragments:
+        if fragment not in run_blob:
+            failures.append(f"job `{job_id}` {complaint}")
+
+    summary = jobs.get(summary_id)
+    if not isinstance(summary, dict):
+        failures.append(
+            f"job `{summary_id}` is absent — `CI Summary` is the required context "
+            "on OCC dev; without it nothing is enforced."
+        )
+        return failures
+
+    resolved_gate_path = gate_module_path or (
+        ci_yaml_path.resolve().parents[2] / "scripts" / "ci" / "ci_summary_gate.py"
+    )
+    return failures + _check_supersession_summary_registration(
+        job, job_id, summary, summary_id, resolved_gate_path
+    )
+
+
+def check_commit_sha_wiring(precommit_yaml: Path, ci_yaml: Path) -> list[str]:
+    """Assert the bounded resolver cannot silently lose its one-run wiring."""
+
+    try:
+        precommit_text = precommit_yaml.read_text()
+        ci_text = ci_yaml.read_text()
+    except OSError as exc:
+        return [f"could not read commit-SHA wiring inputs: {exc}"]
+
+    failures: list[str] = []
+    for required in (
+        "id: check-receipt-hardening",
+        "check_receipt_hardening.py --staged",
+        "pass_filenames: false",
+        "require_serial: true",
+    ):
+        if required not in precommit_text:
+            failures.append(
+                f"{precommit_yaml} is missing receipt-hardening wiring: {required}"
+            )
+    for required in (
+        "fetch-depth: 0",
+        "git diff --name-only -z --diff-filter=ACMRT",
+        '--paths-file0 "$changed_paths_file"',
+        "--commit-sha-rest-budget",
+        "git diff --name-only -z --diff-filter=A",
+        '--probe-capture-added-file0 "$added_paths_file"',
+        '--head-ref "$HEAD_REF"',
+    ):
+        if required not in ci_text:
+            failures.append(
+                f"{ci_yaml} is missing bounded changed-mode wiring: {required}"
+            )
+    if "corpus_receipts" in ci_text or "expected violations" in ci_text:
+        failures.append(
+            f"{ci_yaml} retains prohibited full-corpus hardening self-check/masking"
+        )
+    return failures
+
+
+def _check_supersession_summary_registration(
+    job: dict[str, object],
+    job_id: str,
+    summary: dict[str, object],
+    summary_id: str,
+    gate_module_path: Path,
+) -> list[str]:
+    """ci-summary must be the OMN-15768 no-needs poller AND assert the
+    supersession ratchet STRICTLY via ci_summary_gate.py's STRICT_GATE_JOBS.
+
+    OMN-15768 replaced the needs-gated aggregator this anchor used to grep
+    for with a no-needs poller that checks membership in a Python tuple at
+    runtime instead. A `needs:` on ci-summary is now a REGRESSION to the
+    needs-graph-omission bug class (OCC#6346), not a wiring requirement.
+    """
+    failures: list[str] = []
+    if "needs" in summary:
+        failures.append(
+            f"job `{summary_id}` declares `needs:` ({summary['needs']!r}). "
+            "OMN-15768 replaced the needs-gated aggregator with a no-needs "
+            "poller; a `needs:` here is a regression to the needs-graph-"
+            "omission bug class (OCC#6346)."
+        )
+    summary_steps = summary.get("steps")
+    summary_blob = "\n".join(
+        str(step.get("run", ""))
+        for step in (summary_steps if isinstance(summary_steps, list) else [])
+        if isinstance(step, dict)
+    )
+    if "ci_summary_gate.py" not in summary_blob:
+        failures.append(
+            f"job `{summary_id}` does not invoke scripts/ci/ci_summary_gate.py "
+            "-- it no longer looks like the OMN-15768 poller."
+        )
+
+    display_name = job.get("name", job_id)
+    strict_gate_jobs = _extract_strict_gate_jobs(gate_module_path)
+    if strict_gate_jobs is None:
+        failures.append(
+            f"could not read STRICT_GATE_JOBS from {gate_module_path} to "
+            f"verify `{display_name}` is registered."
+        )
+        return failures
+
+    if display_name not in strict_gate_jobs:
+        failures.append(
+            f"`{display_name}` (ci.yml job `{job_id}`) is not in "
+            "scripts/ci/ci_summary_gate.py's STRICT_GATE_JOBS. `needs:` alone "
+            "treats `skipped` as non-blocking — the gate must fail closed on "
+            "any non-success, which registration in STRICT_GATE_JOBS is what "
+            "now provides."
+        )
+    return failures
+
+
+def check_receipt_file(  # noqa: PLR0913
+    receipt_path: Path,
+    contracts_dir: Path,
+    supersession_baseline: frozenset[str] | None = None,
+    commit_sha_resolver: CommitShaResolver | None = None,
+    infrastructure_diagnostics: list[str] | None = None,
+    orphan_baseline: frozenset[str] | None = None,
+    derived_verifier_baseline: frozenset[str] | None = None,
+) -> list[str]:
+    """Return violation strings for one receipt file (empty = clean).
+
+    ``orphan_baseline`` suppresses the ORPHAN_BINDING rule for the frozen,
+    shrink-only set of pre-existing orphan receipts (OMN-13888) — see
+    ``load_orphan_baseline`` and the module docstring.
+    ``derived_verifier_baseline`` does the same for DERIVED_VERIFIER
+    (OMN-18778). Both are keyed on path alone, and every other rule stays
+    enforced on a baselined file.
+    """
+    return _drop_baselined_rule(
+        receipt_path,
+        _drop_baselined_orphans(
+            receipt_path,
+            _check_receipt_file_unbaselined(
+                receipt_path,
+                contracts_dir,
+                supersession_baseline,
+                commit_sha_resolver,
+                infrastructure_diagnostics,
+            ),
+            orphan_baseline,
+        ),
+        derived_verifier_baseline,
+        DERIVED_VERIFIER_RULE,
+    )
+
+
+def _drop_baselined_rule(
+    receipt_path: Path,
+    violations: list[str],
+    baseline: frozenset[str] | None,
+    rule_tag: str,
+) -> list[str]:
+    """Filter ``rule_tag`` fragments for a path in ``baseline``.
+
+    Suppression is keyed on the receipt PATH alone — a receipt names exactly
+    one ``evidence_item_id``, so there is no second dimension to key on.
+    """
+    if not baseline or receipt_path.as_posix() not in baseline:
+        return violations
+    return [v for v in violations if rule_tag not in v]
+
+
+def _drop_baselined_orphans(
+    receipt_path: Path,
+    violations: list[str],
+    orphan_baseline: frozenset[str] | None,
+) -> list[str]:
+    """Filter ORPHAN_BINDING fragments for a baselined receipt path.
+
+    Suppression is keyed on the receipt PATH alone: a receipt names exactly one
+    ``evidence_item_id``, so there is no second dimension to key on, and every
+    other rule stays enforced on a baselined file.
+    """
+    if not orphan_baseline or receipt_path.as_posix() not in orphan_baseline:
+        return violations
+    return [v for v in violations if ORPHAN_RULE not in v]
+
+
+def _check_receipt_file_unbaselined(  # noqa: C901
+    receipt_path: Path,
+    contracts_dir: Path,
+    supersession_baseline: frozenset[str] | None = None,
+    commit_sha_resolver: CommitShaResolver | None = None,
+    infrastructure_diagnostics: list[str] | None = None,
+) -> list[str]:
+    """``check_receipt_file`` before ORPHAN_BINDING baseline suppression."""
+    resolver = commit_sha_resolver or CommitShaResolver()
+    infrastructure = (
+        infrastructure_diagnostics if infrastructure_diagnostics is not None else []
+    )
+    if ".supersede." in receipt_path.name:
+        violations = check_supersession_file(
+            receipt_path,
+            contracts_dir,
+            supersession_baseline if supersession_baseline is not None else frozenset(),
+        )
+        chain_errors = _chained_supersession_errors(receipt_path)
+        if chain_errors:
+            violations.extend(chain_errors)
+            return violations
+        raw = _load_mapping(receipt_path)
+        supersedes = raw.get("supersedes") if raw is not None else None
+        if isinstance(supersedes, str):
+            target = receipt_path.parent / Path(supersedes).name
+            if _active_supersession_candidate(target) == receipt_path:
+                _, replacement_errors = _valid_supersession_replacement(
+                    target, contracts_dir, resolver, infrastructure
+                )
+                violations.extend(replacement_errors)
+        return violations
+
+    try:
+        raw = yaml.safe_load(receipt_path.read_text())
+    except (OSError, yaml.YAMLError) as exc:
+        return [f"{receipt_path}: unreadable receipt YAML: {exc}"]
+    if not isinstance(raw, dict):
+        return [f"{receipt_path}: receipt YAML is not a mapping"]
+
+    # Legacy exemption decided on the raw timestamp BEFORE model validation,
+    # so pre-cutoff receipts with historical schema quirks never block.
+    # No timestamp at all → exempt: such a file cannot parse as
+    # ModelDodReceipt and the receipt gate already rejects it as NONPASS.
+    run_ts = _extract_receipt_timestamp(raw)
+    if run_ts is None or run_ts < HARDENING_CUTOFF:
+        return []
+
+    superseded, supersession_errors = _valid_supersession_replacement(
+        receipt_path, contracts_dir, resolver, infrastructure
+    )
+    if superseded:
+        return []
+    if supersession_errors:
+        return supersession_errors
+
+    receipt, error = _validate_receipt_model(receipt_path, raw)
+    if error is not None:
+        raw_sha = raw.get("commit_sha")
+        if (
+            run_ts >= OMN_15461_CUTOFF
+            and isinstance(raw_sha, str)
+            and not is_full_commit_sha(raw_sha)
+        ):
+            return [
+                f"{receipt_path}: [COMMIT_SHA_FORMAT] commit_sha {raw_sha!r} "
+                "must be a full 40-character hexadecimal commit SHA."
+            ]
+        return [error]
+    if receipt is None:
+        return [f"{receipt_path}: receipt validation returned no model"]
+
+    return _validate_hardened_receipt(
+        receipt_path, receipt, contracts_dir, resolver, infrastructure
+    )
+
+
+def _check_staged_file(  # noqa: PLR0913
+    path: Path,
+    contracts_dir: Path,
+    supersession_baseline: frozenset[str],
+    contract_abs_path_baseline: frozenset[str],
+    commit_sha_resolver: CommitShaResolver,
+    infrastructure_diagnostics: list[str],
+    orphan_baseline: frozenset[str] = frozenset(),
+    derived_verifier_baseline: frozenset[str] = frozenset(),
+) -> list[str]:
+    """Route one staged file to the contract- or receipt-shaped check (OMN-15710).
+
+    Contract files (``contracts/<TICKET>.yaml``) carry
+    ``dod_evidence[*].checks[*].check_value`` directly and get the
+    contract-shaped ABS_PATH scan instead of ``ModelDodReceipt`` parsing.
+    """
+    if path.as_posix().startswith(f"{contracts_dir.as_posix()}/"):
+        return check_contract_file(path, contract_abs_path_baseline)
+    return check_receipt_file(
+        path,
+        contracts_dir,
+        supersession_baseline,
+        commit_sha_resolver,
+        infrastructure_diagnostics,
+        orphan_baseline,
+        derived_verifier_baseline,
+    )
+
+
+def _read_paths_file0(path: Path) -> list[Path]:
+    """Read a NUL-delimited path file without interpreting embedded newlines."""
+
+    payload = path.read_bytes()
+    return [Path(os.fsdecode(item)) for item in payload.split(b"\0") if item]
+
+
+def _discover_staged_paths() -> tuple[list[Path], str | None]:
+    r"""Discover relevant staged paths in one NUL-safe Git invocation.
+
+    The pathspecs are suffix-scoped to ``*.yaml`` / ``*.yml`` on purpose, and
+    match this checker's own pre-commit ``files:`` pattern
+    (``^(drift/dod_receipts/.*\.yaml|contracts/.*\.yaml)$``) exactly. Before
+    OMN-16615 the pathspecs were the bare directories, so discovery was WIDER
+    than the declared scope: any non-YAML artifact staged under either tree —
+    a ``.md`` evidence summary sitting beside its ``command.yaml``, say — was
+    routed into the receipt parser and hard-failed the gate with "unreadable
+    receipt YAML", even though the hook that invokes this checker would never
+    have selected that file. A receipt is always ``<check_type>.yaml`` and a
+    contract is always ``<ticket>.yaml``; nothing else in these trees is one.
+    """
+
+    try:
+        result = subprocess.run(
+            [  # noqa: S607
+                "git",
+                "diff",
+                "--cached",
+                "--name-only",
+                "-z",
+                "--diff-filter=ACMRT",
+                "--",
+                "drift/dod_receipts/**/*.yaml",
+                "drift/dod_receipts/**/*.yml",
+                "contracts/*.yaml",
+                "contracts/*.yml",
+            ],
+            capture_output=True,
+            check=False,
+        )
+    except OSError as exc:
+        return [], f"staged-path discovery could not start: {exc}"
+    if result.returncode != 0:
+        return [], f"staged-path discovery exited {result.returncode}"
+    return [
+        Path(os.fsdecode(item)) for item in result.stdout.split(b"\0") if item
+    ], None
+
+
+def _effective_check_path(path: Path) -> Path:
+    """Deduplicate base/supersession input to its active validation target."""
+
+    if ".supersede." in path.name:
+        raw = _load_mapping(path)
+        supersedes = raw.get("supersedes") if raw is not None else None
+        if isinstance(supersedes, str):
+            target = path.parent / Path(supersedes).name
+            active = _active_supersession_candidate(target)
+            if active == path:
+                return active
+        # A lower supersession remains an explicit target so its S1/S2 rules
+        # are still checked; it simply cannot validate its replacement.
+        return path
+    return _active_supersession_candidate(path) or path
+
+
+def _temp_inventory_path(value: str) -> Path:
+    """Permit operator inventory output only below the platform temp root."""
+
+    output = Path(value).resolve()
+    temp_root = Path(tempfile.gettempdir()).resolve()
+    try:
+        output.relative_to(temp_root)
+    except ValueError as exc:
+        message = (
+            "--commit-sha-inventory must point below the system temporary directory"
+        )
+        raise ValueError(message) from exc
+    return output
+
+
+def _inventory_source_commit() -> str | None:
+    """Return the working source commit without making any network request."""
+
+    try:
+        result = subprocess.run(
+            ["git", "rev-parse", "HEAD"],  # noqa: S607
+            capture_output=True,
+            text=True,
+            check=False,
+            timeout=15,
+        )
+    except (OSError, subprocess.TimeoutExpired):
+        return None
+    return result.stdout.strip() if result.returncode == 0 else None
+
+
+def _inventory_receipt_models(paths: list[Path]) -> list[tuple[Path, ModelDodReceipt]]:
+    """Extract post-cutoff base and replacement receipt claims from paths."""
+
+    models: list[tuple[Path, ModelDodReceipt]] = []
+    for path in paths:
+        try:
+            raw = yaml.safe_load(path.read_text())
+        except (OSError, yaml.YAMLError):
+            continue
+        if not isinstance(raw, dict):
+            continue
+        candidate = raw.get("replacement") if ".supersede." in path.name else raw
+        if not isinstance(candidate, dict):
+            continue
+        try:
+            receipt = ModelDodReceipt.model_validate(candidate)
+        except ValidationError:
+            continue
+        if _after_omn_15461_cutoff(receipt.run_timestamp):
+            models.append((path, receipt))
+    return models
+
+
+def _write_commit_sha_inventory(
+    output_path: Path,
+    paths: list[Path],
+    resolver: CommitShaResolver,
+) -> int:
+    """Write a bounded, resumable inventory outside the repository tree."""
+
+    claims: dict[tuple[str, str], dict[str, object]] = {}
+    for path, receipt in _inventory_receipt_models(paths):
+        for repo in _commit_sha_repositories(receipt):
+            key = (repo, receipt.commit_sha)
+            claim = claims.setdefault(
+                key,
+                {"repo": repo, "sha": receipt.commit_sha, "paths": []},
+            )
+            claim_paths = claim["paths"]
+            if isinstance(claim_paths, list):
+                claim_paths.append(path.as_posix())
+
+    inventory_claims: list[dict[str, object]] = []
+    incomplete = False
+    for repo, sha in sorted(claims):
+        local = resolver.local_resolution(sha)
+        resolved = resolver.resolve(sha, (repo,))
+        pending_remote = resolved.outcome is EnumCommitShaOutcome.UNAVAILABLE
+        incomplete = incomplete or pending_remote
+        claim = claims[(repo, sha)]
+        claim["local_outcome"] = local.outcome.value
+        claim["remote_outcome"] = (
+            "NOT_ATTEMPTED"
+            if pending_remote and not resolved.attempted_remote
+            else resolved.outcome.value
+        )
+        claim["pending_remote"] = pending_remote
+        claim["reset_at"] = resolved.reset_at
+        claim["retry_after"] = resolved.retry_after
+        inventory_claims.append(claim)
+
+    payload = {
+        "source_commit": _inventory_source_commit(),
+        "rest_budget": resolver.rest_budget,
+        "remote_calls": resolver.remote_calls,
+        "complete": not incomplete,
+        "claims": inventory_claims,
+    }
+    output_path.write_text(json.dumps(payload, indent=2, sort_keys=True) + "\n")
+    return 2 if incomplete else 0
+
+
+# ---------------------------------------------------------------------------
+# OMN-20370 rule PROBE_CAPTURE — a hand-authored receipt's probe_stdout comes
+# from running its probe_command, never from typing.
+# ---------------------------------------------------------------------------
+#
+# onex_change_control#12323 merged a PASS receipt whose probe_stdout named a
+# test file absent from the PR at the commit it pinned, and #12266 recorded
+# ``grep -c`` printing 1 for a pinned-ref read that prints 4. On the
+# hand-companion path probe_stdout was free text, and nothing here could tell
+# captured output from composed text.
+#
+# ``--capture-probe`` is the producing side: it runs the receipt's
+# probe_command with ``/bin/bash -c`` and writes probe_stdout, exit_code,
+# run_timestamp and duration_ms from that run, plus a capture record in
+# ``artifact_sha256``: the sha256 of the recorded stdout and the sha256 of the
+# exact argv. ``--probe-capture-added-file0`` is the gate: CI hands it the
+# receipts a PR ADDS, and on any branch that is not the autobind producer's
+# (``auto/``) each one must carry a capture record matching its own fields.
+#
+# Limit, stated plainly: the record is recomputable from the receipt, so the
+# gate proves the receipt went through the capture path or was forged on
+# purpose. It removes the careless path (a summary typed in place of output);
+# it does not prove provenance. Re-executing the probe at the gate is the next
+# step and is not attempted here.
+
+PROBE_CAPTURE_TICKET = "OMN-20370"
+PROBE_CAPTURE_RULE = "[PROBE_CAPTURE]"
+PROBE_CAPTURE_VERIFIER = "occ-probe-capture-v1"
+PROBE_CAPTURE_EXEMPT_BRANCH_PREFIX = "auto/"
+_ANSI_CSI_RE = re.compile(r"\x1b\[[0-9;?]*[ -/]*[@-~]")
+_DEFAULT_PROBE_TIMEOUT_S = 1800
+_PROBE_SHELL = "/bin/bash"
+
+
+class ProbeCaptureError(RuntimeError):
+    """The probe could not be captured into an honest receipt."""
+
+
+class _CaptureDumper(yaml.SafeDumper):
+    """Writes multi-line strings as literal block scalars.
+
+    A quoted multi-line scalar is what yamlfmt rewrites with its internal
+    line marker (OMN-15479); a literal block survives it unchanged.
+    """
+
+
+def _represent_capture_str(dumper: yaml.SafeDumper, data: str) -> yaml.Node:
+    style = "|" if "\n" in data else None
+    return dumper.represent_scalar("tag:yaml.org,2002:str", data, style=style)
+
+
+_CaptureDumper.add_representer(str, _represent_capture_str)
+
+
+def normalize_probe_stdout(text: str) -> str:
+    """Strip ANSI CSI codes, CRLF, per-line trailing blanks and edge newlines.
+
+    yamlfmt may reflow a block scalar's trailing whitespace; the digest is
+    taken over this normal form so formatting never moves it, while any change
+    to the content does. Pure and idempotent.
+    """
+    lines = _ANSI_CSI_RE.sub("", text).replace("\r\n", "\n").split("\n")
+    return "\n".join(line.rstrip() for line in lines).strip("\n")
+
+
+def _sha256_text(text: str) -> str:
+    return "sha256:" + hashlib.sha256(text.encode("utf-8")).hexdigest()
+
+
+def _red_green_proof(probe_stdout: str) -> dict[str, object] | None:
+    """The structured red/green proof object, when probe_stdout is one."""
+    try:
+        parsed = json.loads(probe_stdout)
+    except (TypeError, ValueError):
+        return None
+    if isinstance(parsed, dict) and {"evidence_ref", "red_ref"} <= parsed.keys():
+        return parsed
+    return None
+
+
+def probe_capture_argvs(probe_command: str, probe_stdout: str) -> list[list[str]]:
+    """The exact argv(s) the capture path ran for this receipt.
+
+    One ``/bin/bash -c`` leg, or two for a red/green proof (the red leg is the
+    probe with its evidence ref replaced by the red ref). Pure function.
+    """
+    proof = _red_green_proof(probe_stdout)
+    if proof is None:
+        return [[_PROBE_SHELL, "-c", probe_command]]
+    red_command = probe_command.replace(
+        str(proof["evidence_ref"]), str(proof["red_ref"])
+    )
+    return [[_PROBE_SHELL, "-c", probe_command], [_PROBE_SHELL, "-c", red_command]]
+
+
+def probe_capture_record(probe_command: str, probe_stdout: str) -> list[str]:
+    """``[sha256(stdout), sha256(argv)]`` for the receipt's own fields."""
+    argvs = probe_capture_argvs(probe_command, probe_stdout)
+    return [
+        _sha256_text(normalize_probe_stdout(probe_stdout)),
+        _sha256_text(json.dumps(argvs, separators=(",", ":"))),
+    ]
+
+
+def probe_capture_violations(receipt: object, label: str) -> list[str]:
+    """PROBE_CAPTURE fragments for one receipt mapping, empty when captured."""
+    if not isinstance(receipt, dict):
+        return [f"{label}: {PROBE_CAPTURE_RULE} receipt is not a mapping"]
+    command = receipt.get("probe_command")
+    stdout = receipt.get("probe_stdout")
+    if not isinstance(command, str) or not isinstance(stdout, str):
+        return [
+            f"{label}: {PROBE_CAPTURE_RULE} probe_command and probe_stdout "
+            "must both be strings"
+        ]
+    problems: list[str] = []
+    if receipt.get("verifier") != PROBE_CAPTURE_VERIFIER:
+        problems.append(f"verifier is not {PROBE_CAPTURE_VERIFIER!r}")
+    if list(receipt.get("artifact_sha256") or []) != probe_capture_record(
+        command, stdout
+    ):
+        problems.append(
+            "artifact_sha256 is not [sha256(probe_stdout), sha256(argv)] of "
+            "this receipt's own probe fields"
+        )
+    duration = receipt.get("duration_ms")
+    if not isinstance(duration, int) or isinstance(duration, bool) or duration < 0:
+        problems.append("duration_ms is missing")
+    if not isinstance(receipt.get("exit_code"), int):
+        problems.append("exit_code is missing")
+    if not problems:
+        return []
+    return [
+        f"{label}: {PROBE_CAPTURE_RULE} hand-authored receipt has no capture "
+        f"record ({'; '.join(problems)}). probe_stdout must be the output of "
+        "running probe_command, never typed or summarised "
+        f"({PROBE_CAPTURE_TICKET}). Fill it by running: uv run python "
+        "scripts/validation/check_receipt_hardening.py --capture-probe "
+        f"{label} --probe-cwd <checkout the probe runs in>"
+    ]
+
+
+def _capture_target(document: dict[str, object]) -> dict[str, object] | None:
+    """The receipt mapping inside a receipt or supersede document.
+
+    A tombstone supersession carries no replacement and records no run.
+    """
+    if "supersedes" in document:
+        replacement = document.get("replacement")
+        return replacement if isinstance(replacement, dict) else None
+    return document
+
+
+def _run_probe_leg(command: str, cwd: Path, timeout_s: int) -> tuple[str, int]:
+    """Run one probe leg as ``/bin/bash -c <command>``.
+
+    The command reaches bash through the environment and ``eval`` so the
+    argv handed to ``subprocess`` stays a literal; the shell semantics are
+    those of ``/bin/bash -c <command>``, which is the argv recorded.
+    """
+    completed = subprocess.run(
+        ["/bin/bash", "-c", 'eval "$OCC_PROBE_COMMAND"'],
+        env={**os.environ, "OCC_PROBE_COMMAND": command},
+        cwd=cwd,
+        capture_output=True,
+        timeout=timeout_s,
+        check=False,
+    )
+    return completed.stdout.decode("utf-8", errors="replace"), completed.returncode
+
+
+def capture_probe(
+    receipt_path: Path,
+    probe_cwd: Path,
+    *,
+    red_ref: str | None = None,
+    timeout_s: int = _DEFAULT_PROBE_TIMEOUT_S,
+) -> dict[str, object]:
+    """Run the receipt's probe_command and write its fields from that run.
+
+    Returns the receipt mapping written. Raises ``ProbeCaptureError`` when the
+    probe prints nothing (the schema refuses an empty stdout, and composing a
+    line in its place is the defect this exists to stop), or when a PASS
+    receipt's probe exits non-zero.
+    """
+    document = yaml.safe_load(receipt_path.read_text())
+    if not isinstance(document, dict):
+        msg = f"{receipt_path}: not a YAML mapping"
+        raise ProbeCaptureError(msg)
+    target = _capture_target(document)
+    if target is None:
+        msg = f"{receipt_path}: tombstone, no probe to run"
+        raise ProbeCaptureError(msg)
+    command = target.get("probe_command")
+    if not isinstance(command, str) or not command.strip():
+        msg = f"{receipt_path}: probe_command is empty"
+        raise ProbeCaptureError(msg)
+    started = datetime.now(UTC)
+    stdout, exit_code = _run_probe_leg(command, probe_cwd, timeout_s)
+    recorded = normalize_probe_stdout(stdout)
+    if red_ref is not None:
+        evidence_ref = str(target.get("commit_sha") or "")
+        if not evidence_ref or evidence_ref not in command:
+            msg = (
+                f"{receipt_path}: --red-ref needs probe_command to name the "
+                "receipt's commit_sha, which it replaces for the red leg"
+            )
+            raise ProbeCaptureError(msg)
+        _, red_exit = _run_probe_leg(
+            command.replace(evidence_ref, red_ref), probe_cwd, timeout_s
+        )
+        if target.get("status") == "PASS" and red_exit == 0:
+            msg = (
+                f"{receipt_path}: the red leg at {red_ref} also exited 0, so the "
+                "probe does not tell the change apart from its absence."
+            )
+            raise ProbeCaptureError(msg)
+        recorded = json.dumps(
+            {
+                "evidence_ref": evidence_ref,
+                "green_exit": exit_code,
+                "red_exit": red_exit,
+                "red_ref": red_ref,
+            },
+            sort_keys=True,
+            separators=(",", ":"),
+        )
+    duration_ms = int((datetime.now(UTC) - started).total_seconds() * 1000)
+    if not recorded:
+        msg = (
+            f"{receipt_path}: the probe printed nothing (exit {exit_code}). "
+            "Make the probe print what it asserts (drop grep -q, print the "
+            "value it compares); never write a line in its place."
+        )
+        raise ProbeCaptureError(msg)
+    if target.get("status") == "PASS" and exit_code != 0:
+        msg = (
+            f"{receipt_path}: the probe exited {exit_code}; a PASS receipt "
+            "needs exit 0. Record the run as FAIL, or fix what it checks."
+        )
+        raise ProbeCaptureError(msg)
+    target["probe_stdout"] = recorded
+    target["exit_code"] = exit_code
+    target["run_timestamp"] = (
+        started.replace(microsecond=0).isoformat().replace("+00:00", "Z")
+    )
+    target["duration_ms"] = duration_ms
+    target["verifier"] = PROBE_CAPTURE_VERIFIER
+    target["artifact_sha256"] = probe_capture_record(command, recorded)
+    receipt_path.write_text(
+        yaml.dump(
+            document,
+            Dumper=_CaptureDumper,
+            sort_keys=False,
+            allow_unicode=True,
+            width=100,
+        )
+    )
+    return target
+
+
+def run_probe_capture_gate(added_paths: list[Path], head_ref: str) -> list[str]:
+    """PROBE_CAPTURE violations for the receipts a PR adds."""
+    if head_ref.startswith(PROBE_CAPTURE_EXEMPT_BRANCH_PREFIX):
+        return []
+    violations: list[str] = []
+    for path in added_paths:
+        posix = path.as_posix()
+        if not posix.startswith(f"{RECEIPTS_ROOT.as_posix()}/"):
+            continue
+        if path.suffix not in (".yaml", ".yml") or not path.is_file():
+            continue
+        try:
+            document = yaml.safe_load(path.read_text())
+        except yaml.YAMLError as exc:
+            violations.append(f"{posix}: {PROBE_CAPTURE_RULE} unparseable: {exc}")
+            continue
+        if not isinstance(document, dict):
+            violations.append(f"{posix}: {PROBE_CAPTURE_RULE} not a mapping")
+            continue
+        target = _capture_target(document)
+        if target is None:
+            continue
+        violations.extend(probe_capture_violations(target, posix))
+    return violations
+
+
+def main(  # noqa: C901, PLR0912, PLR0915
+    argv: list[str] | None = None,
+) -> int:
+    parser = argparse.ArgumentParser(
+        description=(
+            "Receipt hardening gate: staged DoD receipts produced on/after "
+            f"{HARDENING_CUTOFF.date()} must carry a matching contract_sha256 "
+            "and a non-session-local verifier."
+        )
+    )
+    parser.add_argument(
+        "files", nargs="*", help="Receipt YAML paths (from pre-commit)."
+    )
+    parser.add_argument(
+        "--staged",
+        action="store_true",
+        help="Discover relevant staged paths once with git diff --cached -z.",
+    )
+    parser.add_argument(
+        "--paths-file0",
+        help="NUL-delimited changed-path file produced by CI.",
+    )
+    parser.add_argument(
+        "--commit-sha-rest-budget",
+        type=int,
+        default=64,
+        help="Maximum GitHub commit API calls for this invocation (default: 64).",
+    )
+    parser.add_argument(
+        "--commit-sha-inventory",
+        help=(
+            "Operator-only: write a bounded commit-SHA resolution inventory below "
+            "the system temporary directory."
+        ),
+    )
+    parser.add_argument(
+        "--contracts-dir",
+        default="contracts",
+        help="Directory containing OMN-XXXX.yaml ticket contracts.",
+    )
+    parser.add_argument(
+        "--receipts-root",
+        default=str(RECEIPTS_ROOT),
+        help="Root of the DoD receipt corpus (supersession corpus mode).",
+    )
+    parser.add_argument(
+        "--supersession-baseline",
+        default=str(SUPERSESSION_BASELINE_PATH),
+        help=(
+            f"Frozen shrink-only baseline of pre-existing {SUPERSESSION_TICKET} "
+            "supersession-binding violations."
+        ),
+    )
+    parser.add_argument(
+        "--supersession-corpus",
+        action="store_true",
+        help=(
+            "Scan every supersession in the corpus and assert set equality "
+            "against the frozen baseline in both directions."
+        ),
+    )
+    parser.add_argument(
+        "--write-supersession-baseline",
+        action="store_true",
+        help=(
+            "Regenerate the frozen baseline. Repair PRs only — never run this "
+            "to make a newly authored supersession pass."
+        ),
+    )
+    parser.add_argument(
+        "--check-supersession-wiring",
+        action="store_true",
+        help=(
+            "Anti-removal anchor: assert the corpus ratchet job exists, is "
+            "unconditional, and fails CI Summary closed."
+        ),
+    )
+    parser.add_argument(
+        "--check-commit-sha-wiring",
+        action="store_true",
+        help="Assert bounded commit-SHA hook and CI changed-mode wiring.",
+    )
+    parser.add_argument(
+        "--ci-yaml",
+        default=".github/workflows/ci.yml",
+        help="Workflow file inspected by --check-supersession-wiring.",
+    )
+    parser.add_argument(
+        "--precommit-yaml",
+        default=".pre-commit-config.yaml",
+        help="Pre-commit config inspected by --check-commit-sha-wiring.",
+    )
+    parser.add_argument(
+        "--derived-verifier-baseline",
+        default=str(DERIVED_VERIFIER_BASELINE_PATH),
+        help=(
+            f"Frozen shrink-only baseline of pre-existing {DERIVED_VERIFIER_TICKET} "
+            "DERIVED_VERIFIER receipts (verifier handle derived from the runner's)."
+        ),
+    )
+    parser.add_argument(
+        "--derived-verifier-corpus",
+        action="store_true",
+        help=(
+            "Scan every receipt in the corpus for derived verifier handles and "
+            "assert set equality against the frozen baseline in both directions."
+        ),
+    )
+    parser.add_argument(
+        "--write-derived-verifier-baseline",
+        action="store_true",
+        help=(
+            "Regenerate the frozen derived-verifier baseline. Repair PRs only — "
+            "never run this to make a newly minted receipt pass."
+        ),
+    )
+    parser.add_argument(
+        "--orphan-baseline",
+        default=str(ORPHAN_BASELINE_PATH),
+        help=(
+            f"Frozen shrink-only baseline of pre-existing {ORPHAN_TICKET} orphan "
+            "receipts (no contract_entry_sha256 and no declared contract entry)."
+        ),
+    )
+    parser.add_argument(
+        "--orphan-corpus",
+        action="store_true",
+        help=(
+            "Scan every receipt in the corpus for orphan bindings and assert set "
+            "equality against the frozen baseline in both directions."
+        ),
+    )
+    parser.add_argument(
+        "--check-orphan-corpus-wiring",
+        action="store_true",
+        help=(
+            "Anti-removal anchor: assert ci.yml still declares the unconditional "
+            "orphan-corpus-ratchet job and that CI Summary holds it strictly."
+        ),
+    )
+    parser.add_argument(
+        "--write-orphan-baseline",
+        action="store_true",
+        help=(
+            "Regenerate the frozen orphan baseline. Repair PRs only — never run "
+            "this to make a newly minted orphan receipt pass."
+        ),
+    )
+    parser.add_argument(
+        "--contract-abs-path-baseline",
+        default=str(CONTRACT_ABS_PATH_BASELINE_PATH),
+        help=(
+            "Frozen shrink-only baseline of pre-existing OMN-15710 ABS_PATH "
+            "violations in contract dod_evidence check_value entries "
+            "(contracts carry no run_timestamp, so OMN_15710_CUTOFF cannot "
+            "gate them)."
+        ),
+    )
+    parser.add_argument(
+        "--capture-probe",
+        metavar="RECEIPT",
+        help=(
+            f"{PROBE_CAPTURE_TICKET}: run RECEIPT's probe_command and write "
+            "probe_stdout, exit_code, run_timestamp, duration_ms and the capture "
+            "record from that run. The only way to fill a hand-authored receipt."
+        ),
+    )
+    parser.add_argument(
+        "--probe-cwd",
+        default=".",
+        help="Directory the probe runs in (the product checkout at commit_sha).",
+    )
+    parser.add_argument(
+        "--red-ref",
+        help=(
+            "With --capture-probe: also run the probe with commit_sha replaced "
+            "by this ref, and record the structured red/green proof."
+        ),
+    )
+    parser.add_argument(
+        "--probe-timeout",
+        type=int,
+        default=_DEFAULT_PROBE_TIMEOUT_S,
+        help="Seconds before one probe leg is killed.",
+    )
+    parser.add_argument(
+        "--probe-capture-added-file0",
+        help=(
+            f"{PROBE_CAPTURE_TICKET}: NUL-delimited receipts this PR adds; each "
+            "must carry a capture record unless --head-ref is an autobind branch."
+        ),
+    )
+    parser.add_argument(
+        "--head-ref",
+        default="",
+        help="The PR head branch, read with --probe-capture-added-file0.",
+    )
+    args = parser.parse_args(argv)
+    if args.capture_probe:
+        try:
+            written = capture_probe(
+                Path(args.capture_probe),
+                Path(args.probe_cwd),
+                red_ref=args.red_ref,
+                timeout_s=args.probe_timeout,
+            )
+        except (ProbeCaptureError, OSError, subprocess.TimeoutExpired) as exc:
+            print(f"PROBE CAPTURE REFUSED: {exc}")
+            return 2
+        print(
+            f"PROBE CAPTURED: {args.capture_probe} exit={written['exit_code']} "
+            f"duration_ms={written['duration_ms']} "
+            f"capture_record={written['artifact_sha256']}"
+        )
+        return 0
+    if args.staged and args.paths_file0:
+        parser.error("--staged and --paths-file0 are mutually exclusive")
+    contracts_dir = Path(args.contracts_dir)
+    baseline_path = Path(args.supersession_baseline)
+    contract_abs_path_baseline = load_contract_abs_path_baseline(
+        Path(args.contract_abs_path_baseline)
+    )
+
+    orphan_baseline_path = Path(args.orphan_baseline)
+    derived_verifier_baseline_path = Path(args.derived_verifier_baseline)
+
+    if args.write_derived_verifier_baseline:
+        return write_derived_verifier_baseline(
+            Path(args.receipts_root), derived_verifier_baseline_path
+        )
+    if args.derived_verifier_corpus:
+        return run_derived_verifier_corpus(
+            Path(args.receipts_root), derived_verifier_baseline_path
+        )
+
+    if args.write_orphan_baseline:
+        return write_orphan_baseline(
+            Path(args.receipts_root), contracts_dir, orphan_baseline_path
+        )
+
+    if args.orphan_corpus:
+        return run_orphan_corpus(
+            Path(args.receipts_root), contracts_dir, orphan_baseline_path
+        )
+
+    if args.write_supersession_baseline:
+        return write_supersession_baseline(
+            Path(args.receipts_root), contracts_dir, baseline_path
+        )
+
+    if args.check_supersession_wiring:
+        ci_yaml = Path(args.ci_yaml)
+        failures = check_supersession_wiring(ci_yaml)
+        if failures:
+            print(
+                f"SUPERSESSION BINDING WIRING GATE FAILED ({ci_yaml}) "
+                f"[{SUPERSESSION_TICKET}]:"
+            )
+            for failure in failures:
+                print(f"  - {failure}")
+            return 1
+        print(f"SUPERSESSION BINDING WIRING GATE PASSED ({ci_yaml})")
+        return 0
+
+    if args.check_orphan_corpus_wiring:
+        ci_yaml = Path(args.ci_yaml)
+        failures = check_orphan_corpus_wiring(ci_yaml)
+        if failures:
+            print(f"ORPHAN CORPUS WIRING GATE FAILED ({ci_yaml}) [{ORPHAN_TICKET}]:")
+            for failure in failures:
+                print(f"  - {failure}")
+            return 1
+        print(f"ORPHAN CORPUS WIRING GATE PASSED ({ci_yaml})")
+        return 0
+
+    if args.check_commit_sha_wiring:
+        failures = check_commit_sha_wiring(
+            Path(args.precommit_yaml), Path(args.ci_yaml)
+        )
+        if failures:
+            print("COMMIT SHA WIRING GATE FAILED:")
+            for failure in failures:
+                print(f"  - {failure}")
+            return 1
+        print("COMMIT SHA WIRING GATE PASSED")
+        return 0
+
+    if args.supersession_corpus:
+        return run_supersession_corpus(
+            Path(args.receipts_root), contracts_dir, baseline_path
+        )
+
+    supersession_baseline = load_supersession_baseline(baseline_path)
+    orphan_baseline = load_orphan_baseline(orphan_baseline_path)
+    derived_verifier_baseline = load_derived_verifier_baseline(
+        derived_verifier_baseline_path
+    )
+    try:
+        commit_sha_resolver = CommitShaResolver(rest_budget=args.commit_sha_rest_budget)
+    except ValueError as exc:
+        parser.error(str(exc))
+    if args.staged:
+        paths, discovery_error = _discover_staged_paths()
+        if discovery_error is not None:
+            print(f"Receipt hardening infrastructure unavailable: {discovery_error}")
+            return 2
+    elif args.paths_file0:
+        try:
+            paths = _read_paths_file0(Path(args.paths_file0))
+        except OSError as exc:
+            print(f"Receipt hardening infrastructure unavailable: {exc}")
+            return 2
+    else:
+        paths = [Path(file_arg) for file_arg in args.files]
+
+    if args.commit_sha_inventory:
+        try:
+            inventory_path = _temp_inventory_path(args.commit_sha_inventory)
+        except ValueError as exc:
+            parser.error(str(exc))
+            return 2
+        if not paths:
+            paths = sorted(Path(args.receipts_root).rglob("*.yaml"))
+        return _write_commit_sha_inventory(inventory_path, paths, commit_sha_resolver)
+
+    all_violations: list[str] = []
+    infrastructure_diagnostics: list[str] = []
+    seen_effective_paths: set[Path] = set()
+    for path in paths:
+        if not path.is_file():
+            continue  # deleted/renamed paths are not this gate's concern
+        effective_path = _effective_check_path(path)
+        if effective_path in seen_effective_paths:
+            continue
+        seen_effective_paths.add(effective_path)
+        all_violations.extend(
+            _check_staged_file(
+                effective_path,
+                contracts_dir,
+                supersession_baseline,
+                contract_abs_path_baseline,
+                commit_sha_resolver,
+                infrastructure_diagnostics,
+                orphan_baseline,
+                derived_verifier_baseline,
+            )
+        )
+
+    if args.probe_capture_added_file0:
+        if not args.head_ref:
+            print(
+                f"{PROBE_CAPTURE_RULE} no --head-ref (not a pull request): "
+                "added-receipt capture check not applicable."
+            )
+        else:
+            try:
+                added_paths = _read_paths_file0(Path(args.probe_capture_added_file0))
+            except OSError as exc:
+                print(f"Receipt hardening infrastructure unavailable: {exc}")
+                return 2
+            all_violations.extend(run_probe_capture_gate(added_paths, args.head_ref))
+
+    if infrastructure_diagnostics:
+        print("Receipt hardening infrastructure unavailable:\n")
+        for diagnostic in dict.fromkeys(infrastructure_diagnostics):
+            print(f"  {diagnostic}")
+        print(
+            "\nNo receipt defect was asserted while commit resolution was unavailable."
+        )
+        return 2
+    if all_violations:
+        print(f"Receipt hardening gate: {len(all_violations)} violation(s):\n")
+        for violation in all_violations:
+            print(f"  {violation}")
+        print(
+            "\nFix the receipt (tool-generate; bind the current contract hash); "
+            "never bypass the gate."
+        )
+        return 1
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())

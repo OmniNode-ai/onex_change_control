@@ -1,0 +1,67 @@
+---
+schema_version: "1.0.0"
+ticket_id: "OMN-13140"
+evidence_item_id: "dod-omnimarket-pr"
+check_type: "command"
+check_value: >-
+  uv run ruff format --check src/ tests/ && uv run ruff check src/ tests/ && uv run mypy src/omnimarket/
+  --strict && uv run pytest tests/unit/delegation/test_cloud_escalation_omn13140.py tests/unit/delegation/test_delegation_orchestrator.py
+  -q
+status: PASS
+run_timestamp: "2026-06-14T16:00:00Z"
+commit_sha: "3d507076965b94c185846a0c2e19cec9f5c200fb"
+runner: "worktree-agent-omn-13140-cloud-escalation"
+verifier: "receipt-gate-local"
+probe_command: >-
+  uv run ruff format --check src/ tests/ && uv run ruff check src/ tests/ && uv run mypy src/omnimarket/
+  --strict && uv run pytest tests/ -m "not kafka" -q && pre-commit run --files <changed files>
+probe_stdout: |
+  $ uv run ruff format --check src/ tests/ ; uv run ruff check src/ tests/
+  3126 files left unchanged
+  All checks passed!
+
+  $ uv run mypy src/omnimarket/ --strict
+  Success: no issues found in 2347 source files
+
+  $ uv run pytest tests/unit/delegation/test_cloud_escalation_omn13140.py -q
+  17 passed
+
+  $ uv run pytest tests/ -m "not kafka" -q   # full suite, NO -k filter
+  7372 passed, 69 skipped, 9 deselected in 277.08s
+
+  # GATE 1/2/3 proven over the REAL dispatch chain (routing reducer -> inference
+  # effect -> quality gate reducer -> orchestrator), not handler isolation:
+  $ pytest -k test_weak_local_output_escalates_and_resolves_gemini_cloud
+  # escalated_decision.tier_name == "cheap_cloud"
+  # escalated_decision.endpoint_url == ".../generativelanguage.googleapis.com/..."
+  # escalated_decision.selected_model == "gemini-2.5-flash-lite"   -> PASSED
+
+  $ pre-commit run --files <7 changed files>
+  Gemini registry/version hygiene gate.....Passed
+  Backend secret-discipline gate...........Passed
+  Routing-authority demo gate..............Passed
+  Golden-chain coverage gate...............Passed
+  ruff format / ruff check.................Passed
+  (all hooks Passed)
+actual_output: >-
+  PASS: omnimarket PR #1215 (branch jonah/omn-13140-cloud-escalation, base=dev, head 3d507076965b94c185846a0c2e19cec9f5c200fb)
+  opens the three fail-closed escalation predicate gates so the local->cloud delegation ladder fires and
+  reaches AI Studio Gemini. GATE 2 (handler_quality_gate.py): WEAK_OUTPUT / TASK_MISMATCH verdicts now
+  set fallback_recommended=True on both the contract-DoD and legacy paths via _recommends_fallback() (REFUSAL/WEAK_OUTPUT/TASK_MISMATCH
+  verdict-prefix match); MALFORMED stays excluded. GATE 3 (routing_tiers.yaml + bifrost_delegation.yaml):
+  the canonical cloud target cloud-gemini-flash now declares code_generation in routing use_for and bifrost
+  capabilities, so next_eligible_tier(code_generation) resolves cheap_cloud; cloud-vertex-gemini stays
+  defined but is intentionally NOT in the code_generation path (one canonical Gemini target). GATE 1 (handler_delegation_workflow.py):
+  finish_reason=length reclassified as retryable (truncation, not refusal) so it escalates to a longer-context
+  successor, original+escalated models recorded in escalation_history; empty body/empty choices stay non-retryable
+  (minimal-safe). The real-dispatch test test_weak_local_output_escalates_and_resolves_gemini_cloud drives
+  the full handler chain and asserts the escalated routing decision lands on tier cheap_cloud with the
+  canonical Gemini endpoint and model. ruff + ruff format clean; mypy src/omnimarket --strict clean (2347
+  files); full suite 7372 passed / 69 skipped (NO -k filter); pre-commit all hooks Passed on changed files.
+  SCOPE: config + handler-classification + tests only. NO DDL, NO migration, NO live deploy, NO restart,
+  NO .201 mutation. HONESTY: this receipt proves escalation fires and resolves the Gemini cloud endpoint
+  over the handler chain; it does NOT claim live stability-lane HWM>0 (deploy_pending = true; see dod-deploy-assessment).
+exit_code: 0
+contract_sha256: "sha256:3632a9bbf592343730a6140e68234295b74a709182bd56b1cc484c6a7bb34c1a"
+pr_number: 1215
+branch: "jonah/omn-13140-cloud-escalation"

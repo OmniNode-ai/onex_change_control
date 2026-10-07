@@ -1,0 +1,121 @@
+---
+topic: "onex.evt.omnimarket.runtime-deployment-proof.v1"
+schema_version: "1.0.0"
+ticket: "OMN-12576"
+description: >
+  Canonical OCC wire contract for runtime deployment proof. Emitted after the per-lane probe (health,
+  ready, digest bind) and assembled from the live runtime attestation surfaces (runtime-booted / runtime-manifest-published)
+  plus the deploy-agent completion. The image digest is the prod-gate authority: production may deploy
+  only the digest proven READY in stability-test, and a digest mismatch must block before the deploy-agent
+  is invoked. Proof older than the freshness SLA is stale and must not promote a lane to READY.
+topic_authority: "onex_change_control"
+freshness_sla: "24h"
+
+producer:
+  repo: "omnimarket"
+  file: "src/omnimarket/nodes/node_redeploy/contract.yaml"
+  function: "node_redeploy.PROBING"
+
+consumer:
+  repo: "omnimarket"
+  file: "src/omnimarket/nodes/node_readiness_gate_orchestrator/contract.yaml"
+  model: "ModelRuntimeDeploymentProof"
+
+required_fields:
+  - name: "correlation_id"
+    type: "uuid"
+    description: "Deployment run correlation ID shared by all deployment events."
+  - name: "deployment_id"
+    type: "uuid"
+    description: "Stable identifier for the deployment attempt this proof covers."
+  - name: "runtime_lane"
+    type: "string"
+    description: "Runtime lane that was probed."
+    constraints:
+      enum:
+        - "dev"
+        - "stability-test"
+        - "prod"
+  - name: "source_sha"
+    type: "string"
+    description: "Source commit SHA bound to the deployed artifact."
+  - name: "image_digest"
+    type: "string"
+    description: "Immutable digest of the running container image. Prod-gate authority."
+  - name: "compose_project"
+    type: "string"
+    description: "Compose project that owns the deployed lane."
+  - name: "health_status"
+    type: "string"
+    description: "Per-lane /health probe result."
+    constraints:
+      enum:
+        - "pass"
+        - "fail"
+  - name: "ready_status"
+    type: "string"
+    description: "Per-lane /ready probe result."
+    constraints:
+      enum:
+        - "pass"
+        - "fail"
+  - name: "probed_at"
+    type: "datetime"
+    description: "When the per-lane probe completed."
+  - name: "status"
+    type: "string"
+    description: "Overall proof status."
+    constraints:
+      enum:
+        - "success"
+        - "failed"
+
+optional_fields:
+  - name: "promotion_batch_id"
+    type: "string"
+    nullable: true
+    description: "Promotion batch identifier shared with OCC promotion evidence."
+  - name: "runtime_addresses"
+    type: "array"
+    nullable: true
+    description: "Probed runtime addresses (main/effects ports) for the lane."
+  - name: "topology_manifest_sha256"
+    type: "string"
+    nullable: true
+    description: "Topology manifest hash from the runtime manifest reducer."
+  - name: "package_versions"
+    type: "object"
+    nullable: true
+    description: "Deployed package versions from the runtime attestation."
+  - name: "runtime_source_hash"
+    type: "string"
+    nullable: true
+    description: "Runtime source hash from the runtime source attestor."
+  - name: "consumer_groups"
+    type: "array"
+    nullable: true
+    description: "Active consumer groups observed on the probed lane."
+  - name: "runtime_sweep_input_ref"
+    type: "string"
+    nullable: true
+    description: "Reference to the runtime sweep input used for classification."
+
+output:
+  deployment_proof_receipt:
+    type: "object"
+    description: "Durable proof record consumed by the readiness gate."
+    required_fields:
+      - "correlation_id"
+      - "deployment_id"
+      - "runtime_lane"
+      - "source_sha"
+      - "image_digest"
+      - "status"
+
+doctrine:
+  - clause_id: "DT-001"
+    binding: "onex_change_control owns the runtime deployment proof wire contract."
+  - clause_id: "DT-003"
+    binding: "Deployment proof older than 24h is stale and must not promote a lane to READY."
+  - clause_id: "DT-005"
+    binding: "Production deploys only the image digest proven READY in stability-test."

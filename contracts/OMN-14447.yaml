@@ -1,0 +1,96 @@
+---
+schema_version: "1.0.0"
+ticket_id: "OMN-14447"
+title: "OCC companion for omnimarket#1726 — re-pin omnibase-core to a reachable commit"
+summary: >
+  OCC evidence companion for OmniNode-ai/omnimarket#1726 (OMN-14447). omnimarket/uv.lock pinned omnibase-core
+  at git rev af567d7cc9a45edfc0fd3a44860e7b2a4f97a4b7 — the HEAD of a feature branch that GitHub DELETED
+  when that PR merged. The commit object survives, but it is reachable from no ref, so a normal clone/fetch
+  can never resolve it: the OMN-12977 sibling-pin preflight could not pass, and omnimarket's workspace
+  build was broken for everyone, indefinitely. #1726 re-pins to d08bb2313a42ad108e00cd8546c799b75953b84d
+  — the same version (0.46.8), the squash-merged commit that is an actual ancestor of omnibase_core dev.
+  This blocked the effects rebuild. The evidence asserts REACHABILITY, not a string swap. A content read
+  of uv.lock alone would be weak: uv.lock exists at every ref, so a bare existence probe rubber-stamps.
+  Each check below reads the product and is proven RED against the pre-fix state. Nothing greps this repo's
+  receipt corpus for "status: PASS", and no check is keyed on #1726's CI — its CI is red BECAUSE this
+  contract is missing, which would be circular.
+is_seam_ticket: false
+interface_change: false
+interfaces_touched: []
+evidence_requirements:
+  - kind: "manual"
+    description: "omnimarket#1726 head SHA pins omnibase-core at a commit reachable from omnibase_core
+      dev"
+    command: "see dod_evidence check_values"
+emergency_bypass:
+  enabled: false
+  justification: ""
+  follow_up_ticket_id: ""
+dod_evidence:
+  - id: "dod-verify-1726-new-pin-is-reachable"
+    description: >-
+      THE check for this ticket: asserts the newly pinned commit is genuinely REACHABLE from omnibase_core
+      dev, which is the actual invariant OMN-14447 restores — not merely that a different string was written
+      into the lock. Uses GitHub's compare API: dev...d08bb231 returns status "behind" (or "identical"),
+      meaning the pinned commit is an ancestor of dev and therefore resolvable by any normal clone/fetch.
+      RED DIRECTION PROVEN against the strongest possible control — the OLD pin itself. The identical
+      command run against af567d7cc9a45edfc0fd3a44860e7b2a4f97a4b7 returns status "diverged" and exits
+      1: that commit object still EXISTS on GitHub, but it is an ancestor of nothing, which is precisely
+      why the sibling-pin preflight could never pass. So this check does not merely detect "a SHA changed";
+      it detects the exact defect class that broke the build, and it would go RED again if anyone re-pinned
+      to an unreachable commit.
+    source: "manual"
+    status: "verified"
+    checks:
+      - check_type: "command"
+        check_value: >-
+          gh api "repos/OmniNode-ai/omnibase_core/compare/dev...d08bb2313a42ad108e00cd8546c799b75953b84d"
+          --jq .status | grep -qE '^(behind|identical)$'
+  - id: "dod-verify-1726-lock-pins-new-sha"
+    description: >-
+      Product-observing: reads omnimarket/uv.lock at #1726's exact head SHA (0971a5a2981a9098abdaaa05a7392fa60e18d5d3)
+      and asserts it contains the reachable rev d08bb2313a42ad108e00cd8546c799b75953b84d. Binds the reachability
+      fact above to the actual lock file the PR ships, so the two together prove "the lock at #1726's
+      head pins a commit that resolves". RED DIRECTION PROVEN by execution: a bare existence probe on
+      uv.lock would rubber-stamp (the file exists at EVERY ref), so the SHA STRING is the discriminator.
+      It occurs 3x in uv.lock at #1726's head and ZERO times in uv.lock at omnimarket dev (57a9bf3c),
+      where the broken pin still stands. Exits 1 at dev and at a bogus SHA.
+    source: "manual"
+    status: "verified"
+    checks:
+      - check_type: "command"
+        check_value: >-
+          test "$(gh api "repos/OmniNode-ai/omnimarket/contents/uv.lock?ref=0971a5a2981a9098abdaaa05a7392fa60e18d5d3"
+          --jq .content | base64 -d | grep -c 'd08bb2313a42ad108e00cd8546c799b75953b84d')" -ge 1
+  - id: "dod-verify-1726-dangling-pin-removed"
+    description: >-
+      Product-observing NEGATIVE assertion, the necessary other half: the DANGLING rev af567d7cc9a45edfc0fd3a44860e7b2a4f97a4b7
+      must be GONE from uv.lock at #1726's head. Adding the new pin while leaving the old one anywhere
+      in the lock would leave a rev that resolves to nothing and the preflight would still fail — so "new
+      SHA present" is not sufficient; "old SHA absent" must also hold. RED DIRECTION PROVEN by execution
+      against the live pre-fix state: the dangling rev occurs ZERO times in uv.lock at #1726's head and
+      THREE times in uv.lock at omnimarket dev (57a9bf3c), so the identical command exits 0 at the head
+      and exits 1 at dev — where the bug demonstrably still lives.
+    source: "manual"
+    status: "verified"
+    checks:
+      - check_type: "command"
+        check_value: >-
+          test "$(gh api "repos/OmniNode-ai/omnimarket/contents/uv.lock?ref=0971a5a2981a9098abdaaa05a7392fa60e18d5d3"
+          --jq .content | base64 -d | grep -c 'af567d7cc9a45edfc0fd3a44860e7b2a4f97a4b7')" -eq 0
+  - id: "dod-occ-self-commit"
+    description: >-
+      Self-bind item for THIS OCC companion PR. occ-preflight (validator_occ_merge_eligibility._receipt_bound_to_pr)
+      requires at least one PASS receipt bound to the PR under check — pr_number == that PR, or commit_sha
+      among that PR's commits. The eligibility gate runs TWICE for a companion: once here and once on
+      the source PR, so the product receipts above bind the SOURCE (omnimarket#1726) while this one binds
+      the COMPANION. That is why both receipt kinds exist, and it is the trap that cost OCC#4008 and #4012
+      a CI round-trip each. Intentionally self-referential, and legitimately so: it asserts a fact ABOUT
+      this PR (its branch), so this PR is the correct surface to read. It is a binding item, NOT substantive
+      evidence.
+    source: "manual"
+    status: "verified"
+    checks:
+      - check_type: "command"
+        check_value: >-
+          grep -q 'jonah/omn-14447-occ-companion-evidence' drift/dod_receipts/OMN-14447/dod-occ-self-commit/command.yaml

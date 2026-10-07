@@ -1,0 +1,69 @@
+---
+schema_version: "1.0.0"
+ticket_id: "OMN-14833"
+title: "Isolate AUTO_BOUNCE_BOUNCE_LOG in the runner-monitor tests"
+summary: >
+  OCC evidence companion for OmniNode-ai/omnibase_infra PR #3349. The ticket's reported cause (a call-log
+  poll timing out under host load) is disproved: the monitor's per-target loop writes AUTO_BOUNCE_BOUNCE_LOG,
+  which the two failing tests never overrode, so on a shared host it dies "Permission denied" before compose
+  is invoked. Authored by hand: the OMN-16434 autobinder published for this PR (run 34306667178, 03:19:22Z)
+  and no companion was minted, the same consumer-inaction shape recorded in OCC#8753 for PR #3347.
+is_seam_ticket: false
+interface_change: false
+interfaces_touched: []
+evidence_requirements:
+  - kind: "ci"
+    description: "PR #3349 CI checks green"
+    command: "gh pr checks ${PR_NUMBER} --repo ${REPO}"
+  - kind: "tests"
+    description: |-
+      Behavior proof for PR #3349 on OmniNode-ai/omnibase_infra: the two test modules that
+      failed on unmodified dev and pass with the change. Executed at cwd
+      `${OMNI_HOME}/omnibase_infra`. These require flock and are meaningful only on a host
+      that has it; they skip elsewhere rather than passing vacuously.
+    command: |-
+      uv run pytest tests/unit/observability/runner_health/test_runner_monitor_auto_bounce.py tests/unit/observability/runner_health/test_runner_monitor_wedge_detection.py -q
+emergency_bypass:
+  enabled: false
+  justification: ""
+  follow_up_ticket_id: ""
+dod_evidence:
+  - id: "dod-omn-14833-behavior-proof"
+    description: "PR #3349 — the two suites that failed on unmodified dev now pass (19 passed, measured
+      on the shared gate host)."
+    source: "generated"
+    checks:
+      - check_type: "test_passes"
+        check_value: |-
+          uv run pytest tests/unit/observability/runner_health/test_runner_monitor_auto_bounce.py tests/unit/observability/runner_health/test_runner_monitor_wedge_detection.py -q
+        cwd: "${OMNI_HOME}/omnibase_infra"
+  - id: "dod-omn-14833-bounce-log-isolated"
+    description: "Both previously-failing test modules now bind AUTO_BOUNCE_BOUNCE_LOG to a per-test tmp_path,
+      not the shared /tmp default."
+    source: "generated"
+    checks:
+      - check_type: "command"
+        check_value: |-
+          gh api repos/OmniNode-ai/omnibase_infra/contents/tests/unit/observability/runner_health/test_runner_monitor_auto_bounce.py?ref=eb629cd8b5f984227bdbcfdb0c330bf76c392871 --jq '.content' | base64 -d | grep -c 'AUTO_BOUNCE_BOUNCE_LOG'
+      - check_type: "command"
+        check_value: |-
+          gh api repos/OmniNode-ai/omnibase_infra/contents/tests/unit/observability/runner_health/test_runner_monitor_wedge_detection.py?ref=eb629cd8b5f984227bdbcfdb0c330bf76c392871 --jq '.content' | base64 -d | grep -c 'AUTO_BOUNCE_BOUNCE_LOG'
+  - id: "dod-omn-14833-scope-is-tests-only"
+    description: "PR #3349 touches only the two test modules — no production code, so the monitor's own
+      behaviour is unchanged."
+    source: "generated"
+    checks:
+      - check_type: "command"
+        check_value: |-
+          gh api repos/OmniNode-ai/omnibase_infra/pulls/3349/files --paginate --jq '.[].filename' | grep -c '^tests/unit/observability/runner_health/test_runner_monitor_'
+  - id: "occ-self-bind-pr-8756"
+    description: |-
+      OCC self-binding receipt for PR #8756, the in-repo evidence PR carrying this
+      contract. Binds OMN-14833 to the OCC PR by pr_number so eligibility can resolve a
+      PASS receipt for the evidence PR itself.
+    source: "manual"
+    status: "verified"
+    checks:
+      - check_type: "command"
+        check_value: |-
+          gh pr view 8756 --repo OmniNode-ai/onex_change_control --json number,state,headRefName

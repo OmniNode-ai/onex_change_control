@@ -1,0 +1,108 @@
+---
+schema_version: 1.0.0
+ticket_id: OMN-19098
+title: Release Staleness Gate reports a quota-exhaustion 403 as a generic probe error
+summary: |-
+  Every non-zero ``gh`` exit in check_release_staleness.py collapsed into one
+  ``ProbeError`` shape, so an empty API quota was indistinguishable from a dead
+  repo or a real staleness finding. On 2026-09-21 the onexbot-occ-writer
+  installation bucket (id 148180820) emptied at 19:41Z; this gate failed four
+  times between 19:40:57Z and 19:43:32Z and nowhere else that day, each run
+  emitting seven or eight per-repo ERROR rows because every roster read failed
+  together. One infrastructure event was diagnosed four separate times while it
+  cascaded into CI Summary and blocked unrelated merges. A quota refusal now
+  carries its own exception, its own verdict and its own outcome token with the
+  bucket reset time, while still failing closed at exit 1.
+is_seam_ticket: false
+interface_change: false
+interfaces_touched: []
+evidence_requirements:
+  - kind: tests
+    description: |-
+      A quota 403 is classified, reported under its own verdict and token, and
+      carries the reset time when it can be read.
+    command: uv run pytest tests/test_check_release_staleness.py -q
+  - kind: ci
+    description: PR CI checks green
+    command: gh pr checks ${PR_NUMBER} --repo ${REPO}
+emergency_bypass:
+  enabled: false
+  justification: ''
+  follow_up_ticket_id: ''
+dod_evidence:
+  - id: a-quota-403-is-its-own-verdict-and-token
+    description: |-
+      The defect itself. The fixture is the exact stderr GitHub returned on
+      run 35646352206 at 19:41:22Z, recorded rather than paraphrased, because
+      the classifier keys on the message and a test that invents its own
+      wording proves nothing about the message we actually receive. Asserted
+      three ways: the QUOTA_EXHAUSTED verdict appears, the machine-readable
+      OCC_QUOTA_EXHAUSTED token appears on its own line, and the generic ERROR
+      verdict does NOT also appear -- a row that claimed both would leave the
+      conflation in place under a new name. The reset time is read from the
+      rate_limit endpoint, which GitHub documents as not counting against the
+      limit it reports, so it is free to call at the one moment it is useful;
+      an unreadable reset stays empty rather than being invented, because a
+      lane would wait on a wrong one.
+    source: manual
+    status: verified
+    checks:
+      - check_type: command
+        check_value: uv run pytest tests/test_check_release_staleness.py::test_quota_403_is_its_own_verdict_not_a_generic_error
+          tests/test_check_release_staleness.py::test_quota_403_reports_the_reset_time_when_it_can_read_it
+          tests/test_check_release_staleness.py::test_unreadable_reset_reports_unknown_never_an_invented_time
+          tests/test_check_release_staleness.py::test_secondary_rate_limit_is_also_a_quota_outcome -q
+  - id: the-classifier-has-a-matched-negative-control
+    description: |-
+      The reason the positive assertion above is not vacuous, and the half a
+      relabelling would fail. A checker that calls every failure a quota
+      failure is exactly as useless as one that calls none of them that, and
+      worse than useless in practice because it would hide real defects behind
+      an infrastructure excuse. Two populations are asserted to land on
+      opposite sides: a 404 still raises the generic ProbeError and never
+      acquires the token, and an ordinary stale repo still reports STALE with
+      no token. The type-level control sits beside them, pinning BOTH halves of
+      the subclassing decision -- QuotaExhaustedError is not ProbeError, and it
+      IS a subclass of it, so every existing fail-closed catch keeps working
+      without edit while the distinct arm in evaluate still precedes the
+      broader one.
+    source: manual
+    status: verified
+    checks:
+      - check_type: command
+        check_value: uv run pytest tests/test_check_release_staleness.py::test_a_non_quota_gh_failure_is_still_a_generic_error
+          tests/test_check_release_staleness.py::test_a_real_staleness_finding_does_not_acquire_the_quota_token
+          tests/test_check_release_staleness.py::test_quota_error_type_is_distinct_from_probe_error -q
+  - id: it-still-fails-closed-and-does-not-retry
+    description: |-
+      Naming the cause must not excuse the failure. A run that could not read
+      the roster has not shown the roster is fresh, so the exit code is still 1
+      and no pass line is printed. Separately, the run must not retry: the
+      positive control is a SECOND full sweep, and running it while the bucket
+      is empty spends more of the quota that just ran out and cannot succeed
+      anyway, so a quota row suppresses it. That is the same do-not-retry rule
+      OMN-16227 records for the adjacent 429 mechanism, applied here at the
+      point where this tool would otherwise have generated the extra load
+      itself.
+    source: manual
+    status: verified
+    checks:
+      - check_type: command
+        check_value: uv run pytest tests/test_check_release_staleness.py::test_quota_403_still_fails_closed
+          tests/test_check_release_staleness.py::test_quota_exhaustion_suppresses_the_positive_control
+          -q
+  - id: the-never-skip-contract-is-untouched
+    description: |-
+      The constraint this change could most plausibly have broken. CI Summary's
+      L4 layer is success-only and a skipped external context fails closed, so
+      the gate's own header records that the job must carry no if: and no
+      paths: filter or it would wedge every merge in the repo. Adding a
+      distinct outcome is exactly the kind of change that invites an early
+      return, so the pre-existing test that pins the workflow shape is asserted
+      green and unmodified rather than merely assumed to still hold.
+    source: manual
+    status: verified
+    checks:
+      - check_type: command
+        check_value: uv run pytest tests/test_check_release_staleness.py::test_gate_workflow_runs_unconditionally_on_pull_request
+          -q

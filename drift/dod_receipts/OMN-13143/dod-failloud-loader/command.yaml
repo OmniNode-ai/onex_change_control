@@ -1,0 +1,45 @@
+---
+schema_version: "1.0.0"
+ticket_id: "OMN-13143"
+evidence_item_id: "dod-failloud-loader"
+check_type: "command"
+check_value: >-
+  uv run pytest tests/unit/delegation/test_cloud_escalation_omn13140.py -k BifrostLoaderFailsLoud -q
+status: PASS
+run_timestamp: "2026-06-14T16:00:00Z"
+commit_sha: "3d507076965b94c185846a0c2e19cec9f5c200fb"
+runner: "worktree-agent-omn-13140-cloud-escalation"
+verifier: "receipt-gate-local"
+probe_command: >-
+  uv run pytest tests/unit/delegation/test_cloud_escalation_omn13140.py -k BifrostLoaderFailsLoud -q &&
+  uv run mypy src/omnimarket/ --strict
+probe_stdout: |
+  $ pytest test_cloud_escalation_omn13140.py -k BifrostLoaderFailsLoud -q
+  test_missing_contract_raises_not_silent_empty                 PASSED
+  test_invalid_yaml_raises_and_logs_structured_evidence         PASSED
+  test_contract_with_no_usable_endpoints_raises                 PASSED
+  3 passed
+
+  # Before: `except (FileNotFoundError, ValueError, yaml.YAMLError): return {}`
+  # After: structured-evidence log + raise ProtocolConfigurationError.
+  # test_invalid_yaml_raises_and_logs_structured_evidence asserts the
+  # bifrost_endpoint_load_failed record is logged (structured evidence), not just
+  # that an exception is raised.
+
+  $ uv run mypy src/omnimarket/ --strict
+  Success: no issues found in 2347 source files
+actual_output: >-
+  PASS: OMN-13143 (folded into omnimarket PR #1215, head 3d507076965b94c185846a0c2e19cec9f5c200fb) replaces
+  the silent `except (FileNotFoundError, ValueError, yaml.YAMLError): return {}` in _load_bifrost_endpoints()
+  with fail-loud behavior (CLAUDE.md Rule 8). On a load failure it now emits a structured evidence record
+  (bifrost_endpoint_load_failed with error_type / contract_path / overlay_path) and re-raises ProtocolConfigurationError
+  with a FILESYSTEM error context; a contract that parses but yields zero usable endpoints emits bifrost_no_usable_endpoints
+  and raises. A "no override configured" path still loads the packaged default (legitimate, not an error).
+  Failing-first tests prove: missing contract path raises ProtocolConfigurationError (not silent {});
+  invalid YAML raises AND logs the structured record; a parses-but-empty-endpoints contract raises. ruff
+  + mypy --strict clean. SCOPE: loader fallback semantics only; no runtime restart / re-probe work folded
+  in (per ticket narrow scope, NOT bundled with OMN-12864).
+exit_code: 0
+contract_sha256: "sha256:0d42285405bc3e771ae74e2d3c4c8c19cd657a1088bff0ade10fdaf42b817da4"
+pr_number: 1215
+branch: "jonah/omn-13140-cloud-escalation"

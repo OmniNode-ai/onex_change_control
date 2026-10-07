@@ -1,0 +1,88 @@
+---
+schema_version: "1.0.0"
+ticket_id: "OMN-8724"
+title: "golden_chain_sweep — fix dict-not-typed dispatch crash + downgrade live-evidence claim"
+summary: >-
+  node_golden_chain_sweep crashed via the canonical onex node path with AttributeError: 'dict' object
+  has no attribute 'chains' at handler_golden_chain_sweep.py. runtime_local_adapter._invoke_handle_method
+  handed the raw decoded dict to handle(self, request: GoldenChainSweepRequest) instead of the typed model.
+  Fix (A1, systemic): coerce a raw dict payload into the handler's single annotated BaseModel parameter
+  inside the omnibase_infra runtime adapter, fixing the whole dict-not-typed dispatch-boundary class (same
+  family as OMN-13141). Root cause completion: PEP 563 string annotations (every node handler uses from
+  __future__ import annotations) made the parameter annotation a literal string so the BaseModel-subclass
+  check never matched — resolved via inspect.signature(eval_str=True). cli_node default mode now emits
+  the documented SkillRoutingError JSON envelope on non-zero exit instead of a raw traceback. Companion
+  omnimarket change adds the runtime-injected correlation_id field to GoldenChainSweepRequest and downgrades
+  the node/skill docs: the node is pure compute over caller-supplied projected_rows (zero live I/O) and
+  must NOT be cited as live row / end-to-end data-flow evidence (OMN-13126). A real live-Postgres fetch
+  + row-count-delta assertion remains tracked under this ticket and is explicitly not implemented in this
+  PR.
+is_seam_ticket: false
+interface_change: false
+interfaces_touched: []
+evidence_requirements:
+  - kind: "ci"
+    description: "CI passes on both the omnibase_infra and omnimarket merge PRs"
+    command: "gh pr checks"
+emergency_bypass:
+  enabled: false
+  justification: ""
+  follow_up_ticket_id: ""
+dod_evidence:
+  - id: "dod-infra-pr"
+    description: >-
+      omnibase_infra PR #1983 (branch jonah/omn-8724-runtime-adapter-coerce-typed-model, base=dev, head
+      03712fb3bd426eb6b214b7aa02788f69371f3830). _invoke_handle_method coerces a raw dict into the handler's
+      single annotated BaseModel parameter (eval_str=True resolves PEP 563 string annotations); cli_node
+      emits the SkillRoutingError envelope on non-zero exit. New real-dispatch-path test test_runtime_local_operation_match_typed_handler.py
+      FAILS on origin/dev (AttributeError: 'dict' object has no attribute ...) and PASSES with the fix.
+      tests/unit/runtime/ + tests/unit/cli/ GREEN (5157 passed; only pre-existing unrelated env-skip +
+      load-sensitive perf flake). ruff clean, mypy --strict clean on changed files, pre-commit passes.
+    source: "manual"
+    status: "verified"
+    checks:
+      - check_type: "command"
+        check_value: >-
+          grep -q '^status: PASS$' "drift/dod_receipts/OMN-8724/dod-infra-pr/command.yaml" && grep -q
+          '^ticket_id: "OMN-8724"$' "drift/dod_receipts/OMN-8724/dod-infra-pr/command.yaml"
+  - id: "dod-market-pr"
+    description: >-
+      omnimarket PR #1216 (branch jonah/omn-8724-golden-chain-sweep-downgrade-claim, base=dev, head c6932efd0a72b14b185c793406e8b295a5a69b54).
+      Adds the runtime-injected correlation_id field to GoldenChainSweepRequest so the minimal dispatch
+      payload validates under extra="forbid"; downgrades the node SKILL.md + handler docstrings to state
+      the node is pure compute over caller-supplied rows and must not be cited as live evidence. New test
+      test_runtime_injected_correlation_id_validates passes; 9/9 golden-chain tests GREEN; ruff + mypy
+      --strict + pre-commit (incl. golden-chain coverage gate) clean.
+    source: "manual"
+    status: "verified"
+    checks:
+      - check_type: "command"
+        check_value: >-
+          grep -q '^status: PASS$' "drift/dod_receipts/OMN-8724/dod-market-pr/command.yaml" && grep -q
+          '^ticket_id: "OMN-8724"$' "drift/dod_receipts/OMN-8724/dod-market-pr/command.yaml"
+  - id: "dod-occ-pr"
+    description: >-
+      This onex_change_control OCC PR carries the central OMN-8724 contract and receipts that the omnibase_infra
+      (#1983) and omnimarket (#1216) code-PR Receipt-Gates resolve via Evidence-Source / Evidence-Ticket:
+      OMN-8724.
+    source: "manual"
+    status: "verified"
+    checks:
+      - check_type: "command"
+        check_value: >-
+          grep -q '^status: PASS$' "drift/dod_receipts/OMN-8724/dod-occ-pr/command.yaml" && grep -q '^ticket_id:
+          "OMN-8724"$' "drift/dod_receipts/OMN-8724/dod-occ-pr/command.yaml"
+  - id: "dod-deploy-assessment"
+    description: >-
+      Deploy assessment: deploy_pending = false. The omnibase_infra change is a Python-only runtime-adapter/CLI
+      correctness fix — no emitter, topic, envelope shape, or cross-repo API change; no Kafka topic mutation,
+      no container restart, no .201 mutation. The omnimarket change adds one optional model field + docs.
+      Both are exercised by unit tests in CI. The normal post-merge batched dev-lane rebuild picks the
+      fix up automatically; no live deploy or hot-patch required.
+    source: "manual"
+    status: "verified"
+    checks:
+      - check_type: "command"
+        check_value: >-
+          grep -q 'No live deploy' "drift/dod_receipts/OMN-8724/dod-deploy-assessment/command.yaml" &&
+          grep -q '^status: PASS$' "drift/dod_receipts/OMN-8724/dod-deploy-assessment/command.yaml"

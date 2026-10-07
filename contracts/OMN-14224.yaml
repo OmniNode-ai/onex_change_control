@@ -1,0 +1,72 @@
+---
+schema_version: "1.0.0"
+ticket_id: "OMN-14224"
+title: "fix(OMN-14224): fail-closed to local for undeclared delegation task classes"
+summary: >-
+  omnimarket PR #1662 hardens the delegation tier-eligibility gate so an undeclared task class (one with
+  no task_class_contracts entry) can route ONLY to the local ($0) tiers, never to a paid or cloud tier.
+  Previously the helper _tier_allowed_by_contract(tier, entry=None) FAILED OPEN — it returned True for
+  every tier as "graceful degradation", so an accepted-but-undeclared class had no acceptance authority
+  yet could silently escalate straight into the PAID cloud tier (the OMN-14218/refactor class of bug).
+  The one-line change replaces `return True` with `return tier.name in _LOCAL_TIERS` on the entry-is-None
+  branch, i.e. fail CLOSED to local. This is a pure guardrail: post-OMN-14218/OMN-14220 every accepted
+  delegation task class is declared in task_class_contracts.v1.yaml (15 classes), so the entry-is-None
+  branch is unreachable by any currently accepted class and NO current routing path changes behavior —
+  it only constrains a hypothetical future accepted-but-undeclared class. An independent verifier (separate
+  from the implementing agent) reproduced the guardrail at the unit level (undeclared class -> local-only,
+  every paid/cloud tier disallowed), the inverse control (a declared class still routes to paid normally,
+  so declared classes are not over-restricted), and proved the two unrelated pre-existing test failures
+  reproduce identically on the pre-PR base commit.
+is_seam_ticket: false
+interface_change: false
+interfaces_touched: []
+emergency_bypass:
+  enabled: false
+  justification: ""
+  follow_up_ticket_id: ""
+dod_evidence:
+  - id: "dod-omnimarket-pr-1662"
+    description: >-
+      Independent verification (a separate verifier, NOT the implementing agent) reproduced PR #1662 against
+      the exact pushed head commit ed515bd6 in an isolated clean checkout (the shared worktree carried
+      uncommitted OMN-14225 paid-gate changes; verification was done on a detached checkout of ed515bd6
+      so those changes could not contaminate the result). GUARDRAIL-IS-REAL: with entry=None (undeclared
+      class), _tier_allowed_by_contract returns local-only — tier=local ALLOWED, while cheap_frontier
+      (free non-local), cheap_cloud ($0.002 paid) and claude ($0.015 paid) are all DISALLOWED; the same
+      holds when the None entry is reached through the real _task_class_entry path for a class missing
+      from the contract. INVERSE CONTROL (not over-restricting declared classes): a DECLARED class (cloud_routing_policy=allowed)
+      still routes to paid normally — local, cheap_cloud, and claude all ALLOWED; a declared cloud-blocked
+      class still restricts to local; a declared pricing-ceiling class still admits under-ceiling and
+      rejects over-ceiling. ZERO-BEHAVIOR-CHANGE: all 15 accepted delegation task classes are declared
+      in task_class_contracts.v1.yaml (and the default_task_model_ref map is a subset of them), so the
+      changed entry-is-None branch is unreachable by any accepted class and no current path changes. TESTS:
+      the changed test file passes 22/22 including the renamed test_no_entry_fails_closed_to_local_only
+      which now asserts the NEW local-only behavior (not a weakened assertion); the broad delegation/routing/escalation
+      themed suite ran 1924 passed / 33 skipped / 3 kafka-deselected with 2 failures, and BOTH failures
+      (node_delegate_skill_orchestrator local-dispatch spawn/network tests hitting http://unreachable.invalid
+      with task_type=research, a DECLARED class the guardrail branch never touches) reproduce IDENTICALLY
+      on the pre-PR base commit e8594b7c under the same harness — proving they are pre-existing, environment/spawn
+      artifacts, not caused by this PR. Diff is exactly the two files (handler_delegation_routing.py +
+      test_contract_routing_policy.py) with no foreign content; no gate weakened, no skip token, no --no-verify.
+      ruff check + ruff format --check + mypy --strict clean; pre-commit clean (topic-naming-lint passes
+      with OMNIBASE_INFRA_PATH set — the bare-worktree failure is a relative-path env artifact, not a
+      code defect).
+    source: "manual"
+    status: "verified"
+    checks:
+      - check_type: "command"
+        check_value: >-
+          grep -q '^status: PASS$' drift/dod_receipts/OMN-14224/dod-omnimarket-pr-1662/command.yaml &&
+          grep -q '^pr_number: 1662$' drift/dod_receipts/OMN-14224/dod-omnimarket-pr-1662/command.yaml
+  - id: "dod-occ-self"
+    description: >-
+      OCC companion self-binding: this onex_change_control PR carries the OMN-14224 contract and the PASS
+      receipt consumed by omnimarket PR #1662 via its Evidence-Source line. It binds itself to occ-preflight
+      by commit_sha (the contract commit C1), which is a member of this PR's commit set, so occ-preflight
+      verifies the companion without OCC PR-number prediction under concurrent lanes.
+    source: "manual"
+    status: "verified"
+    checks:
+      - check_type: "command"
+        check_value: >-
+          grep -q '^status: PASS$' drift/dod_receipts/OMN-14224/dod-occ-self/command.yaml

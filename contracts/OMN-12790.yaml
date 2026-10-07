@@ -1,0 +1,69 @@
+---
+schema_version: "1.0.0"
+ticket_id: "OMN-12790"
+title: "Delegation cloud-tier inference resolves secrets outside the runtime event loop"
+summary: >-
+  Fixes the forced cloud-tier delegation inference path where the auto-wired runtime called HandlerInferenceIntent
+  from inside an active event loop and the handler used the synchronous secret resolver, returning `resolve_api_key()
+  is sync-only; call resolve_api_key_async() from an async context.` before the provider request could
+  run. The handler now exposes an async runtime entrypoint that moves the existing synchronous effect
+  to a worker thread, preserving standalone `handle()` behavior while keeping blocking secret resolution
+  and HTTP off the runtime event loop.
+is_seam_ticket: false
+interface_change: false
+interfaces_touched: []
+emergency_bypass:
+  enabled: false
+  justification: ""
+  follow_up_ticket_id: ""
+dod_evidence:
+  - id: "dod-source-pr-1134"
+    description: >-
+      omnimarket PR #1134 carries the OMN-12790 source fix for delegation inference secret resolution
+      under runtime async dispatch.
+    source: "manual"
+    status: "verified"
+    checks:
+      - check_type: "command"
+        check_value: >-
+          grep -q '^status: PASS$' "$CONTRACT_REPO_DIR/drift/dod_receipts/OMN-12790/dod-source-pr-1134/command.yaml"
+  - id: "dod-focused-verification"
+    description: >-
+      Focused local lint, format, typecheck, and delegation handler tests passed for the changed files.
+    source: "manual"
+    status: "verified"
+    checks:
+      - check_type: "command"
+        check_value: >-
+          grep -q '^status: PASS$' "$CONTRACT_REPO_DIR/drift/dod_receipts/OMN-12790/dod-focused-verification/command.yaml"
+  - id: "dod-runtime-async-secret-regression"
+    description: >-
+      Regression evidence proves runtime auto-wiring can dispatch HandlerInferenceIntent with an api_key_ref
+      while an event loop is already running, and the handler resolves the key instead of returning the
+      sync-only resolver error.
+    source: "manual"
+    status: "verified"
+    checks:
+      - check_type: "command"
+        check_value: >-
+          grep -q '^status: PASS$' "$CONTRACT_REPO_DIR/drift/dod_receipts/OMN-12790/dod-runtime-async-secret-regression/command.yaml"
+  - id: "dod-deploy-assessment"
+    description: >-
+      The fix changes a runtime effect handler; stability-test rebuild/redeploy and a fresh forced escalation
+      probe are required after merge before L7 can be called healthy.
+    source: "manual"
+    status: "verified"
+    checks:
+      - check_type: "command"
+        check_value: >-
+          grep -q '^status: PASS$' "$CONTRACT_REPO_DIR/drift/dod_receipts/OMN-12790/dod-deploy-assessment/command.yaml"
+  - id: "dod-occ-pr-2376"
+    description: >-
+      onex_change_control PR #2376 carries the central OMN-12790 contract and receipt evidence paired
+      with omnimarket PR #1134.
+    source: "manual"
+    status: "verified"
+    checks:
+      - check_type: "command"
+        check_value: >-
+          grep -q '^status: PASS$' "$CONTRACT_REPO_DIR/drift/dod_receipts/OMN-12790/dod-occ-pr-2376/command.yaml"

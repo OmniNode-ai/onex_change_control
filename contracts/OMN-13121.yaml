@@ -1,0 +1,64 @@
+---
+schema_version: "1.0.0"
+ticket_id: "OMN-13121"
+title: "Upsert zero-token/zero-cost delegation terminals (remove over-broad projection drop)"
+summary: >-
+  handler_projection_delegation._project_delegate_skill_terminal_sync carried an OMN-11923 guard (commit
+  2607d41e) that returned rows_upserted=0 — silently dropping the event — when tokens_input, tokens_output
+  and cost_usd were all zero, intended to keep synthetic golden-chain noise out of delegation_events.
+  That guard was over-broad: zero-token/zero-cost is also the steady state for free local-LLM delegations
+  and golden-chain proofs, valid terminals indistinguishable from synthetic ones by token/cost alone,
+  so it stranded the organic delegation tail at zero rows. Fix: remove the guard so a well-formed terminal
+  always upserts exactly one row. Malformed/empty payloads remain rejected upstream (ModelDelegateSkillTerminalProjection
+  requires status, correlation_id, task_type — from_payload() raises a pydantic ValidationError); dedup
+  against synthetic re-emits stays handled by the correlation_id UPSERT key plus _preserve_existing_evidence.
+  Aligns the sync (live) path with the already-correct async sibling _project_delegate_skill_terminal.
+  Adds a row-delta regression test test_zero_token_terminal_event_upserts_exactly_one_row (before=0, publish
+  zero-value terminal, after=1).
+is_seam_ticket: false
+interface_change: false
+interfaces_touched: []
+emergency_bypass:
+  enabled: false
+  justification: ""
+  follow_up_ticket_id: ""
+dod_evidence:
+  - id: "dod-omnimarket-pr"
+    description: >-
+      omnimarket PR (branch jonah/omn-13121-projection-noop, base=dev, head 48cc07732451780c15909a47bc333e1646521ce6).
+      Removes the over-broad zero-token/zero-cost guard from node_projection_delegation/handlers/handler_projection_delegation.py
+      so a well-formed terminal always upserts exactly one row. Regression test test_zero_token_terminal_event_upserts_exactly_one_row
+      GREEN (row-delta before=0, after=1). Projection delegation suite 40/40 GREEN. ruff clean, mypy --strict
+      clean. 3 Kafka integration failures are env-only (no broker reachable in worktree), not code regressions.
+    source: "manual"
+    status: "verified"
+    checks:
+      - check_type: "command"
+        check_value: >-
+          grep -q '^status: PASS$' "$CONTRACT_REPO_DIR/drift/dod_receipts/OMN-13121/dod-omnimarket-pr/command.yaml"
+          && grep -q '^ticket_id: "OMN-13121"$' "$CONTRACT_REPO_DIR/drift/dod_receipts/OMN-13121/dod-omnimarket-pr/command.yaml"
+  - id: "dod-deploy-assessment"
+    description: >-
+      Deploy assessment: deploy_pending = true. The fix is NOT yet live on the dev lane. No live deploy,
+      restart, topic mutation, or .201 mutation was performed. The change lands on dev via a coordinated
+      dev redeploy folded with OMN-13124 / OMN-13122; the projection row-materialization is only observable
+      after that batched dev lane rebuild. Do not claim deployed.
+    source: "manual"
+    status: "verified"
+    checks:
+      - check_type: "command"
+        check_value: >-
+          grep -q '^status: PASS$' "$CONTRACT_REPO_DIR/drift/dod_receipts/OMN-13121/dod-deploy-assessment/command.yaml"
+          && grep -q '^ticket_id: "OMN-13121"$' "$CONTRACT_REPO_DIR/drift/dod_receipts/OMN-13121/dod-deploy-assessment/command.yaml"
+          && grep -q 'No live deploy' "$CONTRACT_REPO_DIR/drift/dod_receipts/OMN-13121/dod-deploy-assessment/command.yaml"
+  - id: "dod-occ-pr"
+    description: >-
+      This OCC PR carries the central OMN-13121 contract and the dod-omnimarket-pr / dod-deploy-assessment
+      receipts that the omnimarket PR Receipt-Gate resolves via Evidence-Source: OCC#<pr>.
+    source: "manual"
+    status: "verified"
+    checks:
+      - check_type: "command"
+        check_value: >-
+          grep -q '^status: PASS$' "$CONTRACT_REPO_DIR/drift/dod_receipts/OMN-13121/dod-occ-pr/command.yaml"
+          && grep -q '^ticket_id: "OMN-13121"$' "$CONTRACT_REPO_DIR/drift/dod_receipts/OMN-13121/dod-occ-pr/command.yaml"

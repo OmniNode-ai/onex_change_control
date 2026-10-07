@@ -1,0 +1,79 @@
+# SPDX-FileCopyrightText: 2026 OmniNode.ai Inc.
+# SPDX-License-Identifier: MIT
+#
+# OMN-18327: ADVISORY gate - a human-authored PR touching privileged paths.
+#
+# WHY THIS EXISTS. On 2026-09-13 a validator change to this repo arrived under
+# the shared human account, became un-approvable (every lane commits as one
+# person; GitHub blocks self-approval of your own PR) and queued every product
+# PR whose OCC companion had to merge behind it. The operator named the fix in
+# session: "That's why we have OCC writer bot." The sanctioned path is
+# `.github/workflows/open-pr-as-writer-app.yml`. This check makes a
+# human-authored privileged PR visible instead of silent. Ruling recorded
+# verbatim at docs/tracking/ROLLING_WORK_LEDGER.md:7452.
+#
+# ****************************************************************************
+# DELIBERATELY ADVISORY FOR NOW - READ THIS BEFORE PROMOTING IT
+# ****************************************************************************
+# It lives in its OWN workflow file, separate from ci.yml, and is therefore
+# not in the required `CI Summary` rollup. Promoting it means, in one change:
+#   - adding its job name to STRICT_GATE_JOBS in scripts/ci/ci_summary_gate.py
+#     (which makes it transitively required through the CI Summary umbrella),
+#     or adding the context to .github/required-checks.yaml and branch
+#     protection.
+#
+# The promotion PRECONDITION is explicit and is not a matter of taste: at
+# least ONE PR must have merged through the writer-App dispatch path first.
+# Until that has happened, the sanctioned route is unproven end to end, and a
+# required check that refuses the only route people currently have would wedge
+# this repo exactly the way OCC#9362 did. `onex_change_control@main` carries
+# `enforce_admins: true`, so a required failing check there blocks merges for
+# administrators too. The whole point of this ticket was to UNDO a wedge; it
+# would be a poor trade to create one while closing it.
+#
+# The check itself is fail-closed on an unreadable fact (exit 2), so making it
+# required later changes what a refusal COSTS, not what it decides.
+
+name: Human-Authored Privileged PR Gate
+
+on:
+  pull_request:
+    types: [opened, synchronize, reopened, ready_for_review, edited]
+
+permissions:
+  contents: read
+  pull-requests: read
+
+concurrency:
+  group: human-authored-privileged-pr-${{ github.event.pull_request.number }}
+  cancel-in-progress: true
+
+jobs:
+  check-human-authored-privileged-pr:
+    name: check-human-authored-privileged-pr
+    runs-on: ${{ fromJSON(vars.OMNI_TRUSTED_CI_RUNS_ON_JSON || '["self-hosted","omnibase-ci"]') }}
+    timeout-minutes: 45
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v7
+        with:
+          fetch-depth: 1
+          persist-credentials: false
+
+      - uses: ./.github/actions/setup-uv
+        with:
+          python-version: "3.12"
+
+      # The author type and the changed-file list both come from the event
+      # payload and the API rather than from the checkout: the question is who
+      # opened the PR and what it touches, neither of which is a property of
+      # the tree.
+      - name: Check PR authorship against privileged paths (OMN-18327)
+        env:
+          GH_TOKEN: ${{ github.token }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+        run: |
+          set -euo pipefail
+          uv run check-human-authored-privileged-pr \
+            --pr "${PR_NUMBER}" \
+            --repo "${{ github.repository }}"

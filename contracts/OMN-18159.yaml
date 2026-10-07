@@ -1,0 +1,1098 @@
+---
+schema_version: "1.0.0"
+ticket_id: "OMN-18159"
+title: "Port the delegation projection writer to the runtime kernel so delegation_events is written as
+  tenant_projection_writer"
+summary: >
+  OCC companion for OmniNode-ai/omnimarket#2457 — the first landed slice of OMN-18159, which binds AC1
+  only, and binds it PARTIALLY. What #2457 closes is the sub-gap AC1 names first: the shared SYNC projection
+  write protocol could not express an attested write at all. Green-bar leg 4 requires the newest delegation_events
+  row from a tenant outside the historical compiled map to carry writer_identity == "tenant_projection_writer",
+  and that column can only be produced by a statement carrying a SQL expression Postgres evaluates per
+  row on BOTH arms. delegation_events is written today by DelegationProjectionRunner, a standalone async
+  process whose _dynamic_upsert can do that; the in-process def-B handler that must take the table over
+  writes through ProtocolProjectionDatabaseSync.upsert(table, conflict_key, row) -> bool, which supports
+  none of the four required capabilities — SQL-expression columns, insert-only columns withheld from the
+  DO UPDATE arm, RETURNING, or an explicit tenant override. node_projection_delegation/contract.yaml lines
+  322-331 already recorded this widening as its own change with the adapter implementations in scope.
+  #2457 is that change. It adds omnimarket/projection/upsert_statement.py, which owns the decisions (which
+  column goes on which arm, which expression is admissible, which identifier is safe) and renders them
+  into each driver's placeholder style, and implements the capability on the three sync adapters. THE
+  DESIGN DECISION WORTH THE REVIEW: the attested write is a SEPARATE runtime_checkable protocol, not two
+  more methods on the existing one. A runtime_checkable protocol matches on method PRESENCE, so adding
+  a method to ProtocolProjectionDatabaseSync silently reclassifies every structural implementation as
+  a non-implementation; around twenty test doubles in that repo implement the three-argument upsert and
+  nothing else, and every projection handler guarding its injected adapter with an isinstance check would
+  have raised TypeError against all of them at once, with no compiler warning. That was hit during the
+  build and backed out, and a standing test now asserts the base protocol did not grow a method. WHAT
+  IS DELIBERATELY NOT DONE, stated rather than implied. DelegationProjectionRunner is UNCHANGED — it writes
+  the live business-proof path, and converging it onto the shared builder is a separate change; what is
+  asserted instead is a differential ratchet between two live implementations, which cannot go stale the
+  way a copied constant can. No existing caller changes behaviour: upsert keeps its signature and its
+  bool, and every adapter's default-argument path renders the statement it rendered before. AC1 is NOT
+  fully discharged by this PR — the nine-commit handler port, the tenant-scoped read fix, the missing
+  delegation_shadow_comparisons writer and the kernel adapter's own widening in omnibase_infra all remain.
+  AC2 and AC3 are not started and are NOT bound here. RULE 24(d): the .201 compose dev lane runs no onex-api,
+  has row-level security off and writes as a superuser, so the RLS-dependent halves — the insert-only
+  column's WITH CHECK behaviour and the scoped writer principal the attestation records — are NOT exercised
+  by the lab pass; what the lab proves is the expression semantics and the statement shape against a real
+  Postgres, and the RLS proof is owed by AC3's staging readback and is not claimed here. No cluster object
+  was mutated, no workflow was dispatched, no credential was minted, rotated, re-issued or revoked, and
+  no secret value was read or printed (rule 22). ONE PROOF IS DELIBERATELY NOT A dod_evidence ITEM, and
+  the reason is worth stating: the property that POSTGRES rather than the application evaluates the attestation
+  expressions, and that the DO UPDATE arm restates them instead of leaving a re-written row wearing its
+  FIRST writer's stamp, can only be shown against a real Postgres. It was shown, on the .201 lab dev lane,
+  5 tests passing (rule 24, lab before staging), and it is recorded in the product PR body and the work
+  ledger. It is NOT declared here because the product repo's CI runner has no reachable Postgres: the
+  same command there selects the 5 integration tests, skips all 5, exits 0 and would be written up as
+  a PASS. A check that reports success by running nothing is the vacuous-evidence shape this corpus exists
+  to refuse, and it would be worse than no item at all.
+is_seam_ticket: false
+interface_change: true
+interfaces_touched:
+  - "protocols"
+evidence_requirements:
+  - kind: "ci"
+    description: "PR #2457 CI checks green"
+    command: "gh pr checks ${PR_NUMBER} --repo ${REPO}"
+  - kind: "tests"
+    description: |-
+      Behavior proof for PR #2457 on OmniNode-ai/omnimarket, derived from the PR's own diff: the test
+      module it adds. Executed at cwd `${OMNI_HOME}/omnimarket`.
+    command: "uv run pytest tests/test_omn18159_sync_upsert_write_contract.py -q"
+emergency_bypass:
+  enabled: false
+  justification: ""
+  follow_up_ticket_id: ""
+dod_evidence:
+  - id: "dod-OmniNode-ai-omnimarket-pr-2457"
+    description: "PR #2457 on OmniNode-ai/omnimarket — Evidence-Source autobind."
+    source: "generated"
+    binds_ac:
+      - "AC1"
+    checks:
+      - check_type: "command"
+        check_value: |-
+          gh api repos/OmniNode-ai/omnimarket/contents/src/omnimarket/projection/postgres_sync_database.py?ref=89c876c650fe00e329df5aeeb4a71e765456ae75 --jq '.content' | base64 -d | grep -c 'def upsert_returning'
+  - id: "dod-OmniNode-ai-omnimarket-pr-2457-ci"
+    description: "PR #2457 on OmniNode-ai/omnimarket — product diff scope check (OMN-14425)."
+    source: "generated"
+    binds_ac:
+      - "AC1"
+    checks:
+      - check_type: "command"
+        check_value: "gh pr view 2457 --repo OmniNode-ai/omnimarket --json files"
+  - id: "dod-occ-diff-derived-behavior-proof"
+    description: "PR #2457 on OmniNode-ai/omnimarket — diff-derived behavior proof (OMN-16434)."
+    source: "generated"
+    binds_ac:
+      - "AC1"
+    checks:
+      - check_type: "test_passes"
+        check_value: "uv run pytest tests/test_omn18159_sync_upsert_write_contract.py -q"
+        cwd: "${OMNI_HOME}/omnimarket"
+  - id: "occ-self-bind-pr-8973"
+    description: "OCC companion PR #8973 — self-bind for OMN-18159 (OMN-14650)."
+    source: "generated"
+    binds_ac:
+      - "AC1"
+    checks:
+      - check_type: "command"
+        check_value: "gh pr view 8973 --repo OmniNode-ai/onex_change_control --json number,state"
+  - id: "dod-omn18159-base-protocol-blast-radius-guard"
+    description: >
+      The standing guard for the design decision this PR turns on. ProtocolProjectionDatabaseSync is runtime_checkable,
+      so it matches on method PRESENCE; adding a method to it reclassifies roughly twenty three-argument
+      test doubles as non-implementations at once and makes every handler that guards its injected adapter
+      with an isinstance check raise TypeError against all of them, with no compiler warning. The test
+      asserts the base protocol did NOT grow a method, that a three-argument double still satisfies it
+      and does NOT satisfy the attested-write protocol, and that all three real adapters carry both. Without
+      this the next lane widens the base protocol and finds out in production.
+    source: "generated"
+    binds_ac:
+      - "AC1"
+    checks:
+      - check_type: "test_passes"
+        check_value: |-
+          uv run pytest tests/test_omn18159_sync_upsert_write_contract.py::TestProtocolCarriesTheWriteContract -q
+        cwd: "${OMNI_HOME}/omnimarket"
+  - id: "dod-omn18159-builder-runner-differential"
+    description: >
+      The anti-drift ratchet between two LIVE implementations. DelegationProjectionRunner is deliberately
+      not changed by this PR, so the risk it creates is that the shared builder and the runner disagree
+      about the closed expression set, the attestation columns or the composed statement — which is how
+      the four implementations of this statement drifted apart in the first place. The test renders the
+      builder's numeric dialect for the runner's own delegation-events call shape and compares it against
+      the statement the runner composes for the same inputs, and asserts both sides' expression set and
+      attestation mapping are the same objects' contents. A copied constant would go stale silently; this
+      cannot.
+    source: "generated"
+    binds_ac:
+      - "AC1"
+    checks:
+      - check_type: "test_passes"
+        check_value: |-
+          uv run pytest tests/test_omn18159_sync_upsert_write_contract.py::TestBuilderAgreesWithTheLiveRunner -q
+        cwd: "${OMNI_HOME}/omnimarket"
+  - id: "dod-omn18159-no-existing-caller-regressed"
+    description: >
+      The claim that this widening changes no existing behaviour, proven rather than asserted. The governed
+      pre-push selector classified the change as test_infrastructure, escalated fail-closed to the FULL
+      suite, and placed it off-box on lab host h201.2 per rule 21: 19999 tests green on commit 89c876c650fe00e329df5aeeb4a71e765456ae75
+      in 206s, suite log sha256 9b32aaf8fae2cd49202efe0568fec88cc333523edddefa5374176713f8b4e19c. The
+      focused re-run named here covers the adapter consumers and the structural doubles specifically —
+      the population that a protocol widening puts at risk — including the two doubles that wrap an inner
+      adapter's upsert.
+    source: "generated"
+    binds_ac:
+      - "AC1"
+    checks:
+      - check_type: "test_passes"
+        check_value: |-
+          uv run pytest tests/test_postgres_sync_database_omn14015.py tests/test_omn15598_inmemory_upsert_parity.py tests/test_cli_projection_writer_tenant_rls_omn15306.py tests/test_writer_tenant_isolation_omn14898.py tests/test_omn16804_registry_resolved_write_tenant.py tests/test_projection_handlers.py tests/test_omn15905_delegation_projection_writer_seam.py tests/test_omn18140_delegation_writer_attestation.py src/omnimarket/nodes/node_projection_session_replay/tests/test_omn17888_indexed_reads.py src/omnimarket/nodes/node_projection_live_events/tests/test_projection_live_events.py -q
+        cwd: "${OMNI_HOME}/omnimarket"
+  - id: "dod-OmniNode-ai-omnibase_core-pr-1676"
+    description: >
+      PR #1676 on OmniNode-ai/omnibase_core — the shared targeted-column UPSERT plan builder, promoted
+      into core as models/projection/model_upsert_plan.py. This is AC5's prerequisite and the sequenced
+      alternative to duplicating the builder into omnibase_infra: core depends on neither omnimarket nor
+      omnibase_infra and both depend on it, so under compat -> core -> spi -> infra it is the only shared
+      home, and the closed set of admissible SQL expressions is precisely the security decision that must
+      not exist in four copies. Nothing consumes it yet — omnimarket re-points and deletes its own copy
+      once a released core is available, then omnibase_infra bumps its pin and widens ProjectionDatabaseOperations
+      on it. REGRESSION EVIDENCE, folded into this item rather than declared as its own: the governed
+      pre-push selector classified the change reason=shared_module, escalated fail-closed to the FULL
+      suite and ran it -- 45066 passed, 53 skipped, 3 xpassed in 6403.84s on commit d6cbb19a2b3c6f31b03b45d5464134f2dc6ca7d7
+      -- and the new module's own 28 tests assert the rendered statement byte-exactly per driver dialect,
+      including SQLite's lowercase excluded and its tight ON CONFLICT( spelling, which is what lets each
+      adapter adopt the builder without changing a byte of the statement it already issues. It is NOT
+      a separate dod_evidence item because omnibase_core ships no occ-receipt-runner workflow, so a declared
+      test_passes check there has nothing that can execute it and would sit missing forever, blocking
+      the companion on an item no surface can ever satisfy.
+    source: "generated"
+    binds_ac:
+      - "AC5"
+    checks:
+      - check_type: "command"
+        check_value: |-
+          gh api repos/OmniNode-ai/omnibase_core/contents/src/omnibase_core/models/projection/model_upsert_plan.py?ref=d6cbb19a2b3c6f31b03b45d5464134f2dc6ca7d7 --jq '.content' | base64 -d | grep -c 'class ModelUpsertPlan'
+      - check_type: "command"
+        check_value: |-
+          gh api repos/OmniNode-ai/omnibase_core/pulls/1676/files --paginate --jq '.[].filename' | grep -cFx 'pyproject.toml'
+  - id: "occ-self-bind-pr-9010"
+    description: "Binds OMN-18159 to OCC companion PR #9010 (self-bind)."
+    source: "generated"
+    binds_ac:
+      - "AC5"
+    checks:
+      - check_type: "command"
+        check_value: "gh pr view 9010 --repo OmniNode-ai/onex_change_control --json number,state"
+  - id: "dod-OmniNode-ai-omnimemory-pr-489"
+    description: "PR #489 on OmniNode-ai/omnimemory — Evidence-Source autobind."
+    source: "generated"
+    checks:
+      - check_type: "command"
+        check_value: |-
+          gh api repos/OmniNode-ai/omnimemory/contents/uv.lock?ref=593e974f170f44257c7f2966d0fc1a9887e25b76 --jq '.content' | base64 -d | grep -cF 'https://files.pythonhosted.org/packages/c2/9f/d1a73e3e349ca07c573fbc3dbaf2c7e4b0dffb521f819b18f73915c2e657/omnibase_core-0.47.9.tar.gz'
+  - id: "dod-OmniNode-ai-omnimemory-pr-489-ci"
+    description: "PR #489 on OmniNode-ai/omnimemory — product diff scope check (OMN-14425)."
+    source: "generated"
+    checks:
+      - check_type: "command"
+        check_value: "gh pr view 489 --repo OmniNode-ai/omnimemory --json files"
+  - id: "occ-self-bind-pr-9013"
+    description: "OCC companion PR #9013 — self-bind for OMN-18159 (OMN-14650)."
+    source: "generated"
+    checks:
+      - check_type: "command"
+        check_value: "gh pr view 9013 --repo OmniNode-ai/onex_change_control --json number,state"
+  - id: "dod-OmniNode-ai-omninode_infra-pr-1317"
+    description: "PR #1317 on OmniNode-ai/omninode_infra — Evidence-Source autobind."
+    source: "generated"
+    checks:
+      - check_type: "command"
+        check_value: "gh pr view 1317 --repo OmniNode-ai/omninode_infra --json number,state"
+  - id: "dod-OmniNode-ai-omninode_infra-pr-1317-ci"
+    description: "PR #1317 on OmniNode-ai/omninode_infra — product diff scope check (OMN-14425)."
+    source: "generated"
+    checks:
+      - check_type: "command"
+        check_value: "gh pr view 1317 --repo OmniNode-ai/omninode_infra --json files"
+  - id: "occ-self-bind-pr-9014"
+    description: "OCC companion PR #9014 — self-bind for OMN-18159 (OMN-14650)."
+    source: "generated"
+    checks:
+      - check_type: "command"
+        check_value: "gh pr view 9014 --repo OmniNode-ai/onex_change_control --json number,state"
+  - id: "dod-OmniNode-ai-omnimarket-pr-2465"
+    description: >
+      PR #2465 on OmniNode-ai/omnimarket — Phase 1b(i). All three delegation-table write paths now go
+      through one site that stamps the write attestation and republishes the row the database stored onto
+      the per-row decisions exposure, closing the gap this node's own contract had recorded in writing
+      ("THE SYNC HANDLER DOES NOT PUBLISH ... widening the shared protocol to return the stored row is
+      its own change with three adapter implementations in scope"). One site rather than three because
+      a row durable from one path and invisible to a reader from another is worse than either state alone.
+      A store that cannot perform an attested write is REFUSED by name rather than fallen back from: the
+      fallback persists the row with writer_identity NULL on every update arm, which reads to leg 4 exactly
+      like "nobody wrote this". A real defect was found and fixed while building and it is the reason
+      the probe below greps for the ordering token rather than the publish call: SnapshotCache drops a
+      delta whose source_offset is <= the cached one, and this exposure's key is MUTABLE, so the fixed
+      0/0 coordinates the sibling sync republish uses would have served the first write per correlation_id
+      and silently dropped every later one -- a page frozen on a real but stale row while every write
+      reported success. The token is written_at, the one monotonic value the DATABASE produces rather
+      than this process. Proven against real Postgres on the .201 lab lane (rule 24 lab-first): 19 tests
+      green, of which 3 show the database stamping an identity this process never supplied, written_at
+      returning as a datetime the token function can read, and a rewrite restamping the row and advancing
+      both the stamp and the published offset. Broader regression 1055 passed / 2 skipped; mypy --strict
+      clean across 3211 files; the projection write-path real-DB gate correctly FAILED first and now reports
+      PASS. Invariant 6 holds -- the runner still publishes this exposure until Phase 2 drops its routing
+      entry, and a test asserts both producers key it on correlation_id rather than assuming it.
+    source: "generated"
+    binds_ac:
+      - "AC1"
+      - "AC2"
+    checks:
+      - check_type: "command"
+        check_value: |-
+          gh api repos/OmniNode-ai/omnimarket/contents/src/omnimarket/nodes/node_projection_delegation/handlers/handler_projection_delegation.py?ref=d19a7d9d50146dda3359a38220494bdd8be3c23c --jq '.content' | base64 -d | grep -c 'def _write_ordering_token'
+  - id: "dod-OmniNode-ai-omnimarket-pr-2465-ci"
+    description: "PR #2465 on OmniNode-ai/omnimarket — product diff scope check (OMN-14425)."
+    source: "generated"
+    binds_ac:
+      - "AC1"
+    checks:
+      - check_type: "command"
+        check_value: "gh pr view 2465 --repo OmniNode-ai/omnimarket --json files"
+  - id: "occ-self-bind-pr-9019"
+    description: "OCC companion PR #9019 — self-bind for OMN-18159 (OMN-14650)."
+    source: "generated"
+    binds_ac:
+      - "AC1"
+    checks:
+      - check_type: "command"
+        check_value: "gh pr view 9019 --repo OmniNode-ai/onex_change_control --json number,state"
+  - id: "dod-OmniNode-ai-omniintelligence-pr-894"
+    description: "PR #894 on OmniNode-ai/omniintelligence — Evidence-Source autobind."
+    source: "generated"
+    checks:
+      - check_type: "command"
+        check_value: |-
+          gh api repos/OmniNode-ai/omniintelligence/contents/uv.lock?ref=12ef69576e1cd297c82f909fd9a72c870d0fcc12 --jq '.content' | base64 -d | grep -cF 'https://files.pythonhosted.org/packages/c2/9f/d1a73e3e349ca07c573fbc3dbaf2c7e4b0dffb521f819b18f73915c2e657/omnibase_core-0.47.9.tar.gz'
+  - id: "dod-OmniNode-ai-omniintelligence-pr-894-ci"
+    description: "PR #894 on OmniNode-ai/omniintelligence — product diff scope check (OMN-14425)."
+    source: "generated"
+    checks:
+      - check_type: "command"
+        check_value: "gh pr view 894 --repo OmniNode-ai/omniintelligence --json files"
+  - id: "occ-self-bind-pr-9015"
+    description: "OCC companion PR #9015 — self-bind for OMN-18159 (OMN-14650)."
+    source: "generated"
+    checks:
+      - check_type: "command"
+        check_value: "gh pr view 9015 --repo OmniNode-ai/onex_change_control --json number,state"
+  - id: "dod-OmniNode-ai-omnibase_infra-pr-3422"
+    description: >
+      PR #3422 on OmniNode-ai/omnibase_infra — AC5, the FOURTH and last implementation. The runtime kernel's
+      own ProjectionDatabaseOperations, which it injects into every in-process projection handler, gains
+      upsert_returning with SQL-expression columns, insert-only columns and RETURNING, driven by the shared
+      omnibase_core plan (core pinned 0.47.8 -> 0.47.9 at BOTH declaration sites). Until this landed,
+      a handler running under the kernel could not stamp the write attestation at all, and omnimarket's
+      delegation handler refused this adapter BY NAME rather than persisting a row whose writer_identity
+      would be NULL on every update arm. A BUG WAS CAUGHT BY THE FIRST IMPLEMENTATION AND IS NOW PINNED
+      BY ITS OWN TEST: each domain subclass guards writes (the internal one rejects a canonical tenant_id,
+      the tenant one resolves attribution and scope, the catalog one enforces declared access) and every
+      guard hung off upsert, so an upsert_returning added beside it inherited the BASE implementation
+      and silently skipped all of them. Both entry points now route through one _prepare_write hook each
+      subclass overrides, so a rule added later reaches both by construction. A caller-supplied tenant
+      override is refused rather than honoured, because accepting one would reintroduce the attribution-from-the-caller
+      path those guards close. 13 new tests green, 688 green across tests/unit/runtime/auto_wiring, mypy
+      clean across 3004 source files, and the ONEX pattern gate satisfied by moving a stateless helper
+      to module level and deleting a redundant wrapper rather than by relaxing the gate. Rule 24(d): no
+      runtime effect on any lane yet, since nothing under the kernel calls this until the delegation routing
+      flips in a later phase; no lab proof claimed.
+    source: "generated"
+    binds_ac:
+      - "AC5"
+    checks:
+      - check_type: "command"
+        check_value: |-
+          gh api repos/OmniNode-ai/omnibase_infra/contents/src/omnibase_infra/runtime/auto_wiring/handler_wiring.py?ref=3b30e545972ec169192e413c12e977b7e778b5cc --jq '.content' | base64 -d | grep -c 'def _prepare_write'
+      - check_type: "command"
+        check_value: |-
+          gh api repos/OmniNode-ai/omnibase_infra/pulls/3422/files --paginate --jq '.[].filename' | grep -cFx 'pyproject.toml'
+  - id: "occ-self-bind-pr-9023"
+    description: "Binds OMN-18159 to OCC companion PR #9023 (self-bind)."
+    source: "generated"
+    binds_ac:
+      - "AC5"
+    checks:
+      - check_type: "command"
+        check_value: "gh pr view 9023 --repo OmniNode-ai/onex_change_control --json number,state"
+  - id: "dod-OmniNode-ai-onex_change_control-pr-9017"
+    description: "PR #9017 on OmniNode-ai/onex_change_control — Evidence-Source autobind."
+    source: "generated"
+    checks:
+      - check_type: "command"
+        check_value: |-
+          gh api repos/OmniNode-ai/onex_change_control/contents/uv.lock?ref=f774df23ab1fc84457c1e58ca5b06f36734a7b7a --jq '.content' | base64 -d | grep -cF 'https://files.pythonhosted.org/packages/c2/9f/d1a73e3e349ca07c573fbc3dbaf2c7e4b0dffb521f819b18f73915c2e657/omnibase_core-0.47.9.tar.gz'
+  - id: "dod-OmniNode-ai-onex_change_control-pr-9017-ci"
+    description: "PR #9017 on OmniNode-ai/onex_change_control — product diff scope check (OMN-14425)."
+    source: "generated"
+    checks:
+      - check_type: "command"
+        check_value: "gh pr view 9017 --repo OmniNode-ai/onex_change_control --json files"
+  - id: "occ-self-bind-pr-9020"
+    description: "OCC companion PR #9020 — self-bind for OMN-18159 (OMN-14650)."
+    source: "generated"
+    checks:
+      - check_type: "command"
+        check_value: "gh pr view 9020 --repo OmniNode-ai/onex_change_control --json number,state"
+  - id: "dod-OmniNode-ai-omniclaude-pr-2133"
+    description: "PR #2133 on OmniNode-ai/omniclaude — Evidence-Source autobind."
+    source: "generated"
+    checks:
+      - check_type: "command"
+        check_value: |-
+          gh api repos/OmniNode-ai/omniclaude/contents/uv.lock?ref=6182920a21ad4c79eebf92d89a865a37f845c637 --jq '.content' | base64 -d | grep -cF 'https://files.pythonhosted.org/packages/c2/9f/d1a73e3e349ca07c573fbc3dbaf2c7e4b0dffb521f819b18f73915c2e657/omnibase_core-0.47.9.tar.gz'
+  - id: "dod-OmniNode-ai-omniclaude-pr-2133-ci"
+    description: "PR #2133 on OmniNode-ai/omniclaude — product diff scope check (OMN-14425)."
+    source: "generated"
+    checks:
+      - check_type: "command"
+        check_value: "gh pr view 2133 --repo OmniNode-ai/omniclaude --json files"
+  - id: "occ-self-bind-pr-9018"
+    description: "OCC companion PR #9018 — self-bind for OMN-18159 (OMN-14650)."
+    source: "generated"
+    checks:
+      - check_type: "command"
+        check_value: "gh pr view 9018 --repo OmniNode-ai/onex_change_control --json number,state"
+  - id: "dod-OmniNode-ai-omnibase_infra-pr-3425"
+    description: >
+      PR #3425 on OmniNode-ai/omnibase_infra — the infra half of Phase 1b(ii), which lands FIRST because
+      the node-migration vendor parity gate refuses the omnimarket source PR until the vendored counterpart
+      exists on infra dev. Three declarations, each demanded by a gate rather than guessed: the migration
+      vendored byte-identical and declared in the application-migration ledger with its hash; tenant_projection_writer
+      granted SELECT on the four aggregate views, DERIVED from the node contract by scripts/generate_application_database_table_grants.py
+      rather than hand-written; and the four views added to the logical-to-physical schema bridge, without
+      which the derived grant names tenant.<view> while the migration grants the bare name and the grant-delivery
+      gate correctly reports the privilege as undelivered -- a capability the runtime advertises and the
+      database refuses. Undelivered count returns to its pre-existing ratchet bound of 1; the bound was
+      not raised. 304 tests green across infra topology and manifest validation, mypy clean across 3004
+      source files. Inert on its own: nothing reads these views through the new grant until the source
+      PR merges, which is what makes the two-PR ordering safe.
+    source: "generated"
+    binds_ac:
+      - "AC2"
+    checks:
+      - check_type: "command"
+        check_value: "gh pr view 3425 --repo OmniNode-ai/omnibase_infra --json number,state"
+      - check_type: "command"
+        check_value: |-
+          gh api repos/OmniNode-ai/omnibase_infra/pulls/3425/files --paginate --jq '.[].filename' | grep -cFx 'docker/catalog/database-topology/judge.yaml'
+  - id: "occ-self-bind-pr-9033"
+    description: "Binds OMN-18159 to OCC companion PR #9033 (self-bind)."
+    source: "generated"
+    binds_ac:
+      - "AC2"
+    checks:
+      - check_type: "command"
+        check_value: "gh pr view 9033 --repo OmniNode-ai/onex_change_control --json number,state"
+  - id: "dod-OmniNode-ai-omnimarket-pr-2468"
+    description: >
+      PR #2468 on OmniNode-ai/omnimarket — Phase 1b(ii) under the operator ruling of 2026-09-11 (option
+      1). Migration 0039 re-groups the four delegation aggregate SQL views on tenant_id. They previously
+      aggregated the whole table and depended on the reader arriving with a row-level-security session
+      scope for the numbers to mean anything; the kernel's read seam derives its scope from a tenant_id
+      FILTER, which cannot be applied to a column the view does not have, so it saw no rows and would
+      have published ZEROS that read as a quiet period rather than as a fault. Every CTE gains tenant_id
+      in SELECT and GROUP BY, every nested aggregate groups by it so a JSON payload holds one tenant's
+      rows rather than a blend, and every CROSS JOIN becomes a join ON the tenant -- a cross join would
+      multiply tenants together, the one transformation error that silently produces plausible numbers.
+      decision_traces changes MEANING not shape: the latest twenty in the table becomes the latest twenty
+      of THIS tenant's, via a window partitioned by tenant. The runner is fixed in the same change because
+      it is still the live publisher -- it selected its own tenant_id literal beside agg.*, which against
+      a grouped view would put two columns of that name in one record. THIS TAKES INVARIANT 6 TO 5 OF
+      5: the in-process path now publishes all four aggregates plus the per-row exposure, which is what
+      Phase 2 was waiting on. Proven against real Postgres on the .201 lab lane with TWO tenants holding
+      different counts -- one tenant cannot distinguish a grouped view from the ungrouped one it replaces
+      -- and every zero-row assertion carries a positive control. Before: 1 row per view, no tenant column,
+      whole-table totals of 4. After: 2 rows per view with per-tenant totals of 3 and 1. NOT DONE, deliberately:
+      declaring tenant_column on the four exposures. It is the correct end state and closes the unscoped-serving
+      leak, but the operator morning page is unauthenticated and resolves no tenant, so all four panels
+      would refuse together; that trade belongs to whoever owns that page and limit: 1 is therefore unchanged
+      and still valid.
+    source: "generated"
+    binds_ac:
+      - "AC1"
+      - "AC2"
+    checks:
+      - check_type: "command"
+        check_value: |-
+          gh api repos/OmniNode-ai/omnimarket/contents/src/omnimarket/nodes/node_projection_delegation/handlers/handler_projection_delegation.py?ref=3b088ee97729accb06815d554c47110b79d798a3 --jq '.content' | base64 -d | grep -c 'def _publish_aggregate_snapshots'
+      - check_type: "command"
+        check_value: |-
+          gh api repos/OmniNode-ai/omnimarket/pulls/2468/files --paginate --jq '.[].filename' | grep -cFx 'pyproject.toml'
+  - id: "occ-self-bind-pr-9031"
+    description: "Binds OMN-18159 to OCC companion PR #9031 (self-bind)."
+    source: "generated"
+    binds_ac:
+      - "AC1"
+      - "AC2"
+    checks:
+      - check_type: "command"
+        check_value: "gh pr view 9031 --repo OmniNode-ai/onex_change_control --json number,state"
+  - id: "occ-self-bind-pr-9017"
+    description: >-
+      OCC self-binding receipt for PR #9017, the in-repo evidence PR carrying this contract. Binds OMN-18159
+      to the OCC PR by pr_number so eligibility can resolve a PASS receipt for the evidence PR itself.
+    source: "manual"
+    status: "verified"
+    checks:
+      - check_type: "command"
+        check_value: "gh pr view 9017 --repo OmniNode-ai/onex_change_control --json number,state,headRefName"
+  - id: "dod-OmniNode-ai-omnibase_infra-pr-3428"
+    description: >
+      PR #3428 on OmniNode-ai/omnibase_infra — migration 0040 realigns the four delegation aggregate views'
+      OWNER, which 0039 dropped. 0039 had to DROP and CREATE each view, because Postgres refuses a replace
+      that changes the column list and every one of them gained tenant_id, and a DROP discards the view's
+      owner as well as its privileges. 0039 restored the privileges and not the owner, and a view reads
+      its base tables with the privileges of the VIEW'S OWNER. The role that reaches 0039 is not the role
+      that created those views: migrations 0032, 0033 and 0034 each RESET ROLE, so everything after them
+      runs as the migration runner, which on a lane and in the source repo's fixtures is a SUPERUSER --
+      and a superuser is not subject to the base table's forced row-level security. So after 0039 a read
+      through any of the four returned EVERY tenant's rows whatever app.tenant_id held: the unscoped-serving
+      leak this ticket exists to remove, reintroduced by the change that removes it. MEASURED on a clean
+      postgres:16-alpine under SET ROLE <migrator>: through 0038 all four views are owned by <migrator>
+      with a NULL relacl; through 0039 all four are owned by postgres while delegation_events stays <migrator>'s;
+      through 0040 they are <migrator>'s again. It also denied the migrator's own reads, which is how
+      it surfaced -- three tests failing with 'permission denied for view projection_delegation_summary'.
+      ADDITIVE rather than an edit to 0039, because 0039 is applied on the .201 dev lane with a recorded
+      content_sha256 and is declared in the manifest, so the append-only gate freezes its bytes -- and
+      additive is also what reaches a lane that already applied it. The fence detector then refused 0040
+      on its first run because its RAISE EXCEPTION text spelled the forced-row-level-security phrase inside
+      a STRING LITERAL, which survives the runner's comment strip: a gate parsing prose that merely mentions
+      its trigger, fixed by naming the property rather than the literal, and proven by running the Sanitized
+      Legacy RDS Fixture Proof locally -- FAIL before, PASS after -- because CI prints only the first
+      240 lines of that log and the refusal sits past them.
+    source: "generated"
+    binds_ac:
+      - "AC1"
+      - "AC2"
+    checks:
+      - check_type: "command"
+        check_value: "gh pr view 3428 --repo OmniNode-ai/omnibase_infra --json number,state"
+      - check_type: "command"
+        check_value: |-
+          gh api repos/OmniNode-ai/omnibase_infra/pulls/3428/files --paginate --jq '.[].filename' | grep -cFx 'docker/migrations/forward/_ledger/application-migrations.tsv'
+  - id: "occ-self-bind-pr-9050"
+    description: "Binds OMN-18159 to OCC companion PR #9050 (self-bind)."
+    source: "generated"
+    binds_ac:
+      - "AC1"
+      - "AC2"
+    checks:
+      - check_type: "command"
+        check_value: "gh pr view 9050 --repo OmniNode-ai/onex_change_control --json number,state"
+  - id: "dod-OmniNode-ai-omnimarket-pr-2470"
+    description: >
+      PR #2470 on OmniNode-ai/omnimarket — omnimarket deletes its own upsert-plan builder and reads ModelUpsertPlan
+      / build_upsert_plan from omnibase_core 0.47.9. No shim and no re-export: a re-export would keep
+      two import paths alive and let the next edit land in the wrong one, and two copies of a decision
+      table is precisely what this builder exists to remove. It owns WHICH column goes on which arm of
+      the upsert, WHICH expression is admissible in a write attestation, and WHICH identifier is safe;
+      those decisions made in one place cannot diverge between write paths, and copied into four they
+      cannot help but. omnimarket and omnibase_infra both depend on omnibase_core and core depends on
+      neither, so under the compat -> core -> spi -> infra layering core is the only place both consumers
+      can share one copy. THE PROOF IS A COMPARISON, NOT A RESTATEMENT: the existing contract suite is
+      unchanged apart from the module path and passes against the core implementation -- 36 on its pure
+      half, and the five Postgres-backed cases it skips without a database pass on the onex-lab overlay
+      Postgres, 67 across the four affected suites there. No test was adapted to the new import. mypy
+      --strict clean over 31 files. Version 0.4.57 -> 0.4.58 because the packaged source changed while
+      dev and PyPI both sat on 0.4.57, and merging without a bump would alias two code states under one
+      wheel version.
+    source: "generated"
+    binds_ac:
+      - "AC1"
+      - "AC2"
+    checks:
+      - check_type: "command"
+        check_value: "gh pr view 2470 --repo OmniNode-ai/omnimarket --json number,state"
+      - check_type: "command"
+        check_value: |-
+          gh api repos/OmniNode-ai/omnimarket/pulls/2470/files --paginate --jq '.[].filename' | grep -cFx 'pyproject.toml'
+  - id: "occ-self-bind-pr-9064"
+    description: "Binds OMN-18159 to OCC companion PR #9064 (self-bind)."
+    source: "generated"
+    binds_ac:
+      - "AC1"
+      - "AC2"
+    checks:
+      - check_type: "command"
+        check_value: "gh pr view 9064 --repo OmniNode-ai/onex_change_control --json number,state"
+  - id: "dod-OmniNode-ai-omnibase_infra-pr-3431"
+    description: >
+      PR #3431 on OmniNode-ai/omnibase_infra — a read-only TABLE declaration is not a write grant. The
+      drift gate on the tenant_projection_writer grant set unioned the objects of EVERY TABLE grant block
+      in the topology, regardless of the privileges that block declares, and compared that union against
+      a regex matching only the write triple in one file, so a read-only declaration could never satisfy
+      it. Until PR #3425 no read-only declaration existed to expose the assumption. The four delegation
+      aggregates are SQL VIEWS declared access: read, which table_grant_derivation maps to READ_PRIVILEGES
+      -- SELECT alone -- and which the generator emits as its own SELECT-only block. NEITHER THE TOPOLOGY
+      NOR THE GRANT MIGRATION IS WRONG: the topology block is generated, and the writer already holds
+      SELECT on all four from node_projection_delegation/0039, the migration that creates the views, which
+      is where that grant must live because 0039 DROPs and CREATEs each view and a DROP discards its privileges.
+      So the assertion is scoped to the writable declarations and the read-only half is asserted rather
+      than dropped: SELECT-declared objects must be granted SELECT in the file that creates them, and
+      must NEVER be granted INSERT, UPDATE or DELETE anywhere -- 0040 made these views security_invoker
+      so a read evaluates row-level security against the caller, and a write privilege on a grouped aggregate
+      view is not coherent. FALSIFIED, NOT MERELY GREEN: three negative controls each fail the right test
+      (remove one writable grant; remove one view's SELECT; add a write grant on a view), and both assertions
+      carry a positive control on their own input set so neither can pass by comparing two empty sets.
+      No migration, topology file or grant changed, so the corpus a lane applies is byte-identical before
+      and after.
+    source: "generated"
+    binds_ac:
+      - "AC1"
+      - "AC2"
+    checks:
+      - check_type: "command"
+        check_value: |-
+          gh api repos/OmniNode-ai/omnibase_infra/contents/tests/integration/migrations/test_102_tenant_projection_writer_role_omn15425.py?ref=f36a48beb088ff3b2b4e7805ffacaf2802147f25 --jq '.content' | base64 -d | grep -c 'def _declared_table_objects'
+  - id: "dod-OmniNode-ai-omnibase_infra-pr-3431-ci"
+    description: >
+      PR #3431 on OmniNode-ai/omnibase_infra — product diff scope check (OMN-14425). The diff is one test
+      file and nothing else, which is the claim this item exists to hold: a gate that was asking a read
+      declaration to satisfy a write assertion is fixed in the gate, not by widening a privilege or editing
+      a generated topology to match a stale expectation.
+    source: "generated"
+    binds_ac:
+      - "AC1"
+      - "AC2"
+    checks:
+      - check_type: "command"
+        check_value: "gh pr view 3431 --repo OmniNode-ai/omnibase_infra --json files"
+  - id: "occ-self-bind-pr-9077"
+    description: >
+      OCC companion PR #9077 — self-bind for OMN-18159 (OMN-14650). Binds this ticket to the companion
+      carrying the evidence for omnibase_infra#3431.
+    source: "generated"
+    binds_ac:
+      - "AC1"
+      - "AC2"
+    checks:
+      - check_type: "command"
+        check_value: "gh pr view 9077 --repo OmniNode-ai/onex_change_control --json number,state"
+  - id: "dod-OmniNode-ai-omnimarket-pr-2473"
+    description: "PR #2473 on OmniNode-ai/omnimarket — Evidence-Source autobind."
+    source: "generated"
+    checks:
+      - check_type: "command"
+        check_value: |-
+          gh api repos/OmniNode-ai/omnimarket/contents/tests/unit/projection/test_morning_observability_page_omn17197.py?ref=8d65d22b2400446de2b18fcae222a845ae159f9a --jq '.content' | base64 -d | grep -c 'def _tenant_scoped_cfg'
+  - id: "dod-OmniNode-ai-omnimarket-pr-2473-ci"
+    description: "PR #2473 on OmniNode-ai/omnimarket — product diff scope check (OMN-14425)."
+    source: "generated"
+    checks:
+      - check_type: "command"
+        check_value: "gh pr view 2473 --repo OmniNode-ai/omnimarket --json files"
+  - id: "occ-self-bind-pr-9073"
+    description: "OCC companion PR #9073 — self-bind for OMN-18159 (OMN-14650)."
+    source: "generated"
+    checks:
+      - check_type: "command"
+        check_value: "gh pr view 9073 --repo OmniNode-ai/onex_change_control --json number,state"
+  - id: "dod-OmniNode-ai-omnimemory-pr-491"
+    description: >
+      PR #491 on OmniNode-ai/omnimemory is the follow-up dependency bump for the OMN-18159 omnibase_infra
+      0.38.22 release. The first generated bump only advanced omnibase_infra, but that wheel imports build_upsert_plan
+      from omnibase_core.models.projection, so the lockfile must carry omnibase_core 0.47.9 as the paired
+      runtime dependency. The evidence is intentionally content-bound to the PR head and checks the package
+      blocks in uv.lock, not just the PR title or branch name.
+    source: "generated"
+    binds_ac:
+      - "AC1"
+      - "AC2"
+    checks:
+      - check_type: "command"
+        check_value: |-
+          gh api repos/OmniNode-ai/omnimemory/contents/uv.lock?ref=ad7d48805e10fbc1f8ceeed1d95f953f4527fe53 --jq '.content' | base64 -d | python3 -c 'import sys; data = sys.stdin.read(); core = "name = \"omnibase-core\"\nversion = \"0.47.9\"" in data; infra = "name = \"omnibase-infra\"\nversion = \"0.38.22\"" in data; raise SystemExit(0 if core and infra else 1)'
+  - id: "dod-OmniNode-ai-omnimemory-pr-491-ci"
+    description: >
+      PR #491 on OmniNode-ai/omnimemory is limited to uv.lock for the paired dependency repair. This records
+      the product diff scope so the receipt gate can distinguish the lockfile-only release bump from unrelated
+      source changes.
+    source: "generated"
+    binds_ac:
+      - "AC1"
+      - "AC2"
+    checks:
+      - check_type: "command"
+        check_value: "gh pr view 491 --repo OmniNode-ai/omnimemory --json files"
+  - id: "occ-self-bind-pr-9083"
+    description: "Binds OMN-18159 to OCC companion PR #9083 (self-bind)."
+    source: "generated"
+    binds_ac:
+      - "AC1"
+      - "AC2"
+    checks:
+      - check_type: "command"
+        check_value: "gh pr view 9083 --repo OmniNode-ai/onex_change_control --json number,state,headRefName"
+  - id: "dod-OmniNode-ai-omninode_infra-pr-1355"
+    description: >
+      PR #1355 on OmniNode-ai/omninode_infra -- retire the standalone delegation writer Deployment, the
+      infra half of omnimarket#2476. OMN-15905 added that Deployment because the contract had a dead write
+      path and a dedicated process was the sanctioned shape; #2476 removes the ambiguity, so the contract
+      is carried by the consolidated tenant-domain writer already deployed here. The manifest is one file;
+      the retired name lived in FOURTEEN hand-maintained rosters that each fail closed on a Deployment
+      they can no longer find, and every one is updated, including the staging-composition document whose
+      self-hash is recomputed rather than its roster edited underneath it. Three places changed SUBJECT
+      rather than losing a case: the live-verify probe, the crash-probe positive control, and the tenant-credentials
+      mirror test. This removes a 100m writer rather than adding one, on a node at about 87 percent CPU
+      requests.
+    source: "generated"
+    binds_ac:
+      - "AC1"
+      - "AC2"
+    checks:
+      - check_type: "command"
+        check_value: "gh pr view 1355 --repo OmniNode-ai/omninode_infra --json number,state"
+  - id: "dod-OmniNode-ai-omninode_infra-pr-1355-ci"
+    description: >
+      PR #1355 on OmniNode-ai/omninode_infra -- product diff scope check (OMN-14425). The diff deletes
+      one Deployment manifest and updates the rosters that name it; it adds no workload and grants no
+      new access. 1236 k8s tests pass with 2 skipped and the onex-dev overlay renders.
+    source: "generated"
+    binds_ac:
+      - "AC1"
+      - "AC2"
+    checks:
+      - check_type: "command"
+        check_value: "gh pr view 1355 --repo OmniNode-ai/omninode_infra --json files"
+  - id: "occ-self-bind-pr-9107"
+    description: >
+      OCC companion PR #9107 -- self-bind for OMN-18159 (OMN-14650). Binds this ticket to the companion
+      carrying the evidence for OmniNode-ai/omninode_infra#1355.
+    source: "generated"
+    binds_ac:
+      - "AC1"
+      - "AC2"
+    checks:
+      - check_type: "command"
+        check_value: "gh pr view 9107 --repo OmniNode-ai/onex_change_control --json number,state"
+  - id: "dod-OmniNode-ai-omnidash-pr-317"
+    description: "PR #317 on OmniNode-ai/omnidash — Evidence-Source autobind."
+    source: "generated"
+    checks:
+      - check_type: "command"
+        check_value: "gh pr view 317 --repo OmniNode-ai/omnidash --json number,state"
+      - check_type: "command"
+        check_value: |-
+          gh api repos/OmniNode-ai/omnidash/pulls/317/files --paginate --jq '.[].filename' | grep -cFx 'contract.yaml'
+  - id: "occ-self-bind-pr-9088"
+    description: "Binds OMN-18159 to OCC companion PR #9088 (self-bind)."
+    source: "generated"
+    checks:
+      - check_type: "command"
+        check_value: "gh pr view 9088 --repo OmniNode-ai/onex_change_control --json number,state"
+  - id: "dod-OmniNode-ai-omnimarket-pr-2476"
+    description: >
+      PR #2476 on OmniNode-ai/omnimarket -- the delegation projection moves to the consolidated tenant
+      writer. This is the half that makes the delegation row be written by tenant_projection_writer instead
+      of role_omnidash, the identity the staging-green-bar repin leg fails on. Two changes that are the
+      same change: the DelegationProjectionRunner routing entry is dropped, because one contract carried
+      two handlers for one subscription set and the runner, having no event_model, took every topic and
+      starved its sibling of routes; and the declared runtime profile moves to tenant-projection, the
+      consolidated tenant-domain writer, which is the ONLY process on onex-dev that resolves the tenant_projection
+      binding -- that binding has no dsn_env there at all, only a store secret_ref (OMN-17556). Booting
+      the runtime under the old profile was considered and refused on evidence: that profile names a standalone
+      runner process, so the name does not wire subscriptions and a runtime under it would subscribe to
+      nothing. The event-chain gate row flips back to the in-process shape and passes, which is the proof
+      rather than an accommodation.
+    source: "generated"
+    binds_ac:
+      - "AC1"
+      - "AC2"
+    checks:
+      - check_type: "command"
+        check_value: "gh pr view 2476 --repo OmniNode-ai/omnimarket --json number,state"
+      - check_type: "command"
+        check_value: |-
+          gh api repos/OmniNode-ai/omnimarket/pulls/2476/files --paginate --jq '.[].filename' | grep -cFx 'pyproject.toml'
+  - id: "dod-omnimarket-2476-proof-fix"
+    description: >
+      Append-only correction for dod-OmniNode-ai-omnimarket-pr-2476. The PR's durable product diff proof
+      is the delegation projection contract file, not pyproject.toml; this row supersedes only the stale
+      generated file-list probe while preserving the original evidence row for audit history.
+    source: "manual"
+    evidence_artifact: "supersedes_dod_evidence:dod-OmniNode-ai-omnimarket-pr-2476"
+    binds_ac:
+      - "AC1"
+      - "AC2"
+    checks:
+      - check_type: "command"
+        check_value: "gh pr view 2476 --repo OmniNode-ai/omnimarket --json number,state"
+      - check_type: "command"
+        check_value: |-
+          gh api repos/OmniNode-ai/omnimarket/pulls/2476/files --paginate --jq '.[].filename' | grep -cFx 'src/omnimarket/nodes/node_projection_delegation/contract.yaml'
+  - id: "occ-self-bind-pr-9106"
+    description: >
+      OCC companion PR #9106 -- self-bind for OMN-18159 (OMN-14650). Binds this ticket to the companion
+      carrying the evidence for OmniNode-ai/omnimarket#2476.
+    source: "generated"
+    binds_ac:
+      - "AC1"
+      - "AC2"
+    checks:
+      - check_type: "command"
+        check_value: "gh pr view 9106 --repo OmniNode-ai/onex_change_control --json number,state"
+  - id: "dod-OmniNode-ai-omnibase_infra-pr-3433"
+    description: >
+      PR #3433 on OmniNode-ai/omnibase_infra — the vendored half of the savings-views invoker-rights migration
+      (088), plus the before/after proof that the omnimarket half cannot carry. 0040 gave the FOUR delegation
+      aggregate views invoker rights; a read-only readback of onex-dev then found TWO MORE views selecting
+      from delegation_events with security_invoker unset, missed only because they belong to a different
+      node with a different migration lineage. Two ALTER VIEW statements and nothing else: nothing about
+      either view's shape changes, and a DROP is precisely what re-owns a view to whoever ran the migration,
+      which is the defect 0040 recorded. THE PAIR IS THE PROOF AND THE REASON IS CONCRETE, NOT PEDANTIC:
+      the .201 dev lane ALREADY carries security_invoker=true on both views while onex-dev does not, so
+      a post-state-only assertion run against the lane would have reported success for a migration that
+      had not run. The test therefore applies the same corpus stopped one migration earlier and asserts
+      the option UNSET before asserting 088 turns it true and is idempotent, on a throwaway PostgreSQL
+      16 cluster where public itself is disposable — which is why the proof lives here and not in the
+      owning repo, whose migrations are schema-qualified to public and cannot be isolated into a disposable
+      schema. Skips with a named reason below PostgreSQL 15 rather than failing and reporting a defect
+      in the wrong place.
+    source: "generated"
+    binds_ac:
+      - "AC1"
+      - "AC2"
+    checks:
+      - check_type: "command"
+        check_value: |-
+          gh api repos/OmniNode-ai/omnibase_infra/contents/tests/integration/migrations/test_088_savings_views_invoker_scoped_omn18159.py?ref=54a3af89549d3b9c0326c3412b8ad1e4488a6cf8 --jq '.content' | base64 -d | grep -c 'def _schema_safe'
+      - check_type: "command"
+        check_value: |-
+          gh api repos/OmniNode-ai/omnibase_infra/pulls/3433/files --paginate --jq '.[].filename' | grep -cFx 'docker/migrations/forward/_ledger/application-migrations.tsv'
+  - id: "occ-self-bind-pr-9091"
+    description: >
+      Binds OMN-18159 to OCC companion PR #9091 (self-bind), the companion carrying the evidence for omnibase_infra#3433.
+    source: "generated"
+    binds_ac:
+      - "AC1"
+      - "AC2"
+    checks:
+      - check_type: "command"
+        check_value: "gh pr view 9091 --repo OmniNode-ai/onex_change_control --json number,state"
+  - id: "dod-OmniNode-ai-omnimarket-pr-2474"
+    description: >
+      PR #2474 on OmniNode-ai/omnimarket -- the two delegation-savings views read as their INVOKER. 0040
+      gave the four delegation aggregate views invoker rights so a read evaluates row-level security against
+      the CALLER rather than the view owner; a read-only readback of onex-dev then found TWO MORE views
+      selecting from delegation_events with security_invoker unset, missed only because they belong to
+      a different node with a different migration lineage. Two ALTER VIEW statements and nothing else:
+      neither view changes shape, so nothing needs dropping, and a DROP is precisely what re-owns a view
+      to whoever ran the migration. Numbered 088, not 0041: these views belong to node_projection_savings,
+      whose sequence runs 074..087. The tenant_column half of the ruling is deliberately ABSENT and the
+      reason is mechanical, asserted in a test rather than described -- ProjectionTableConfig hard-fails
+      contract load for a tenant_column on an exposure that is not bus_backed, and neither savings exposure
+      is bus-backed today.
+    source: "generated"
+    binds_ac:
+      - "AC1"
+      - "AC2"
+    checks:
+      - check_type: "command"
+        check_value: |-
+          gh api repos/OmniNode-ai/omnimarket/contents/tests/test_omn18159_savings_views_invoker_scoped.py?ref=748676d4d647928735f3e79d8a984a7cb1833cc8 --jq '.content' | base64 -d | grep -c 'def test_the_savings_exposures_cannot_declare_a_tenant_column_yet'
+      - check_type: "command"
+        check_value: |-
+          gh api repos/OmniNode-ai/omnimarket/pulls/2474/files --paginate --jq '.[].filename' | grep -cFx 'src/omnimarket/nodes/node_projection_savings/migrations/088_savings_views_invoker_scoped.sql'
+  - id: "occ-self-bind-pr-9092"
+    description: >
+      OCC companion PR #9092 -- self-bind for OMN-18159 (OMN-14650). Binds this ticket to the companion
+      carrying the evidence for OmniNode-ai/omnimarket#2474.
+    source: "generated"
+    binds_ac:
+      - "AC1"
+      - "AC2"
+    checks:
+      - check_type: "command"
+        check_value: "gh pr view 9092 --repo OmniNode-ai/onex_change_control --json number,state"
+  - id: "dod-omnimarket-2476-diff-scope-v2"
+    description: >-
+      Supersedes the generated product-diff-scope probe for omnimarket#2476, which asserted pyproject.toml
+      is among that PR changed files. It is not, and the check failed closed on every omninode_infra PR
+      carrying this contract. The cause is ordinary and worth recording because it will recur: the branch
+      carried a version bump to 0.4.61, and while it was open the release automation opened dev for 0.4.60
+      (omnimarket#2475). Bringing the branch up to date made the bump a no-op, so pyproject.toml left
+      the diff. Nothing was wrong with the PR -- the release-identity gate was satisfied by the dev bump
+      -- the probe had encoded an assumption about a diff that later stopped holding. This item asserts
+      the delegation contract instead, which is in the diff and is what that PR changes. Verified both
+      ways before landing: the new path returns 1 against the live file list and the old returns 0, so
+      it is not a string chosen because it passes.
+    source: "generated"
+    evidence_artifact: "supersedes_dod_evidence:dod-OmniNode-ai-omnimarket-pr-2476"
+    binds_ac:
+      - "AC1"
+      - "AC2"
+    checks:
+      - check_type: "command"
+        check_value: |-
+          gh api repos/OmniNode-ai/omnimarket/pulls/2476/files --paginate --jq '.[].filename' | grep -cFx 'src/omnimarket/nodes/node_projection_delegation/contract.yaml'
+  - id: "dod-omn18159-ac1-subgaps-bound"
+    description: >-
+      AC1 sub-gap attribution. The autoclose sweep counted the five "Named sub-gaps, each measured" bullets
+      under AC1 as five separate criteria with no probative check bound. They are not separate criteria:
+      they are AC1 bullets, so they bind under AC1 rather than becoming AC6 through AC10, which would
+      change the criteria count and the sweep denominator without changing what was proven. This item
+      records which merged change closes each, so the mapping is in the contract rather than only in a
+      comment. SUB-GAP 1, the sync write protocol supporting none of the four features: the omnimarket
+      half is omnimarket#2457, and the fourth implementation, the kernel ProjectionDatabaseOperations,
+      is omnibase_infra#3422 (also AC5). SUB-GAP 2, the builder home being omnibase_core with a copy into
+      omnibase_infra refused: closed by the three-step sequence the bullet itself prescribes -- omnibase_core#1676
+      promotes the builder (merge 39d80978), omnimarket#2470 consumes it with no shim and no re-export
+      (squash 2874c132), and omnibase_infra#3422 consumes the same omnibase_core.models.projection.build_upsert_plan,
+      named in its own body. No copy exists in omnibase_infra. SUB-GAP 3, sync reads running under resolve_read_tenant
+      so a correlation_id-only filter sees zero rows under FORCE row-level security: carried by omnimarket#2465,
+      the in-process path attesting and republishing. SUB-GAP 4, delegation_shadow_comparisons having
+      no in-process writer: the shadow comparison is the fallthrough arm of HandlerProjectionDelegation.handle(),
+      and omnimarket#2476 makes that handler the sole routed entry so the arm is reachable. SUB-GAP 5,
+      the unported behaviours: carried by omnimarket#2465 and proven by the event-chain gate row in omnimarket#2476,
+      which drives the real auto-wired dispatch end to end and materialises a row rather than asserting
+      one.
+    source: "manual"
+    binds_ac:
+      - "AC1"
+    checks:
+      - check_type: "command"
+        check_value: |-
+          gh api repos/OmniNode-ai/omnimarket/pulls/2476/files --paginate --jq '.[].filename' | grep -cFx 'tests/chains/test_event_chain_gate_projection_write.py'
+  - id: "dod-omn18159-ac4-rule24d-statement"
+    description: >-
+      AC4. The criterion asks for the rule 24(d) statement in a PR BODY, not in a ledger row: state that
+      the compose dev lane cannot exercise the tenant-scoped split rather than claiming a lab proof it
+      cannot produce. The statement existed only at docs/tracking/ROLLING_WORK_LEDGER.md and was ABSENT
+      from the merged bodies of omninode_infra#1355, omnimarket#2476 and omnimarket#2474 -- greps for
+      each phrasing came back empty under a positive control of two ticket-id hits per body. It is therefore
+      stated in onex_change_control#9185, the PR that adds this item, rather than back-dated into a merged
+      body, which is not something a later PR can do. The statement, verbatim: the .201 compose dev lane
+      runs no onex-api, has row-level security off, and writes as a superuser, so the tenant-scoped binding
+      split this change exists to produce cannot be exercised there; that PR does not claim a lab proof
+      of the split, the compose-dev lab pass covers lane health only, and the tenant-scoped evidence is
+      the onex-dev readback named in AC3. The check below greps that body for the discriminating clause.
+      Its negative control is onex_change_control#9138, a sibling PR on this same ticket, where the same
+      grep returns 0 -- so the check proves the statement is present HERE rather than matching any body
+      on the ticket.
+    source: "manual"
+    binds_ac:
+      - "AC4"
+    checks:
+      - check_type: "command"
+        check_value: |-
+          gh pr view 9185 --repo OmniNode-ai/onex_change_control --json body --jq .body | grep -cF 'has row-level security off, and writes as a superuser'
+  - id: "dod-OmniNode-ai-omninode_infra-pr-1381"
+    description: "PR #1381 on OmniNode-ai/omninode_infra — Evidence-Source autobind."
+    source: "generated"
+    checks:
+      - check_type: "command"
+        check_value: "gh pr view 1381 --repo OmniNode-ai/omninode_infra --json number,state"
+  - id: "dod-OmniNode-ai-omninode_infra-pr-1381-ci"
+    description: "PR #1381 on OmniNode-ai/omninode_infra — product diff scope check (OMN-14425)."
+    source: "generated"
+    checks:
+      - check_type: "command"
+        check_value: "gh pr view 1381 --repo OmniNode-ai/omninode_infra --json files"
+  - id: "occ-self-bind-pr-9193"
+    description: "OCC companion PR #9193 — self-bind for OMN-18159 (OMN-14650)."
+    source: "generated"
+    checks:
+      - check_type: "command"
+        check_value: "gh pr view 9193 --repo OmniNode-ai/onex_change_control --json number,state"
+  - id: "dod-omn18159-ac3-kernel-pod-manifest"
+    description: >-
+      AC3, MANIFEST-LEVEL HALF ONLY. AC3's own wording is that the port is proven by a consumer group
+      and a real row, not by manifest presence, so this item deliberately does not claim AC3 is discharged.
+      What it records is the correction of a landed mistake and the state an apply would now create. Phase
+      2 retired the standalone delegation writer on the premise that the consolidated tenant-projection
+      writer would carry the delegation contract; staging measurement refuted that -- the consolidated
+      writer reported projection_delegation unattached, row attribution vanished, and delegation_events
+      stayed at 0 across four correlations, which is the outcome the ticket had explicitly refused on
+      measurement. omninode_infra#1382 puts a pod back for that projection, and NOT the pod that was deleted:
+      the old one was a BaseProjectionRunner standalone process, this one is a runtime-kernel pod on its
+      own profile running the image entrypoint with no command override and deriving its consumer group
+      rather than being handed one. It is declared as what it now is -- consumer of the internal database
+      secret, on the postgres-reach, Kafka-reach, post-deploy-verify, rotation-restart, digest-pin and
+      rollout-wait rosters and the store-egress allow-list, classified a store-identity READER rather
+      than BYOK credential plane -- and the analytics-secret consumer entry and the runner-fleet membership
+      are deliberately NOT restored, because it consumes neither and is neither. THE GATE FIX IS WORTH
+      RECORDING because the easy version was refused: the writer staging test enumerates manifests by
+      FILENAME and every match had happened to be a standalone runner, so two assertions read runner-only
+      env off any of them and RAISED on a kernel pod rather than failing on the real difference. Renaming
+      the manifest so it escaped the glob would have passed the gate by filename while proving nothing;
+      instead the test classifies by SHAPE, a manifest with no command override being a kernel pod, and
+      exempts only those two runner-implementation assertions, while every roster check still enumerates
+      the full set. The reproduction was run against the RENDERED overlay rather than the source manifests,
+      so it asserts what an apply would create: on origin/dev at 5aae1b26 no Deployment in the overlay
+      runs the delegation profile at all (2 failures, which is the staging state that was measured), and
+      on omninode_infra#1382 exactly one does, with the internal DSN by secretKeyRef, no analytics DSN,
+      neither runner-only variable and a Recreate strategy. tests/k8s/ is 1281 passed 2 skipped and the
+      secret-ownership validator is clean C1-C8 in both directions. RULE 24(d): the .201 compose dev lane
+      runs no onex-api, has row-level security off and writes as a superuser, and the onex-lab overlay
+      does not carry this Deployment at all, so no lab proof of the tenant-scoped write is claimed here;
+      the runtime half of AC3 is owed by the staging readback after this applies and is NOT asserted by
+      this item. RULE 22: no credential was minted, rotated, re-issued or revoked and no secret value
+      was read or printed -- the secret-ownership change declares an existing key's consumer, not a value.
+    source: "manual"
+    binds_ac:
+      - "AC3"
+    checks:
+      - check_type: "command"
+        check_value: |-
+          gh api "repos/OmniNode-ai/omninode_infra/contents/k8s/onex-dev/runtime/deployment-omnimarket-projection-delegation-writer.yaml?ref=f8d3c1bd87bfef11cb5e01092b18f74446f92197" -H "Accept: application/vnd.github.raw" | grep -cF 'value: "projection-writer-delegation"'
+  - id: "dod-OmniNode-ai-omninode_infra-pr-1382"
+    description: "PR #1382 on OmniNode-ai/omninode_infra — Evidence-Source autobind."
+    source: "generated"
+    checks:
+      - check_type: "command"
+        check_value: "gh pr view 1382 --repo OmniNode-ai/omninode_infra --json number,state"
+  - id: "dod-OmniNode-ai-omninode_infra-pr-1382-ci"
+    description: "PR #1382 on OmniNode-ai/omninode_infra — product diff scope check (OMN-14425)."
+    source: "generated"
+    checks:
+      - check_type: "command"
+        check_value: "gh pr view 1382 --repo OmniNode-ai/omninode_infra --json files"
+  - id: "occ-self-bind-pr-9200"
+    description: "OCC companion PR #9200 — self-bind for OMN-18159 (OMN-14650)."
+    source: "generated"
+    checks:
+      - check_type: "command"
+        check_value: "gh pr view 9200 --repo OmniNode-ai/onex_change_control --json number,state"
+  - id: "dod-OmniNode-ai-omninode_infra-pr-1383"
+    description: "PR #1383 on OmniNode-ai/omninode_infra — Evidence-Source autobind."
+    source: "generated"
+    checks:
+      - check_type: "command"
+        check_value: "gh pr view 1383 --repo OmniNode-ai/omninode_infra --json number,state"
+      - check_type: "command"
+        check_value: |-
+          gh api repos/OmniNode-ai/omninode_infra/pulls/1383/files --paginate --jq '.[].filename' | grep -cFx '.github/workflows/deploy-onex-staging.yml'
+  - id: "occ-self-bind-pr-9215"
+    description: "Binds OMN-18159 to OCC companion PR #9215 (self-bind)."
+    source: "generated"
+    checks:
+      - check_type: "command"
+        check_value: "gh pr view 9215 --repo OmniNode-ai/onex_change_control --json number,state"
+  - id: "dod-OmniNode-ai-omnimarket-pr-2490"
+    description: "PR #2490 on OmniNode-ai/omnimarket — Evidence-Source autobind."
+    source: "generated"
+    checks:
+      - check_type: "command"
+        check_value: "gh pr view 2490 --repo OmniNode-ai/omnimarket --json number,state"
+      - check_type: "command"
+        check_value: |-
+          gh api repos/OmniNode-ai/omnimarket/pulls/2490/files --paginate --jq '.[].filename' | grep -cFx 'pyproject.toml'
+  - id: "occ-self-bind-pr-9218"
+    description: "Binds OMN-18159 to OCC companion PR #9218 (self-bind)."
+    source: "generated"
+    checks:
+      - check_type: "command"
+        check_value: "gh pr view 9218 --repo OmniNode-ai/onex_change_control --json number,state"
+  - id: "dod-omn18159-ac3-runtime-leg4"
+    description: >-
+      AC3, RUNTIME HALF, which the manifest-level item deliberately did not claim. AC3's wording is that
+      the port is proven by a consumer group and a real row rather than by manifest presence, so this
+      item records those two facts and nothing weaker. BOTH ARE NOW IN HAND. CONSUMER GROUP: the rebuilt
+      kernel pod omnimarket-projection-delegation-writer-54f97ff998-h7pq4 joined NINE consumer groups
+      named onex-dev.omnimarket.projection_delegation.consume.1.0.0 per subscribed topic -- delegation-completed,
+      delegation-failed, delegation-judge-verdict, quality-gate-result, delegation-shadow-comparison,
+      delegate-skill-completed, delegate-skill-failed, node-generation-completed and node-generation-failed
+      -- each at GENERATION 1 with a coordinator-issued partition assignment. Generation 1 is itself evidence
+      that no prior member ever held those groups, and the id is DERIVED from env, service, node name,
+      purpose and version rather than read from KAFKA_CONSUMER_GROUP, which is the kernel-pod shape the
+      manifest asserts. This is a broker-side fact, so it does NOT rest on that pod's admin client, which
+      is failing with ProtocolConfigurationError -- consumer_groups=0 in its health line is NOT MEASURED
+      and is not cited here as a zero. A REAL ROW: the staging-green bar's leg 4 reads delegation_events
+      (the collector's own _DELEGATION_PROJECTION_TABLE constant) and reports that tenant 91c74442-1233-4c97-b191-911a10346fdf,
+      outside the historical compiled map, has a row written by tenant_projection_writer -- which is this
+      ticket's title condition, met on live data. The same leg also reports all 17 runtime-plane Deployments
+      on one digest sha256:5aa188f878f6a7c0de501e9debaf0aa38c8aaa81029772e8cb2dc8c7af3c0882 with every
+      Running pod on it. THE CONTROL IS A REAL PRIOR RUN, not a constructed one: the scheduled bar run
+      34678671800 at 06:39Z scored 1 PASS / 5 FAIL / 2 UNPROVEN with leg 4 FAIL, the plane SPLIT across
+      two digests and the delegation writer alone on sha256:6d090982, and the check command below returns
+      0 against it. Run 34692118015 scores 5 PASS / 1 FAIL / 2 UNPROVEN and returns 1. THE ROW IS NEW,
+      AND THE IDENTITY FLIPPED. This was hedged when the item was drafted, because a log cannot date a
+      row; the bar's own fact artifact settles it. That artifact carries all 14 delegation_events rows
+      for the subject tenant with writer_identity and written_at. THIRTEEN carry writer_identity role_omnidash
+      -- the identity the retired standalone runner wrote as, because it carried OMNIDASH_ANALYTICS_DB_URL
+      -- the newest of those at 2026-09-12T00:24:32.119177+00:00. The FOURTEENTH and newest carries writer_identity
+      tenant_projection_writer at 2026-09-12T10:27:29.739895+00:00. The pod started at 10:05:13Z, so that
+      row postdates it, and 10:27:29 is the exact second of the pod's first handler invocation in its
+      own log. The identity is the discriminator on its own: tenant_projection_writer can only be recorded
+      by a process that connected as that principal, which is the kernel pod resolving the tenant_projection
+      binding, and no other process on the plane does. So the 13-row role_omnidash history IS the control,
+      and it is a real one rather than a constructed one. The remaining non-passing legs belong to other
+      lanes and are not AC3: customer_key_intake FAILs on credential resolution at the effect boundary,
+      full_customer_pass is UNPROVEN with the collector itself naming OMN-18196 as the durable fix, and
+      savings_dashboard_render is UNPROVEN for want of a render object. One defect was found and is NOT
+      worked around: the kernel injects four payload keys including _envelope_id while omnimarket's RUNNER_INJECTED_KEYS
+      strips three, so quality-gate-result events reach an extra=forbid model and route to the projection's
+      DLQ. That is OMN-18214, it was surfaced by this port from a standalone runner to the kernel, and
+      it does NOT bound this item: every other inbound model on the row-writing paths is extra=ignore.
+      RULE 22: no credential was minted, rotated, re-issued or revoked and no secret value was read or
+      printed; every cluster read was read-only over SSM carrying the lane comment and naming the instance
+      id.
+    source: "manual"
+    binds_ac:
+      - "AC3"
+    checks:
+      - check_type: "command"
+        check_value: |-
+          gh run view 34692118015 --repo OmniNode-ai/omninode_infra --log | grep -cF '[PASS    ] item 4 repin_chain'
+  - id: "dod-omn18159-pr1381-superseded"
+    description: >-
+      Supersedes dod-OmniNode-ai-omninode_infra-pr-1381. That PR proposed a pre-apply hand delete of the
+      orphaned standalone delegation writer Deployment. It was closed WITHOUT merging, deliberately: AC3's
+      rebuilt kernel pod (omninode_infra#1382) converts that same Deployment in place rather than deleting
+      it, because the node is mixed-domain and deleting the workload first would have left delegation
+      with no consumer between the delete and the conversion. The dod_verify auto-derived live-state check
+      for a generated Evidence-Source item reads merge state and fails closed on a CLOSED, non-merged
+      PR -- correctly, since nothing here is asking it to treat closure as success by default. This item
+      records the closure as the intended outcome rather than leaving a live failure standing for an abandoned
+      approach; it binds no AC, matching the original.
+    source: "manual"
+    evidence_artifact: "supersedes_dod_evidence:dod-OmniNode-ai-omninode_infra-pr-1381"
+    checks:
+      - check_type: "command"
+        check_value: |-
+          gh pr view 1381 --repo OmniNode-ai/omninode_infra --json state -q .state | grep -cx CLOSED
+  - id: "dod-omn18159-pr1381-ci-superseded"
+    description: >-
+      Supersedes dod-OmniNode-ai-omninode_infra-pr-1381-ci, the product-diff-scope companion to the same
+      closed, unmerged PR. Same disposition and same reason: omninode_infra#1381 was superseded by the
+      in-place kernel-pod conversion in omninode_infra#1382, not landed. This item records the closure
+      rather than leaving the auto-derived live-state check failing against an abandoned approach; it
+      binds no AC, matching the original.
+    source: "manual"
+    evidence_artifact: "supersedes_dod_evidence:dod-OmniNode-ai-omninode_infra-pr-1381-ci"
+    checks:
+      - check_type: "command"
+        check_value: |-
+          gh pr view 1381 --repo OmniNode-ai/omninode_infra --json state -q .state | grep -cx CLOSED
+  - id: "dod-omn18159-pr1381-citation-superseded"
+    description: >-
+      A second, narrower correction on top of dod-omn18159-pr1381-superseded and dod-omn18159-pr1381-ci-superseded.
+      Those two items correctly recorded omninode_infra#1381's deliberate closure for dod_verify's own
+      evidence_artifact supersession chain, but their receipts carried pr_number 9243 (the OCC companion
+      PR) rather than 1381 (the PR the item documents) -- an authoring mistake, not a design choice. The
+      separate Done-flip durable-evidence guard (OMN-13856/OMN-15712) resolves its own citation-supersession
+      carve-out from a receipt's flat, top-level pr_number field via a dependency-free line parser that
+      does not descend into a nested replacement: block, so a correction for it must be its own flat,
+      non-nested receipt naming pr_number 1381 directly, distinct from the ModelReceiptSupersession/.supersede.<NNNN>.yaml
+      shape the OCC receipt hardening gate defines for correcting an already-merged receipt's body. This
+      item exists solely to carry that receipt; it duplicates no dod_verify-facing claim and binds no
+      AC.
+    source: "manual"
+    checks:
+      - check_type: "command"
+        check_value: |-
+          gh pr view 1381 --repo OmniNode-ai/omninode_infra --json state -q .state | grep -cx CLOSED

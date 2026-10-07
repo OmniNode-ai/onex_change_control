@@ -1,0 +1,81 @@
+---
+schema_version: "1.0.0"
+ticket_id: "OMN-13719"
+title: "[Bug] pr_review / pr_review_bot declarative path cannot build ReviewRequest (reviewer_models missing)"
+summary: >-
+  Add local-first declarative defaults for reviewer_models and judge_model on the pr_review and pr_review_bot
+  skill_mapping.yaml entries so that `onex skill pr_review --repo X --pr-number N` builds a valid ReviewRequest
+  and executes node_pr_review_orchestrator over the local in-memory bus without a KeyError on reviewer_models.
+  Mirror the same local-first defaults in omnimarket's ReviewRequest model so the product-side declarative
+  path validates when invoked with repo/pr_number only. Explicit callers still override the defaults.
+is_seam_ticket: false
+interface_change: false
+interfaces_touched: []
+evidence_requirements:
+  - kind: "tests"
+    description: >-
+      Unit test proves the declarative path supplies reviewer_models=["local"] and judge_model="local"
+      from --repo/--pr-number alone.
+    command: >-
+      uv run pytest tests/unit/cli/test_cli_skill.py -q -k pr_review_declarative
+  - kind: "ci"
+    description: "CI pipeline green on omnibase_infra PR #2145."
+    command: "gh pr checks 2145 --repo OmniNode-ai/omnibase_infra"
+  - kind: "tests"
+    description: >-
+      Unit tests prove omnimarket ReviewRequest accepts the declarative repo/pr_number payload and preserves
+      explicit reviewer/judge overrides.
+    command: >-
+      uv run pytest tests/unit/review/test_review_request_declarative_defaults.py -q
+emergency_bypass:
+  enabled: false
+  justification: ""
+  follow_up_ticket_id: ""
+dod_evidence:
+  - id: "dod-cli-defaults-proof"
+    description: >-
+      Reproduction test: before the fix, the declarative path raises KeyError on reviewer_models; after
+      the fix, the payload carries reviewer_models=["local"] and judge_model="local" and ReviewRequest
+      validates successfully.
+    source: "manual"
+    checks:
+      - check_type: "command"
+        check_value: >-
+          grep -q '^status: PASS$' drift/dod_receipts/OMN-13719/dod-cli-defaults-proof/command.yaml
+  - id: "dod-no-runtime-mutation"
+    description: >-
+      OMN-13719 is a skill_mapping.yaml default-values fix with no live deploy, restart, .201 mutation,
+      production data mutation, new REST endpoint, or event-bus topic change performed.
+    source: "manual"
+    checks:
+      - check_type: "command"
+        check_value: >-
+          grep -q '^status: PASS$' drift/dod_receipts/OMN-13719/dod-no-runtime-mutation/command.yaml
+  - id: "dod-market-model-defaults-proof"
+    description: >-
+      Omnimarket PR #1524 carries ReviewRequest local-first defaults plus regression tests for the declarative
+      repo/pr_number payload and explicit override behavior.
+    source: "manual"
+    checks:
+      - check_type: "command"
+        check_value: >-
+          grep -q '^status: PASS$' drift/dod_receipts/OMN-13719/dod-market-model-defaults-proof/command.yaml
+  - id: "dod-market-no-runtime-mutation"
+    description: >-
+      Omnimarket PR #1524 changes model defaults and unit tests only; deploy gate assessment records no
+      live deploy, restart, .201 mutation, production data mutation, new REST endpoint, or event-bus topic
+      change.
+    source: "manual"
+    checks:
+      - check_type: "command"
+        check_value: >-
+          grep -q '^status: PASS$' drift/dod_receipts/OMN-13719/dod-market-no-runtime-mutation/command.yaml
+          && grep -q 'deploy gate' drift/dod_receipts/OMN-13719/dod-market-no-runtime-mutation/command.yaml
+  - id: "dod-occ-self"
+    description: >-
+      Self-binding OCC receipt: this onex_change_control PR carries the OMN-13719 contract and receipts.
+    source: "manual"
+    checks:
+      - check_type: "command"
+        check_value: >-
+          grep -q '^status: PASS$' drift/dod_receipts/OMN-13719/dod-occ-self/command.yaml

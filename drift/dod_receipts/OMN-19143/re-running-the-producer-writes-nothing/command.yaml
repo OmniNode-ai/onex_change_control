@@ -1,0 +1,141 @@
+---
+schema_version: 1.0.0
+ticket_id: OMN-19143
+evidence_item_id: re-running-the-producer-writes-nothing
+check_type: command
+check_value: |-
+  uv run python - <<'PY'
+  import pathlib, sys, yaml
+  from onex_change_control.validation.ac_criteria import canonical_ac_label
+
+  REQ = "req-transcribed-acceptance-criteria"
+
+
+  def bound_labels_in_order(data: dict) -> list[str]:
+      labels: list[str] = []
+      for item in data.get("dod_evidence") or []:
+          if not isinstance(item, dict):
+              continue
+          for entry in item.get("binds_ac") or []:
+              label = canonical_ac_label(str(entry))
+              if label and label not in labels:
+                  labels.append(label)
+      return labels
+
+
+  bad: list[str] = []
+  seen = 0
+  criteria = 0
+  for path in sorted(pathlib.Path("contracts").glob("OMN-*.yaml")):
+      data = yaml.safe_load(path.read_text(encoding="utf-8"))
+      if not isinstance(data, dict):
+          continue
+      reqs = [r for r in (data.get("requirements") or []) if isinstance(r, dict)]
+      if not any(r.get("id") == REQ for r in reqs):
+          continue
+      seen += 1
+      declared = [
+          (str(a.get("id")), str(a.get("statement")))
+          for r in reqs
+          for a in (r.get("acceptance") or [])
+          if isinstance(a, dict)
+      ]
+      criteria += len(declared)
+      if [label for label, _ in declared] != bound_labels_in_order(data):
+          bad.append(f"{path.name}: declared order != binds_ac declaration order")
+      for label, statement in declared:
+          if canonical_ac_label(label) != label:
+              bad.append(f"{path.name}: id {label!r} is not already canonical")
+          if not statement.strip():
+              bad.append(f"{path.name}: {label} has an empty statement")
+          if yaml.safe_load(yaml.safe_dump({"s": statement}))["s"] != statement:
+              bad.append(f"{path.name}: {label} does not survive a YAML round trip")
+  print(f"{seen} contract(s), {criteria} criteria; {len(bad)} unstable")
+  for line in bad:
+      print("UNSTABLE", line)
+  sys.exit(1 if bad or seen < 18 else 0)
+  PY
+status: PASS
+run_timestamp: '2026-09-22T18:35:19Z'
+commit_sha: f379cab82a2f10800f4aaef2453953a8c073894b
+contract_entry_sha256: sha256:f6bcae03093cfdf08d7d851810db02d2db0038df5e1ef4b137b8319671cbb7a7
+runner: |-
+  github-actions: Contract Compliance Check, job 106881547359 of run 35767770226, onex_change_control#10759 at f379cab82a -- the job that executed this contract's dod_evidence checks and reported 3/3 PASS, 0 WARN, 0 BLOCK at 18:33:09Z; the identical command was then re-run at the identical commit by the verifier named below
+verifier: claude-opus5-lane-dd-occ-reds
+probe_command: |-
+  uv run python - <<'PY'
+  import pathlib, sys, yaml
+  from onex_change_control.validation.ac_criteria import canonical_ac_label
+
+  REQ = "req-transcribed-acceptance-criteria"
+
+
+  def bound_labels_in_order(data: dict) -> list[str]:
+      labels: list[str] = []
+      for item in data.get("dod_evidence") or []:
+          if not isinstance(item, dict):
+              continue
+          for entry in item.get("binds_ac") or []:
+              label = canonical_ac_label(str(entry))
+              if label and label not in labels:
+                  labels.append(label)
+      return labels
+
+
+  bad: list[str] = []
+  seen = 0
+  criteria = 0
+  for path in sorted(pathlib.Path("contracts").glob("OMN-*.yaml")):
+      data = yaml.safe_load(path.read_text(encoding="utf-8"))
+      if not isinstance(data, dict):
+          continue
+      reqs = [r for r in (data.get("requirements") or []) if isinstance(r, dict)]
+      if not any(r.get("id") == REQ for r in reqs):
+          continue
+      seen += 1
+      declared = [
+          (str(a.get("id")), str(a.get("statement")))
+          for r in reqs
+          for a in (r.get("acceptance") or [])
+          if isinstance(a, dict)
+      ]
+      criteria += len(declared)
+      if [label for label, _ in declared] != bound_labels_in_order(data):
+          bad.append(f"{path.name}: declared order != binds_ac declaration order")
+      for label, statement in declared:
+          if canonical_ac_label(label) != label:
+              bad.append(f"{path.name}: id {label!r} is not already canonical")
+          if not statement.strip():
+              bad.append(f"{path.name}: {label} has an empty statement")
+          if yaml.safe_load(yaml.safe_dump({"s": statement}))["s"] != statement:
+              bad.append(f"{path.name}: {label} does not survive a YAML round trip")
+  print(f"{seen} contract(s), {criteria} criteria; {len(bad)} unstable")
+  for line in bad:
+      print("UNSTABLE", line)
+  sys.exit(1 if bad or seen < 18 else 0)
+  PY
+exit_code: 0
+pr_number: 10759
+probe_stdout: |
+  18 contract(s), 70 criteria; 0 unstable
+actual_output: |-
+  RUNNER AND VERIFIER ARE TWO PARTIES, as above: CI's Contract Compliance Check
+  at f379cab82a reported this check succeeded, and this lane re-ran the identical
+  check_value at the identical commit.
+
+  WHAT THIS ITEM PROVES IS NARROWER THAN ITS TITLE, and the narrowing is the
+  previous certifying actor's, carried forward unchanged: the producer module
+  lives on the OMN-19046 branch and is absent from this contracts-only branch, so
+  a full re-run cannot be reconstructed here. What is measured is the part of
+  idempotence that lives in the written file -- declared order equals the
+  binds_ac declaration order, every id is already canonical so the reader's
+  canonicalisation is a no-op, and every statement survives a YAML round trip.
+
+  MEASURED at this commit: 18 contract(s), 70 criteria; 0 unstable. The criterion
+  count fell from 96 to 70 with the seven excluded contracts.
+
+  NEGATIVE CONTROL, RUN, on a copy of the corpus outside the worktree: rewriting
+  one acceptance id in contracts/OMN-14872.yaml from AC1 to the non-canonical
+  'ac1' makes the same command exit 1 and print both
+  `UNSTABLE OMN-14872.yaml: id 'ac1' is not already canonical` and the order
+  violation that follows from it.

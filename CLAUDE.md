@@ -1,0 +1,128 @@
+# CLAUDE.md
+
+Guidance for Claude Code in **onex_change_control** (OCC) — the governance, drift-detection,
+and enforcement hub for the ONEX platform, and the canonical evidence surface every other
+repo's receipt gate reads. Workspace-wide rules (worktrees, PR CI gates, merge policy,
+prod-promotion grants) live in the root `omni_home/CLAUDE.md`; shared Python/Git/testing
+standards in `~/.claude/CLAUDE.md`. Neither is repeated here.
+
+## What lives here
+
+- **Schemas**: `ModelDayClose` (OCC-local) plus the OCC DoD types (`ModelDodCheck`,
+  `ModelDodEvidenceItem`, `ModelEmergencyBypass`, `ModelEvidenceRequirement`).
+  `ModelTicketContract` is **not defined here** — it lives in
+  `omnibase_core.models.ticket.model_ticket_contract` and is re-exported by
+  `models/model_ticket_contract.py` so all consumers share one class identity (OMN-10066).
+- **CLI validators** downstream repos run in CI — `validate-yaml`, `check-schema-purity`,
+  `check-drift`, `check-db-boundary`, `check-hardcoded-topics`, `dev-main-cutover`, etc.
+  The authoritative list is `[project.scripts]` in `pyproject.toml` — read it; do not trust
+  a hand count in prose.
+- **ONEX nodes**: the 4 contract-drift archetypes (compute / reducer / orchestrator /
+  effect) under `src/onex_change_control/nodes/`, registered in
+  `[project.entry-points."onex.nodes"]`.
+- **Overseer models**: `src/onex_change_control/overseer/` is **flat** (`model_*.py` +
+  `enum_*.py` side by side, no `models/` / `enums/` subdirs) — unlike the rest of the
+  package.
+- **Promotion tooling** (`promotion/`), scanners (`scanners/`), boundary rules
+  (`boundaries/*.yaml`), wire schemas (`wire_schemas/`), eval framework (`eval/` +
+  `eval_suites/`), YAML templates (`templates/*.template.yaml`).
+- **Prod-promotion grants**: `grants/prod_promotion_grants.yaml` is the `@main`-fetched
+  trust anchor for prod promotion (root CLAUDE.md §2a/§12); `validate-prod-promotion-grants`
+  checks it.
+
+## The receipt surface (why this repo is load-bearing)
+
+Canonical DoD receipt location — the only shape the gates accept (see
+[DoD Receipt Locations](https://github.com/OmniNode-ai/knowledge-base/blob/main/reference/dod-receipt-locations.md) in the knowledge base):
+
+```text
+drift/dod_receipts/<TICKET>/<ITEM_ID>/<run_timestamp>.yaml   # omnibase_core.ModelDodReceipt
+```
+
+- Downstream repos' `occ-preflight / eligibility` and `Receipt Gate / verify` checks fetch
+  THIS repo to resolve `contracts/<TICKET>.yaml` + PASS receipts; OCC fetch failure is a
+  hard FAIL.
+- **In-repo trap**: OCC's own PRs validate contracts/receipts from the PR's in-tree
+  checkout (invariant I3, see `call-occ-preflight.yml` / `call-receipt-gate.yml` comments)
+  — an OCC PR carries its own contract + receipts.
+- Hash binding: `contract_sha256` = sha256 of the contract file's raw bytes;
+  `contract_entry_sha256` = canonical-JSON per-entry hash (OMN-13888). Both are computed by
+  `omnibase_core.validation.validator_receipt_gate`. The yamlfmt pre-commit hook reflows
+  YAML on first commit — commit, let bytes stabilize, then compute `contract_sha256`.
+
+## No deploy-gate.yml — by design
+
+This repo has no runtime contracts, so it has no `deploy-gate.yml`. Do NOT add one or wire
+deploy-gate as a required context here: a required check that never reports wedges every
+merge on the branch indefinitely.
+
+## Privileged paths: open the PR as the writer App, never `gh pr create`
+
+A change here touching **`src/`, `scripts/` or `.github/`** is a privileged change, and a
+human-authored PR for one is refused by `check-human-authored-privileged-pr`. Every lane in
+this fleet commits under one shared account, so such a PR is un-approvable by construction —
+GitHub blocks self-approval — which is what froze the fleet behind OCC#9362 on 2026-09-13.
+
+Push the branch as normal, then open the PR through the dispatch path instead of `gh pr create`:
+
+```bash
+git push -u origin <branch>
+gh workflow run open-pr-as-writer-app.yml -f branch=<branch> -f ticket=<OMN-...>
+```
+
+`open-pr-as-writer-app.yml` creates no branch and pushes nothing — it opens a PR for a branch
+**already pushed**, as the `onexbot-occ-writer` App. The push itself is the sanctioned path's
+first step, which is why the pre-push hint below does not refuse it.
+
+**If you already opened a human PR, close it first.** The workflow *edits* an existing open PR
+rather than re-authoring it, so re-dispatching alone leaves the author of record human and the
+gate keeps refusing:
+
+```bash
+gh pr close <n> --repo OmniNode-ai/onex_change_control
+gh workflow run open-pr-as-writer-app.yml -f branch=<branch> -f ticket=<OMN-...>
+```
+
+Watch for an OCC companion minted against the PR number you just closed; you may need to merge
+`dev` into the branch to pick up its successor.
+
+The `check-privileged-path-push` pre-push hook (OMN-18804) prints the same command when a push
+touches one of those prefixes. It is a hint, not a gate — it exits non-zero only when the branch
+already carries an open human-authored PR, and it advises rather than blocks when the PR state
+cannot be read. The mechanical gate is `check-human-authored-privileged-pr` in CI.
+
+A genuine human hotfix — a person repairing the CI the App path runs on — passes by carrying the
+whole-line human-author escape annotation in the PR body, naming a ticket. The exact literal is
+in `check_human_authored_privileged_pr`'s docstring and is deliberately not spelled in prose that
+a body-parsing gate might read.
+
+## Schema purity (D-008)
+
+`models/` and `enums/` modules must be pure — no env reads, no filesystem access, no
+network, no time calls. `check-schema-purity` enforces this (exit 1 on violation;
+`--warn-only` for gradual adoption).
+
+## Commands
+
+```bash
+uv sync --all-groups
+uv run pytest              # or: uv run pytest -m unit for the fast marker-scoped subset
+uv run mypy src/ --strict
+uv run ruff check src/ tests/ && uv run ruff format src/ tests/
+uv run validate-yaml contracts/OMN-123.yaml
+uv run check-schema-purity
+pre-commit run --all-files
+```
+
+Naming follows `omnibase_core` conventions (`Model<Name>` in `model_<name>.py`,
+`Enum<Name>` in `enum_<name>.py`). Package and schema version are 1:1 — current version in
+`pyproject.toml`, break rules in [Versioning Policy](https://github.com/OmniNode-ai/knowledge-base/blob/main/reference/onex-change-control-versioning-policy.md).
+
+SPDX MIT headers are required in `src/`, `tests/`, `scripts/` (there is no `examples/`
+dir). Stamp: `uv run onex spdx fix src tests scripts`; spec:
+`omnibase_core/docs/conventions/FILE_HEADERS.md`.
+
+## Key docs
+
+- Full docs live in the [knowledge base](https://github.com/OmniNode-ai/knowledge-base) — [Drift Control System](https://github.com/OmniNode-ai/knowledge-base/blob/main/architecture/drift-control-system.md), [OCC Decision Log](https://github.com/OmniNode-ai/knowledge-base/blob/main/reference/onex-change-control-decision-log.md)
+- [DoD Receipt Locations](https://github.com/OmniNode-ai/knowledge-base/blob/main/reference/dod-receipt-locations.md), [Versioning Policy](https://github.com/OmniNode-ai/knowledge-base/blob/main/reference/onex-change-control-versioning-policy.md), [Authoring Governance YAML Artifacts](https://github.com/OmniNode-ai/knowledge-base/blob/main/guides/authoring-governance-yaml-artifacts.md)

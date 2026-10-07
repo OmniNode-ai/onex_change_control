@@ -1,0 +1,156 @@
+---
+schema_version: 1.0.0
+ticket_id: OMN-14534
+title: "OCC companion for omnimarket#1737 — node_swarm_subtask_state_reducer event_model absence dropped
+  every message"
+summary: "OCC evidence companion for OmniNode-ai/omnimarket#1737 (OMN-14534). node_swarm_subtask_state_reducer's
+  contract.yaml declared handler_routing with no event_model on its single operation_match handler entry.
+  omnibase_infra's auto-wiring dispatcher (handler_wiring.py) treats a missing event_model as \"pass the
+  raw ModelEventEnvelope object to handle()\" — handle() did ModelSwarmSubtaskReducerInput(**input_data),
+  a guaranteed TypeError on a non-mapping input. MessageDispatchEngine swallows the handler exception
+  into a HANDLER_ERROR status and the Kafka bridge callback commits the offset anyway: every message on
+  all 5 subscribed topics was silently dropped, permanently, with no DLQ and no retry. Deeper problem
+  found while fixing: the reducer's own ModelDelegationEvent was never matched against any real producer
+  — the actual wire shapes are 5 distinct real models across 3 producer types, none of which has run_id/subtask_id
+  fields. Traced the real identity mapping through node_swarm_fanout_orchestrator's handler_swarm_fanout.py
+  (causation_id=run_id, task_id=subtask_id, echoed verbatim by node_llm_delegation_call_effect onto all
+  3 of its output event types). Fix: contract.yaml routing_strategy switched operation_match -> topic_match
+  with one handler entry per subscribed topic, each declaring the real producer event_model; handler_swarm_subtask_state.py
+  now adapts each of the 5 real wire shapes into the internal ModelDelegationEvent before calling the
+  unchanged, already-tested pure delta(). 11 new cross-boundary tests drive the 5 real producer models
+  through handle() end-to-end; RED-verified via git stash (the 6 transition-path tests fail with the exact
+  original TypeError against the pre-fix handler). Also closes a pre-existing state-coverage-gate baseline
+  gap for this node."
+is_seam_ticket: false
+interface_change: false
+interfaces_touched: []
+evidence_requirements:
+  - kind: tests
+    description: "omnimarket#1737 head makes contract.yaml's handler_routing declare routing_strategy:
+      topic_match with a per-topic event_model on each of the 5 handler entries (was operation_match with
+      zero event_model declarations), and makes handler_swarm_subtask_state.py adapt each real producer
+      wire model into the internal ModelDelegationEvent via a _adapt() dispatcher that fail-fasts with
+      TypeError on any unrecognized payload type — proven by 11 new cross-boundary tests plus an independent
+      RED (git stash the fix, re-run the new tests: 6 fail with the original TypeError) then GREEN reproduction,
+      not merely the implementer's own claim."
+    command: see dod_evidence check_values
+emergency_bypass:
+  enabled: false
+  justification: ''
+  follow_up_ticket_id: ''
+dod_evidence:
+  - id: dod-verify-1737-topic-match-event-model
+    description: "Product-observing check against omnimarket#1737 head 149276cf4c28754f2aa6da9d682b7bdf6966ca12.
+      Reads contract.yaml from the PR head and asserts handler_routing.routing_strategy is topic_match
+      (was operation_match) and that all 5 handler entries (delegation-execute, delegation-call-completed,
+      delegation-escalation-triggered, delegation-all-tiers-failed, swarm-fanout-completed) declare an
+      event_model block — closing the crash-and-drop path where a missing event_model caused the runtime
+      dispatcher to pass a raw ModelEventEnvelope into handle()."
+    source: generated
+    status: verified
+    checks:
+      - check_type: command
+        check_value: 'f="$(mktemp)" && gh api "repos/OmniNode-ai/omnimarket/contents/src/omnimarket/nodes/node_swarm_subtask_state_reducer/contract.yaml?ref=149276cf4c28754f2aa6da9d682b7bdf6966ca12"
+          --jq .content | base64 -d > "$f" && grep -Fq -- ''routing_strategy: topic_match'' "$f" && [
+          "$(grep -c ''event_model:'' "$f")" -ge 5 ] && grep -Fq -- ''ModelLlmDelegationCallRequest''
+          "$f" && grep -Fq -- ''ModelSwarmFanoutResult'' "$f"'
+  - id: dod-verify-1737-adapter-fail-fast
+    description: Product-observing check against the PR head. Reads handler_swarm_subtask_state.py and
+      asserts the 5 real producer wire models are imported and adapted via named _from_* functions into
+      ModelDelegationEvent, and that _adapt() raises TypeError on an unrecognized payload type instead
+      of the original ModelSwarmSubtaskReducerInput(**input_data) unpack that crashed on any non-mapping
+      input.
+    source: generated
+    status: verified
+    checks:
+      - check_type: command
+        check_value: 'f="$(mktemp)" && gh api "repos/OmniNode-ai/omnimarket/contents/src/omnimarket/nodes/node_swarm_subtask_state_reducer/handlers/handler_swarm_subtask_state.py?ref=149276cf4c28754f2aa6da9d682b7bdf6966ca12"
+          --jq .content | base64 -d > "$f" && grep -Fq -- ''def _from_call_request'' "$f" && grep -Fq
+          -- ''def _from_fanout_completed'' "$f" && grep -Fq -- ''def _adapt(payload: object) -> ModelDelegationEvent''
+          "$f" && grep -Fq -- ''raise TypeError('' "$f"'
+  - id: dod-verify-1737-red-green-reproduced
+    description: 'Independent RED-then-GREEN reproduction against a local worktree checked out at the
+      PR head, not trusting the implementer''s commit message. The full node test suite (28 tests: 24
+      co-located + 4 top-level FSM-coverage) passed 28/28 at head. handler_swarm_subtask_state.py, contract.yaml,
+      and model_swarm_subtask_input.py were then reverted to origin/dev (keeping the new test_dispatch_seam_omn14534.py
+      in place) and the identical new-test corpus re-run: 6 of 11 new tests failed with the original TypeError.
+      The fix was then restored and the full corpus re-verified 28/28 passed.'
+    source: manual
+    status: verified
+    checks:
+      - check_type: command
+        check_value: 'grep -q ''^status: PASS$'' drift/dod_receipts/OMN-14534/dod-verify-1737-red-green-reproduced/command.yaml
+          && grep -q ''28 passed'' drift/dod_receipts/OMN-14534/dod-verify-1737-red-green-reproduced/command.yaml
+          && grep -q ''6 failed, 5 passed'' drift/dod_receipts/OMN-14534/dod-verify-1737-red-green-reproduced/command.yaml
+          && grep -q ''must be a mapping, not ModelLlmDelegationCallRequest'' drift/dod_receipts/OMN-14534/dod-verify-1737-red-green-reproduced/command.yaml'
+  - id: dod-deploy-assessment-head-149276cf
+    description: 'Deploy assessment for omnimarket PR #1737 at head 149276cf4c28754f2aa6da9d682b7bdf6966ca12.
+      The PR changes a market node''s contract.yaml, handler, model, and tests; this evidence package
+      performs no live deploy, runtime restart, docker exec, rpk topic produce, database mutation, or
+      .201/.200 runtime mutation. The fix is deployed as part of the normal runtime rollout; no prod promotion
+      is requested or performed here.'
+    source: manual
+    status: verified
+    checks:
+      - check_type: command
+        check_value: 'grep -q ''^status: PASS$'' drift/dod_receipts/OMN-14534/dod-deploy-assessment-head-149276cf/command.yaml
+          && grep -qi ''no live deploy'' drift/dod_receipts/OMN-14534/dod-deploy-assessment-head-149276cf/command.yaml'
+  - id: dod-occ-self-4089
+    description: 'Self-bind item for OCC companion PR #4089. Binds a PASS receipt to the actual companion
+      PR number after PR creation, so OCC merge eligibility can associate OMN-14534 with the onex_change_control
+      PR under check. Product-observing evidence is carried by the entries above; this item is binding
+      only.'
+    source: manual
+    status: verified
+    checks:
+      - check_type: command
+        check_value: >-
+          grep -q '^status: PASS$' drift/dod_receipts/OMN-14534/dod-occ-self-4089/command.yaml && grep
+          -q 'pr_number: 4089' drift/dod_receipts/OMN-14534/dod-occ-self-4089/command.yaml && grep -q
+          'jonah/omn-14534-occ-companion-swarm-subtask' drift/dod_receipts/OMN-14534/dod-occ-self-4089/command.yaml
+  - id: dod-rebind-1737-head-df9dfd1a-contract-topics
+    description: >-
+      Append-only supplement for final omnimarket#1737 head df9dfd1a5496b1999e5a37ade66dd0b1d10aaebe.
+      The earlier OCC evidence bound product head 149276cf4c28754f2aa6da9d682b7bdf6966ca12. The final
+      product head adds one real follow-up commit in handler_swarm_subtask_state.py: freshness-cursor
+      topic constants are now sourced from this node's contract.yaml event_bus.subscribe_topics at import
+      time instead of duplicated string literals. This preserves the OMN-14534 event_model/adapter fix
+      while removing the hardcoded topic mirror that CodeRabbit/ratchets objected to.
+    source: manual
+    status: verified
+    checks:
+      - check_type: command
+        check_value: >-
+          f="$(mktemp)" && gh api "repos/OmniNode-ai/omnimarket/contents/src/omnimarket/nodes/node_swarm_subtask_state_reducer/handlers/handler_swarm_subtask_state.py?ref=df9dfd1a5496b1999e5a37ade66dd0b1d10aaebe"
+          --jq .content | base64 -d > "$f" && grep -Fq -- '_CONTRACT_PATH = Path(__file__).parent.parent
+          / "contract.yaml"' "$f" && grep -Fq -- 'yaml.safe_load(_contract_text)' "$f" && grep -Fq --
+          '_SUBSCRIBE_TOPICS' "$f" && grep -Fq -- 'def _topic(marker: str) -> str:' "$f" && grep -Fq --
+          '_TOPIC_DELEGATION_EXECUTE = _topic("delegation-execute")' "$f" && ! grep -Fq -- '_TOPIC_DELEGATION_EXECUTE
+          = "onex.cmd.omnimarket.delegation-execute.v1"' "$f"
+  - id: dod-verify-1737-final-head-focused-tests
+    description: >-
+      Final-head local validation for omnimarket#1737 at df9dfd1a5496b1999e5a37ade66dd0b1d10aaebe. Focused
+      pytest over the co-located node_swarm_subtask_state_reducer suite plus the top-level OMN-14534 FSM
+      state-coverage tests passed 28/28; ruff check on the touched node/test surface passed.
+    source: manual
+    status: verified
+    checks:
+      - check_type: command
+        check_value: >-
+          grep -q '^status: PASS$' drift/dod_receipts/OMN-14534/dod-verify-1737-final-head-focused-tests/command.yaml
+          && grep -q '28 passed' drift/dod_receipts/OMN-14534/dod-verify-1737-final-head-focused-tests/command.yaml
+          && grep -q 'All checks passed' drift/dod_receipts/OMN-14534/dod-verify-1737-final-head-focused-tests/command.yaml
+  - id: dod-deploy-assessment-head-df9dfd1a
+    description: >-
+      Deploy assessment for final omnimarket PR #1737 head df9dfd1a5496b1999e5a37ade66dd0b1d10aaebe. The
+      final delta remains a market node handler/contract-derived topic-source change plus tests; this
+      evidence package performs no live deploy, runtime restart, docker exec, rpk topic produce, database
+      mutation, or .201/.200 runtime mutation. The fix is deployed through the normal runtime rollout;
+      no prod promotion is requested or performed here.
+    source: manual
+    status: verified
+    checks:
+      - check_type: command
+        check_value: >-
+          grep -q '^status: PASS$' drift/dod_receipts/OMN-14534/dod-deploy-assessment-head-df9dfd1a/command.yaml
+          && grep -qi 'no live deploy' drift/dod_receipts/OMN-14534/dod-deploy-assessment-head-df9dfd1a/command.yaml

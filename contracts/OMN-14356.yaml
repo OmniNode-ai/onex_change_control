@@ -1,0 +1,72 @@
+---
+schema_version: 1.0.0
+ticket_id: OMN-14356
+title: "fix(OMN-14356): collision-safe consumer-group ACL delimiter (both providers)"
+summary: >-
+  omninode_infra PR #582 closes a High-severity cross-tenant consumer-GROUP ACL leak in both broker ACL
+  provisioners. The per-tenant group grant used a ``-`` tenant-boundary delimiter (``tenant-<slug>-``
+  for Redpanda prefixed ACLs; ``tenant-<slug>-*`` for MSK IAM Resource ARNs). Because ``-`` is a LEGAL
+  tenant_slug character, tenant ``acme``'s group grant was a literal prefix / IAM glob-match of tenant
+  ``acme-foo``'s consumer groups, silently granting cross-tenant DescribeGroup and (on MSK) AlterGroup
+  -- offset reset/delete, a cross-tenant integrity / DoS leak. The fix mirrors the already-safe topic
+  namespace's ``.`` delimiter for the group namespace in both providers; ``.`` is rejected by the tenant_slug
+  charset so overlap is structurally impossible.
+is_seam_ticket: true
+interface_change: true
+interfaces_touched:
+  - public_api
+emergency_bypass:
+  enabled: false
+  justification: ""
+  follow_up_ticket_id: ""
+dod_evidence:
+  - id: dod-001
+    description: >-
+      Independent adversarial verification of omninode_infra PR #582 at head b69dd199b599976b0433b0328865bce8d1d57f70.
+      Both TENANT_GROUP_PREFIX_TEMPLATE constants now use ``.`` (kafka_acl_manager.py -> ``tenant-{slug}.``;
+      msk_acl_manager.py -> ``tenant-{slug}.*``). The full onex-api ACL suite (test_kafka_acl_manager.py
+      + test_msk_acl_manager.py + the new test_cross_tenant_group_overlap.py) passed 66/66 including the
+      10 new cross-tenant tests, which drive the ACTUAL granted group resources from each provider's production
+      path (_build_tenant_acl_bindings / build_tenant_resource_arns) and apply each real matcher (Kafka
+      literal-prefix; AWS IAM glob). An independent fuzz over 14 legal slugs found ZERO cross-tenant group
+      overlaps under the fixed ``.`` delimiter in both providers, and 8 leaks per provider under the reconstructed
+      pre-fix ``-`` delimiter (proving the assertions are load-bearing). validate_tenant_slug rejects
+      any ``.``-containing slug, so the boundary is charset-enforced. The only residual ``tenant-<slug>-``
+      string in source is the MSK IAM role name (an exact identifier, not prefix/glob-matched) -- not
+      a leak path.
+    source: manual
+    status: verified
+    checks:
+      - check_type: command
+        check_value: >-
+          grep -q '^status: PASS$' drift/dod_receipts/OMN-14356/dod-001/command.yaml && grep -q '^pr_number:
+          582$' drift/dod_receipts/OMN-14356/dod-001/command.yaml && grep -q 'b69dd199b599976b0433b0328865bce8d1d57f70'
+          drift/dod_receipts/OMN-14356/dod-001/command.yaml
+  - id: dod-deploy-assessment
+    description: >-
+      Deploy-surface assessment for PR #582. The change edits two ACL-provisioner constant templates,
+      their docstrings, and test assertions, plus a new regression test. It adds no runtime service, no
+      daemon, no topic, no migration, no dependency, no deployable runtime container change, and no live
+      .201 mutation. The Redpanda base ACL grant runs on the onex-api tenant-create path, but per-tenant
+      ACL enforcement is not live (P0B per-tenant credentials default to disabled, GATEWAY_P0B_PER_TENANT_CREDENTIALS)
+      and no code in omninode_infra names a consumer group ``tenant-<slug>-<suffix>``, so no existing
+      consumer is denied by the delimiter change. Consumer-group id assignment is owned downstream (runtime/gateway,
+      WS-6/Daniyal, not live-wired), a cross-repo seam that must adopt the same ``.`` delimiter.
+    source: manual
+    status: verified
+    checks:
+      - check_type: command
+        check_value: >-
+          grep -q '^status: PASS$' drift/dod_receipts/OMN-14356/dod-deploy-assessment/command.yaml &&
+          grep -qi 'no live deploy' drift/dod_receipts/OMN-14356/dod-deploy-assessment/command.yaml
+  - id: dod-occ-self
+    description: >-
+      OCC companion self-binding for omninode_infra #582. This onex_change_control PR carries the central
+      OMN-14356 contract and PASS receipts consumed by #582 through its Evidence-Source line. Self-binds
+      via the first commit SHA so occ-preflight eligibility does not require predicting the OCC PR number.
+    source: manual
+    status: verified
+    checks:
+      - check_type: command
+        check_value: >-
+          grep -q '^status: PASS$' drift/dod_receipts/OMN-14356/dod-occ-self/command.yaml

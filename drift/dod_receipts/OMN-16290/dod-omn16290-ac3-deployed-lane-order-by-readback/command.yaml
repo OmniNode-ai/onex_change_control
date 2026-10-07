@@ -1,0 +1,47 @@
+---
+schema_version: 1.0.0
+ticket_id: OMN-16290
+evidence_item_id: dod-omn16290-ac3-deployed-lane-order-by-readback
+check_type: command
+check_value: |
+  gh api 'repos/OmniNode-ai/omnimarket/compare/d400590464949d97842446df4a510c508ca4f1d4...dev' --jq '.status' | grep -cE '^(ahead|identical)$'
+contract_sha256: sha256:081e36048f8a8439b3abd481b8f7790209f86e0661e7ca0ac5a1526f70d17796
+contract_entry_sha256: sha256:b70f9389ba4ec66f39042f9f09a51cafdab18f654200bfe1499a62fa7bd92c92
+status: PASS
+run_timestamp: '2026-09-10T00:44:25Z'
+commit_sha: d400590464949d97842446df4a510c508ca4f1d4
+runner: claude-local-worktree
+verifier: omn16290-closure
+probe_command: |
+  gh api 'repos/OmniNode-ai/omnimarket/compare/d400590464949d97842446df4a510c508ca4f1d4...dev' --jq '.status' | grep -cE '^(ahead|identical)$'
+probe_stdout: |
+  1
+actual_output: |
+  PASS. AC3. Re-executable half: the merged sha is an ancestor of omnimarket dev (compare status
+  "ahead") so a lane built from dev carries the change, and the 422 rejection path is present in the
+  served source at that sha (status_code=422 -> 3 occurrences).
+
+  LIVE HALF, executed 2026-09-10 against the deployed lab dev-lane projection-api (compose project
+  omnibase-infra, container omnimarket-projection-api, host port 3002), read-only HTTP GETs only,
+  nothing mutated on any lane. Not re-executable from a CI runner because it targets a LAN host.
+
+  The deployed OpenAPI document for GET /projection/{topic} declares parameters
+  [topic, correlation_id, since, limit, order, order_by] - the parameter exists on the RUNNING
+  service, not merely in source. Against onex.snapshot.projection.live-events.v1 at limit=5, three
+  distinct orderings were served from the same data:
+    no order_by            -> ordering "created_at DESC", leading event_id ec5264b1-04e2-4be6-9a87-30376cc57376
+    order_by=event_id ASC  -> ordering "event_id ASC",  leading 0072bba6-..., 00927793-..., 00b4a0e8-...
+    order_by=event_id DESC -> ordering "event_id DESC", leading ff8b0d6c-..., fe97c912-..., fe0d2b5b-...
+  The sequences are disjoint in both direction and key. Rejection was exercised too:
+  order_by=not_a_column ASC -> HTTP 422 invalid_order_by ("column 'not_a_column' is not a member of
+  the declared columns"); order_by=event_id SIDEWAYS -> HTTP 422 with the grammar message.
+
+  NEGATIVE CONTROL, same host, same read-only method, lanes still running pre-fix images: the prod
+  lane (port 23002) and the judge lane (port 43002) both declare [topic, correlation_id, since,
+  limit, order] with NO order_by, and on the judge lane order_by=not_a_column ASC returns HTTP 200
+  with ordering unchanged at created_at DESC - the exact "accepted but silently ignored" defect this
+  ticket reports, still observable on an un-upgraded lane. That is what proves the dev-lane result is
+  the change and not an artifact of the probe.
+exit_code: 0
+pr_number: 2113
+branch: dev

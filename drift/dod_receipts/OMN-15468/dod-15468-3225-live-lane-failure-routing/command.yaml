@@ -1,0 +1,75 @@
+---
+schema_version: "1.0.0"
+ticket_id: OMN-15468
+evidence_item_id: "dod-15468-3225-live-lane-failure-routing"
+check_type: command
+check_value: "attribution-gated rpk readback of the .201 dev lane: zero failure verdicts on onex.evt.omnimarket.delegate-skill-completed.v1
+  in the post-deploy window, positive-controlled on the declared failure terminal"
+status: PASS
+run_timestamp: "2026-09-06T04:30:00Z"
+contract_entry_sha256: "sha256:a510cf912fbef46509452cb3916f606041dc948857b350b9d6d07f1b0508b6dd"
+commit_sha: "4346814ab3c0c1f591cb15c62270848dba28d6eb"
+# commit_sha names the omnibase_infra merge commit, not an OCC commit; the
+# repos/OmniNode-ai/omnibase_infra reference in probe_command below is what lets
+# the commit-SHA resolver look it up in the right repository (OMN-15111).
+runner: "claude:omn15468-failure-verdict-topic-fix"
+verifier: omn15468-live-lane-verifier
+pr_number: 3225
+probe_command: |
+  # The commit under proof is the omnibase_infra merge commit, resolvable at
+  # repos/OmniNode-ai/omnibase_infra/commits/4346814ab3c0c1f591cb15c62270848dba28d6eb
+  # -- this receipt documents a check against that repo, not against onex_change_control.
+  gh api repos/OmniNode-ai/omnibase_infra/commits/4346814ab3c0c1f591cb15c62270848dba28d6eb --jq .sha
+  # 1) ATTRIBUTION -- the lane must actually carry the fix, or the readback proves nothing
+  ssh jonah@192.168.86.201 'docker inspect omninode-runtime --format="{{index .Config.Labels \"org.opencontainers.image.revision\"}}"'
+  # 2) THE CLAIM + 3) POSITIVE CONTROL -- bounded 0:end reads, no consumer group, no mutation
+  ssh jonah@192.168.86.201 'docker exec omnibase-infra-redpanda rpk topic consume onex.evt.omnimarket.delegate-skill-completed.v1 -o 0:end -f "%v\n"' > /tmp/omn15468_completed.jsonl
+  ssh jonah@192.168.86.201 'docker exec omnibase-infra-redpanda rpk topic consume onex.evt.omnimarket.delegate-skill-failed.v1 -o 0:end -f "%v\n"' > /tmp/omn15468_failed.jsonl
+  # classify every record whose envelope_timestamp is at or after the deploy (2026-09-06T03:22:07Z):
+  # a failure verdict is payload.status in {failed,timeout,error} or a non-null terminal_failure_cause.
+  # Exits non-zero if the failure terminal carried NO post-deploy failure verdict -- an empty window
+  # or a classifier that never fires must not read as a clean zero.
+probe_stdout: |
+  4346814ab3c0
+  post-deploy completed records: 0 with failure verdict: 0
+  post-deploy failed-terminal records: 13 classified as failure verdict: 13
+  PASS: failure verdicts route to the declared failure terminal and none reach the success terminal
+actual_output: |
+  PASS. Lane: .201 dev (compose project omnibase-infra), registry active_version=0.38.18
+  git_sha=4346814ab3c0 deployed_at=2026-09-06T03:22:07Z via the sanctioned
+  scripts/deploy-runtime.sh --execute --force --restart path. stability-test, judge, prod and
+  lakshman were not touched; broker access was rpk reads only.
+
+  BEFORE (2026-09-05T23:10Z, lane still on the pre-fix image created 2026-09-04T15:57:24Z):
+  onex.evt.omnimarket.delegate-skill-completed.v1 offsets 183-207 -- 18 of the trailing 25 records
+  carried status="failed" with terminal_failure_cause in {provider_quota_exhausted, provider_error}
+  on the contract's SUCCESS terminal; 7 were genuine successes.
+
+  AFTER: 11 real dispatches driven through `onex delegate ... --bus kafka` inside the lane
+  (onex.cmd.omnimarket.delegate-skill.v1 advanced 220 -> 231). The success terminal's
+  high-watermark never moved off 208. The declared failure terminal took 13 records, all
+  classified as failure verdicts by the same reader.
+
+  The applier-guard re-route, read individually at delegate-skill-failed.v1 offset 13
+  (2026-09-06T03:27:13.472Z): event_type=omnimarket.delegate-skill-failed, status=failed,
+  terminal_failure_cause=provider_error, model_name=gemini-2.5-flash, correlation_id=
+  b9c5fe88-25dc-4824-817e-2c766589f015, prompt_text="Reply with the single word: alive.
+  OMN-15468 AC2 live failure-verdict routing proof." -- this session's own probe string.
+  source_tool and payload_type are null, which distinguishes an applier publish from the
+  OMN-16812 boundary emitter (source_tool="auto-wiring-boundary",
+  payload_type="ModelBoundaryFailureTerminal"); both shapes appeared in the window and both
+  targeted the failure terminal correctly.
+
+  STATED LIMIT, not implied: the success terminal received zero records of ANY kind in this
+  window, so the zero above is a clean zero backed by the positive control rather than by a
+  same-contract success. A same-contract live success could not be produced for a reason
+  unrelated to this fix -- every cloud rung was returning HTTP 429 and the local rung's
+  escalated result is rejected by an omnimarket wire-model validator ("quality-failed response
+  at or above required_quality_bar must carry failed_acceptance_criteria") before a
+  delegate-skill terminal can be built. Filed as OMN-17979. The live success-verdict control is
+  therefore the delegation-orchestrator inner hop: onex.evt.omnibase-infra.delegation-completed.v1
+  at 2026-09-06T03:50:55.995Z carries quality_passed=true, quality_score=1.0,
+  required_quality_bar=0.8, empty failure_reason -- post-deploy, same runtime, same applier --
+  and was NOT re-routed. The same-contract success control is carried by the executed focused
+  suite recorded in the sibling receipt.
+exit_code: 0

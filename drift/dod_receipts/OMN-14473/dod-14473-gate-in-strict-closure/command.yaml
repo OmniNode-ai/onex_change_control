@@ -1,0 +1,41 @@
+---
+schema_version: "1.0.0"
+ticket_id: "OMN-14473"
+evidence_item_id: "dod-14473-gate-in-strict-closure"
+check_type: "command"
+check_value: >-
+  C=$(gh api "repos/OmniNode-ai/omnibase_infra/contents/scripts/ci/ci_summary_gate.py?ref=398cddb17ea3a312d6aef51333695998f828f5ed"
+  --jq .content 2>/dev/null | base64 -d 2>/dev/null); test "$(printf '%s' "$C" | grep -c 'STRICT_GATE_JOBS')"
+  -ge 1 && test "$(printf '%s' "$C" | grep -c 'Effect-Assertion Gate (RT-5)')" -ge 1
+status: PASS
+run_timestamp: "2026-07-12T19:15:00Z"
+commit_sha: "398cddb17ea3a312d6aef51333695998f828f5ed"
+runner: "occ-queue-runner"
+verifier: "rt6-builder"
+pr_number: 4052
+probe_command: >-
+  C=$(gh api "repos/OmniNode-ai/omnibase_infra/contents/scripts/ci/ci_summary_gate.py?ref=398cddb17ea3a312d6aef51333695998f828f5ed"
+  --jq .content 2>/dev/null | base64 -d 2>/dev/null); test "$(printf '%s' "$C" | grep -c 'STRICT_GATE_JOBS')"
+  -ge 1 && test "$(printf '%s' "$C" | grep -c 'Effect-Assertion Gate (RT-5)')" -ge 1   # then re-run VERBATIM
+  at the pre-remediation ref f304e13b, where ci_summary_gate.py EXISTS but does not register the gate,
+  and at a bogus SHA
+probe_stdout: |
+  # bound check_value exit codes, run verbatim (verifier, 2026-07-12):
+  #   ref=398cddb1 (dev, #2271 squash-merge)   -> exit 0   GREEN  (name registered in STRICT tuple, line 92)
+  #   ref=f304e13b (pre-remediation #2271 head) -> exit 1   RED    <- EXISTS but WRONG (no registration)
+  #   ref=000...0  (bogus SHA)                   -> exit 1   RED    <- not vacuous
+exit_code: 0
+actual_output: >-
+  PASS: ci_summary_gate.py at the merged squash (398cddb1) declares STRICT_GATE_JOBS and registers the
+  exact required-context job name "Effect-Assertion Gate (RT-5)" (read the file: it is in the STRICT tuple
+  at line 92, before SKIPPABLE_GATE_JOBS at line 97). Strict semantics (ci_summary_gate.py): a strict
+  gate must be present + completed + conclusion == success; a red strict gate — or one absent or not completed
+  — fails CI Summary. CI Summary is the required branch-protection context (verified live in dev required_status_checks)
+  and is a no-needs, fail-closed poller over its OWN run's jobs — so an in-ci.yml job in STRICT_GATE_JOBS
+  is enforced in-PR. This is the ONLY viable enforcing path: a separate workflow (compose-config-lint
+  / prod-promotion-lineage / a mirror) is NOT a required context (verified: not in dev required_status_checks)
+  and CI Summary does not poll other runs, so a mirror would be enforcement theater. RED PROVEN at the
+  pre-remediation ref f304e13b, where ci_summary_gate.py EXISTS but does not register the gate name ->
+  exit 1. Exit 1 at a bogus SHA. gh-api content read, workspace-INDEPENDENT.
+branch: "jonah/omn-14473-occ-enforcement-evidence"
+contract_entry_sha256: "sha256:e7c454b273984454ea24f97c5509dfe97185c112d9d64c4b3e5c341a8944eab8"

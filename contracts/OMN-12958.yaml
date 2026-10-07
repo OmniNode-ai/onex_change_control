@@ -1,0 +1,83 @@
+---
+schema_version: "1.0.0"
+ticket_id: "OMN-12958"
+title: "Volume-config drift gate + re-seed — config provenance in startup logs, health, sweep, and proof
+  packets"
+summary: >
+  The Bifrost delegation contract is rendered once at container startup to a Docker named volume at /app/data/delegation/bifrost_delegation.yaml.
+  The volume survives docker compose build/recreate, so the deployed (volume) copy silently diverges from
+  the packaged source shipped in the image — two competing authorities (packaged source vs volume copy),
+  the defect class folded into OMN-12945 (two burns on 2026-06-11: stale gemini binding, empty frontier_api
+  endpoint). BIFROST_CONTRACT_PATH="" additionally disables packaged rendering entirely. This change ships
+  the tactical drift gate + re-seed stopgap (the config-authority reconciliation itself is the P1.2b /
+  OMN-12803 epic). Ratchet: (a) deploy procedure re-seeds volume config from packaged source with explicit
+  ledgered overlay diffs only (omnibase_infra/docs/runbooks/volume-config-drift-and-reseed.md); (b) runtime
+  startup logs config provenance (path + sha256) and the /health/detailed endpoint exposes a config_provenance
+  component (omnibase_infra runtime/config_provenance.py + runtime/health/health_config_provenance.py,
+  wired into render_bifrost_delegation_contract.main); (c) a read-only sweep node compares deployed-volume
+  sha vs packaged-source sha and classifies IN_SYNC/DRIFTED/DEPLOYED_ABSENT/SOURCE_ABSENT, emitting a
+  recommended Linear ticket payload on DRIFTED (omnimarket node_volume_config_drift_sweep); (d) config
+  provenance is written as a sidecar JSON (/app/data/delegation/.config_provenance.json) so it appears
+  in proof packets, not just health. No live volume mutation: the re-seed is an operator deploy step (deploy_pending).
+is_seam_ticket: false
+interface_change: false
+interfaces_touched: []
+evidence_requirements:
+  - kind: "tests"
+    description: >
+      omnibase_infra: 30 unit tests cover ModelConfigProvenance (byte-exact sha256, drift vs in-sync vs
+      absent, sidecar roundtrip, frozen model), the config_provenance health component (healthy/degraded/unhealthy),
+      and unchanged render_bifrost_delegation_contract behavior. omnimarket: 11 tests (7 unit + 4 golden-chain)
+      cover all four drift classifications across sidecar and path input modes, the recommended-ticket
+      payload, and command->handler->completion event over EventBusInmemory.
+    command: "uv run pytest tests/unit/runtime/test_config_provenance.py tests/unit/runtime/health/test_health_config_provenance.py
+      -v"
+emergency_bypass:
+  enabled: false
+  justification: ""
+  follow_up_ticket_id: ""
+dod_evidence:
+  - id: "dod-omnibase_infra-pr-1941"
+    description: >
+      omnibase_infra PR #1941 adds runtime/config_provenance.py (ModelConfigProvenance + drift classification
+      + sidecar writer), runtime/health/health_config_provenance.py (drift -> degraded health component),
+      the render entrypoint provenance log + sidecar emission, and the docs/runbooks/volume-config-drift-and-reseed.md
+      re-seed procedure. Evidence anchor: omnibase_infra head commit e459fbe68329ca2158089a4c2789fb11b3f83b28.
+    source: "manual"
+    checks:
+      - check_type: "command"
+        check_value: "grep -q '^status: PASS$' drift/dod_receipts/OMN-12958/dod-omnibase_infra-pr-1941/command.yaml
+          && grep -q '^pr_number: 1941$' drift/dod_receipts/OMN-12958/dod-omnibase_infra-pr-1941/command.yaml
+          && grep -q '30 passed' drift/dod_receipts/OMN-12958/dod-omnibase_infra-pr-1941/command.yaml"
+  - id: "dod-omnimarket-pr-1172"
+    description: >
+      omnimarket PR #1172 adds node_volume_config_drift_sweep (COMPUTE): compares deployed-volume sha
+      vs packaged-source sha (via the runtime sidecar or directly from paths), classifies drift, and emits
+      a recommended Linear ticket payload on DRIFTED. Evidence anchor: omnimarket head commit e6bc3ef4fc1cc7a0f4f38a718832de50c82ab2fb.
+    source: "manual"
+    checks:
+      - check_type: "command"
+        check_value: "grep -q '^status: PASS$' drift/dod_receipts/OMN-12958/dod-omnimarket-pr-1172/command.yaml
+          && grep -q '^pr_number: 1172$' drift/dod_receipts/OMN-12958/dod-omnimarket-pr-1172/command.yaml
+          && grep -q '11 passed' drift/dod_receipts/OMN-12958/dod-omnimarket-pr-1172/command.yaml"
+  - id: "dod-deploy-assessment"
+    description: >
+      Deploy assessment: no live deploy is performed by this PR set. The re-seed step mutates a Docker
+      named volume and is an operator/lane-approved deploy action (deploy_pending). Reaching live effect
+      (provenance sidecar + health component on a lane) requires the orchestrator's batched stability
+      rebuild that ships both PRs — no dev/prod mutation. Batch-rebuild verification steps are recorded
+      in the receipt. The check_value carries the deploy keyword for the deploy-gate.
+    source: "manual"
+    checks:
+      - check_type: "command"
+        check_value: "grep -q '^status: PASS$' drift/dod_receipts/OMN-12958/dod-deploy-assessment/command.yaml
+          && grep -q 'No live deploy' drift/dod_receipts/OMN-12958/dod-deploy-assessment/command.yaml"
+  - id: "dod-occ-self"
+    description: >
+      onex_change_control PR #2479 (dev) carries the OMN-12958 central contract and receipt evidence;
+      this self-binding receipt makes the OCC PR satisfy its own OCC eligibility check.
+    source: "manual"
+    checks:
+      - check_type: "command"
+        check_value: "grep -q '^status: PASS$' drift/dod_receipts/OMN-12958/dod-occ-self/command.yaml
+          && grep -q '^pr_number: 2479$' drift/dod_receipts/OMN-12958/dod-occ-self/command.yaml"

@@ -1,0 +1,117 @@
+# SPDX-FileCopyrightText: 2026 OmniNode.ai Inc.
+# SPDX-License-Identifier: MIT
+# OMN-13299: Enforce validator-requirements.yaml fleet gate for onex_change_control.
+# Reports ALL missing gates in a single pass (never fail-on-first).
+name: Validate Validator Requirements
+
+on:
+  push:
+    branches: [main, dev]
+  pull_request:
+    branches: [main, dev]
+  merge_group:
+  workflow_dispatch:
+
+env:
+  UV_HTTP_TIMEOUT: "600"
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  validate-validator-requirements:
+    name: Enforce validator-requirements.yaml (OMN-13299)
+    # OMNI_RUNNER_SELECTOR_V1 — runners are resolved from centralized selector variables.
+    runs-on: >-
+      ${{
+        (github.event_name == 'pull_request' &&
+         github.event.pull_request.head.repo.full_name != github.repository)
+        && fromJSON(vars.OMNI_PUBLIC_PR_RUNS_ON_JSON || '["ubuntu-latest"]')
+        || fromJSON(vars.OMNI_TRUSTED_CI_RUNS_ON_JSON || '["self-hosted","omnibase-ci"]')
+      }}
+    # OMN-13299/OMN-16299: this job depends on a cross-repo omnibase_core
+    # checkout. Incident-window runs have repeatedly exhausted the old 10m
+    # ceiling before the validator executed, leaving the required context red
+    # from transport flakes instead of validator defects.
+    timeout-minutes: 45
+
+    steps:
+      - name: Checkout repo
+        uses: actions/checkout@v7
+
+      # OMN-20001: the omnibase_core ref is the release tag of the omnibase-core
+      # version this repo's own uv.lock pins -- never the sibling's live branch
+      # (PR base, merge_group base, hotfix/* fallback to its default branch), so
+      # a merge in omnibase_core cannot turn this gate red. A new core version
+      # is integration-tested here by the PR that bumps uv.lock; that PR's own
+      # gate run reads the bumped lock from its head checkout.
+      # Supersedes the OMN-15689 R3a / OMN-15698 dynamic base-branch design.
+      - name: Resolve pinned omnibase_core validator ref (uv.lock)
+        id: validator_ref
+        run: |
+          set -euo pipefail
+
+          core_version="$(awk '$0 == "name = \"omnibase-core\"" { found = 1; next } found && $1 == "version" { gsub(/"/, "", $3); print $3; exit }' uv.lock)"
+          if [ -z "${core_version}" ]; then
+            echo "::error::OMN-20001: no omnibase-core version found in uv.lock; refusing to fall back to a live omnibase_core branch."
+            exit 1
+          fi
+          core_ref="v${core_version}"
+
+          echo "ref=${core_ref}" >> "$GITHUB_OUTPUT"
+          echo "core_ref=${core_ref}" >> "$GITHUB_OUTPUT"
+          echo "::notice::OMN-20001: omnibase_core pinned to '${core_ref}' (uv.lock)."
+
+      - name: Checkout omnibase_core
+        env:
+          CHECKOUT_TOKEN: ${{ secrets.OMNIBASE_CORE_TOKEN || secrets.GITHUB_TOKEN }}
+          OMNIBASE_CORE_REF: ${{ steps.validator_ref.outputs.ref }}
+        run: |
+          set -euo pipefail
+          if [ -z "${CHECKOUT_TOKEN:-}" ]; then
+            echo "::error::OMN-13299: CHECKOUT_TOKEN is empty; cannot clone omnibase_core for validator-requirements."
+            exit 1
+          fi
+
+          rm -rf omnibase_core
+          for attempt in 1 2 3 4; do
+            if git clone \
+              --depth 1 \
+              --branch "${OMNIBASE_CORE_REF}" \
+              "https://x-access-token:${CHECKOUT_TOKEN}@github.com/OmniNode-ai/omnibase_core.git" \
+              omnibase_core; then
+              test -d omnibase_core/.git
+              exit 0
+            else
+              status=$?
+            fi
+            rm -rf omnibase_core
+            if [ "$attempt" -eq 4 ]; then
+              echo "::error::OMN-13299: failed to clone omnibase_core@${OMNIBASE_CORE_REF} after ${attempt} attempts."
+              exit "$status"
+            fi
+            sleep $((attempt * 15))
+          done
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v10.2.0
+
+      - name: Enforce validator-requirements.yaml
+        run: |
+          cd omnibase_core
+          for attempt in 1 2 3; do
+            if uv sync --all-extras; then
+              break
+            fi
+            status=$?
+            if [ "$attempt" -eq 3 ]; then
+              exit "$status"
+            fi
+            sleep $((attempt * 10))
+          done
+          uv run python -m omnibase_core.validation.validator_requirements_consumer \
+            --repo onex_change_control \
+            --repo-root .. \
+            --spec architecture-handshakes/validator-requirements.yaml \
+            --baseline ../architecture-handshakes/validator-requirements-baseline.yaml

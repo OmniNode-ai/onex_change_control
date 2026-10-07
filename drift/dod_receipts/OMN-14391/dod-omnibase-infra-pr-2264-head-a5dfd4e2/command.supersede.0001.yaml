@@ -1,0 +1,74 @@
+---
+schema_version: 1.0.0
+ticket_id: OMN-14391
+evidence_item_id: dod-omnibase-infra-pr-2264-head-a5dfd4e2
+check_type: command
+supersedes: drift/dod_receipts/OMN-14391/dod-omnibase-infra-pr-2264-head-a5dfd4e2/command.yaml
+reason: Re-bind the legacy OMN-14391 omnibase_infra#2264 head-a5dfd4e2 receipt to the current per-entry
+  contract hash after later append-only contract evidence. The base command.yaml remains immutable under
+  the OCC append-only gate.
+superseder: codex-foreground-merge-sweep
+created_at: '2026-07-12T00:00:00Z'
+tombstone: false
+replacement:
+  schema_version: 1.0.0
+  ticket_id: OMN-14391
+  evidence_item_id: dod-omnibase-infra-pr-2264-head-a5dfd4e2
+  check_type: command
+  check_value: 'grep -q ''^status: PASS$'' drift/dod_receipts/OMN-14391/dod-omnibase-infra-pr-2264-head-a5dfd4e2/command.yaml
+    && grep -q ''^pr_number: 2264$'' drift/dod_receipts/OMN-14391/dod-omnibase-infra-pr-2264-head-a5dfd4e2/command.yaml
+    && grep -q ''a5dfd4e2efcdbcab1a55ec6457119f7c79ab5d5a'' drift/dod_receipts/OMN-14391/dod-omnibase-infra-pr-2264-head-a5dfd4e2/command.yaml'
+  status: PASS
+  run_timestamp: '2026-07-12T00:25:55Z'
+  commit_sha: a5dfd4e2efcdbcab1a55ec6457119f7c79ab5d5a
+  runner: fix-14391
+  verifier: verify-14391
+  pr_number: 2264
+  probe_command: cd omnibase_infra && uv run pytest tests/integration/runtime/test_ledger_write_effect_dispatch_seam.py
+    -v (baseline) ; python3 -c "rename async def handle( -> async def handle_disabled( in handler_ledger_append.py"
+    ; uv run pytest tests/integration/runtime/test_ledger_write_effect_dispatch_seam.py -v (mutation)
+    ; git checkout -- src/omnibase_infra/nodes/node_ledger_write_effect/handlers/handler_ledger_append.py
+    ; uv run pytest tests/integration/runtime/test_ledger_write_effect_dispatch_seam.py -v (revert) ;
+    git status --short
+  probe_stdout: |
+    BASELINE (handle() intact):
+    tests/integration/runtime/test_ledger_write_effect_dispatch_seam.py::test_ledger_append_dispatches_through_real_engine_to_handle PASSED [ 50%]
+    tests/integration/runtime/test_ledger_write_effect_dispatch_seam.py::test_ledger_append_missing_handle_sentinel_raises_model_onex_error PASSED [100%]
+    2 passed in 0.86s
+
+    MUTATION (renamed handle -> handle_disabled, simulating pre-OMN-14134):
+    tests/integration/runtime/test_ledger_write_effect_dispatch_seam.py::test_ledger_append_dispatches_through_real_engine_to_handle FAILED [ 50%]
+    tests/integration/runtime/test_ledger_write_effect_dispatch_seam.py::test_ledger_append_missing_handle_sentinel_raises_model_onex_error PASSED [100%]
+    AssertionError: Dispatch did not succeed -- status=handler_error error="Dispatcher 'dispatcher.auto.node_ledger_write_effect.HandlerLedgerAppend.ledger_append_7be24624'
+    failed: ModelOnexError: Auto-wired handler HandlerLedgerAppend does not expose a callable handle() or
+    handle_async() dispatch entrypoint."
+    1 failed, 1 passed in 0.87s
+
+    REVERT (git checkout -- handler_ledger_append.py):
+    tests/integration/runtime/test_ledger_write_effect_dispatch_seam.py::test_ledger_append_dispatches_through_real_engine_to_handle PASSED [ 50%]
+    tests/integration/runtime/test_ledger_write_effect_dispatch_seam.py::test_ledger_append_missing_handle_sentinel_raises_model_onex_error PASSED [100%]
+    2 passed in 0.71s
+    git status --short: (empty -- clean)
+
+    MOCK-BOUNDARY / SOURCE READ: message_dispatch_engine.py:2044-2048 -- "ALWAYS materialize envelope with
+    bindings (never mutate original)" -- dispatch() unconditionally calls _materialize_envelope_with_bindings()
+    before invoking the dispatch callback, confirming HandlerLedgerAppend.handle() receives a dict-shaped
+    envelope, not the typed ModelEventEnvelope the test constructs. Only HandlerLedgerAppend.append is
+    patched (patch.object(HandlerLedgerAppend, "append", new_callable=AsyncMock)) -- dispatch engine,
+    contract wiring (discover_contracts/wire_from_manifest), and handle() itself are real/live.
+
+    CI CLASSIFICATION: gh pr checks 2264 --repo OmniNode-ai/omnibase_infra is red, attributable entirely to
+    occ-preflight cascade. occ-preflight / eligibility job log: "##[error]OCC PREFLIGHT FAILED: PR body is
+    missing required 'Evidence-Source:' line." CI Summary aggregator job log: "strict-gate failures:
+    ... occ-preflight / eligibility" listed as the sole failing gate, all others completed/skipped per the
+    standard fail-closed cascade. no-noncanonical-lifecycle-classes and CodeRabbit both pass independently.
+  actual_output: 'PASS: independently reproduced (not trusted from the PR body) that test_ledger_append_dispatches_through_real_engine_to_handle
+    drives the REAL dispatch engine to HandlerLedgerAppend.handle() -- mutating handle() away breaks the
+    test with the exact predicted pre-OMN-14134 ModelOnexError, and reverting restores GREEN with a clean
+    worktree. The only mock is the Postgres I/O leaf (HandlerLedgerAppend.append); wiring, dispatch, and
+    handle() are real. CI red on the PR is entirely the OCC-preflight Evidence-Source cascade, not a defect
+    in the test.'
+  exit_code: 0
+  branch: jonah/omn-14391-occ-pr2264
+  contract_sha256: sha256:f94b0c55ba44b6ab7eb2d235d3ab27ccdcbdfe6576f77cea93750712c50072a0
+  contract_entry_sha256: sha256:25ce8d60a5ccc3fa48a475171a6f763b18bde6c8c09ae550fc7c84706616d01f

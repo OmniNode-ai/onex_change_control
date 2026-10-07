@@ -1,0 +1,63 @@
+---
+schema_version: "1.0.0"
+ticket_id: "OMN-14392"
+evidence_item_id: "dod-omnimarket-pr-1719-head-b85d1b25"
+check_type: "command"
+check_value: >-
+  grep -q '^status: PASS$' drift/dod_receipts/OMN-14392/dod-omnimarket-pr-1719-head-b85d1b25/command.yaml
+  && grep -q '^pr_number: 1719$' drift/dod_receipts/OMN-14392/dod-omnimarket-pr-1719-head-b85d1b25/command.yaml
+  && grep -q 'b85d1b25f8a3fb592a2f4ae6b68982b59a847643' drift/dod_receipts/OMN-14392/dod-omnimarket-pr-1719-head-b85d1b25/command.yaml
+status: PASS
+run_timestamp: "2026-07-12T00:21:44Z"
+commit_sha: "b85d1b25f8a3fb592a2f4ae6b68982b59a847643"
+runner: "fix-14392"
+verifier: "verify-14392"
+pr_number: 1719
+probe_command: >-
+  In $OMNI_HOME/omni_worktrees/OMN-14392/omnimarket at head b85d1b25f8a3fb592a2f4ae6b68982b59a847643:
+  (1) uv run pytest tests/unit/nodes/node_dod_verify/test_omn_14207_live_pr_state_check.py -v [baseline];
+  (2) edited src/omnimarket/nodes/node_dod_verify/services/evidence_collector.py so EvidenceCollector._verify_live_pr
+  unconditionally returns (True, "MUTATED-BUG: live check bypassed") before its real merge/checks-green
+  logic, reintroducing the OMN-13996 masking bug; (3) uv run pytest tests/unit/nodes/node_dod_verify/test_omn_14207_live_pr_state_check.py::TestOmn13996Regression::test_static_pass_receipt_no_longer_masks_unmerged_pr
+  -v [mutation]; (4) reverted the edit and confirmed git status --porcelain is empty; (5) uv run pytest
+  tests/unit/nodes/node_dod_verify/test_omn_14207_live_pr_state_check.py -v [post-revert, full file];
+  (6) uv run python3 -c "..." patching EvidenceCollector._fetch_pr_merge_state and _fetch_pr_checks_green
+  at the class level to raise AssertionError on any call, then running pytest on TestOmn13996Regression
+  [offline-structural probe]; (7) gh pr checks 1719 --repo OmniNode-ai/omnimarket plus gh run view --log
+  on each non-green job to classify OCC-preflight cascade vs independent red.
+probe_stdout: |
+  Baseline (unmodified head b85d1b25): tests/unit/nodes/node_dod_verify/test_omn_14207_live_pr_state_check.py
+  18 passed in 0.20s
+
+  Mutation (EvidenceCollector._verify_live_pr short-circuited to `return True, "MUTATED-BUG: live check
+  bypassed"` before the real merge/checks-green logic, reintroducing the exact OMN-13996 masking bug):
+  tests/unit/nodes/node_dod_verify/test_omn_14207_live_pr_state_check.py::TestOmn13996Regression::test_static_pass_receipt_no_longer_masks_unmerged_pr
+  FAILED
+  AssertionError: assert <EnumEvidenceCheckStatus.VERIFIED: 'verified'> == <EnumEvidenceCheckStatus.FAILED:
+  'failed'>
+  1 failed in 0.25s
+
+  Reverted mutation (git status --porcelain empty); full file rerun: 18 passed in 0.20s.
+
+  Offline-structural probe: EvidenceCollector._fetch_pr_merge_state and _fetch_pr_checks_green patched
+  at the class level to raise AssertionError on any call. Both TestOmn13996Regression tests (test_static_pass_receipt_no_longer_masks_unmerged_pr,
+  test_handler_overall_failed_when_live_check_fails) still passed -- 2 passed in 0.07s -- proving handler._make_collector
+  routes to the pre-mocked instance and no fresh/unmocked EvidenceCollector's live-gh methods are ever
+  reached.
+
+  gh pr checks 1719 --repo OmniNode-ai/omnimarket: sole real root failure is `occ-preflight / eligibility`
+  ("PR body is missing required 'Evidence-Source:' line"). Every other non-green job (Hostile Review
+  Gate, Omni Standards Gate, PR Arch Review Gate, 31x OCC Preflight Dependency matrix jobs) logs `occ-preflight:
+  failure` / "OCC preflight failed or did not complete successfully" as its own failure reason -- confirmed
+  cascade, not independent red. no-noncanonical-lifecycle-classes, gate / CodeRabbit Thread Check, CodeRabbit,
+  Publish occ-autobind command all pass.
+actual_output: >-
+  PASS: omnimarket#1719 head b85d1b25f8a3fb592a2f4ae6b68982b59a847643 makes TestOmn13996Regression::test_static_pass_receipt_no_longer_masks_unmerged_pr
+  hermetic without weakening it. Mutation-testing the production code it guards (reintroducing the OMN-13996
+  masking bug) drives the test RED; reverting restores GREEN. The mock added by the fix (handler._make_collector)
+  replaces only I/O-boundary collector construction -- the verdict computation in HandlerDodVerify._handle_typed
+  remains fully live and is what the assertion exercises. CI is clean modulo the expected occ-preflight
+  cascade (this receipt is the remedy).
+exit_code: 0
+branch: "jonah/omn-14392-occ-pr1719"
+contract_sha256: "sha256:bdba437cf7887ba9bba12fff5086c2acd920d04b5b4a542c7e56648e80f0aa19"

@@ -1,0 +1,60 @@
+---
+schema_version: "1.0.0"
+ticket_id: "OMN-13317"
+title: "OCC Evidence-Source autobind on product-PR open (F1)"
+summary: >-
+  Auto-create and bind the OCC receipt evidence on a product PR whose Evidence-Source points at the product
+  head SHA instead of an OCC source, killing the per-PR manual receipt-binding tax (the single biggest
+  overnight-sweep time-sink). A new OccAutobindAdapter in node_pr_lifecycle_fix_effect (omnimarket) runs
+  under the receipt_evidence_source_autobind block reason: it detects the ticket from the PR title/body,
+  stamps the downstream receipt with the real product PR head SHA and number (not the OCC repo HEAD),
+  opens/syncs the OCC binding PR, performs a two-stage self-bind against the real OCC PR number plus OCC
+  head commit, recomputes contract_sha256 across all matching receipts, and PATCHes Evidence-Source: OCC#<n>
+  back onto the product PR body via REST (gh pr edit no-ops on Projects-classic repos). Command transport
+  is the canonical topic onex.cmd.omnimarket.occ-autobind.v1, thin-published by the call-occ-autobind
+  GHA workflow on product-PR opened/synchronize and consumed by node_pr_lifecycle_fix_effect. This is
+  the omnimarket-side glue (the missing ~20%) on top of the existing deploy-gate OCC contract adapter.
+  This OCC contract is the central Receipt-Gate Evidence-Source that the omnimarket product PR cites so
+  its verify/verify Receipt Gate resolves against an OCC-main ancestor.
+is_seam_ticket: false
+interface_change: false
+interfaces_touched: []
+evidence_requirements:
+  - kind: "ci"
+    description: >-
+      omnimarket PR pr_lifecycle test suites are green and the new OccAutobindAdapter is verified by 19
+      focused unit tests plus the orchestrator-wires-live assertion that the live adapter (not the no-op)
+      is bound. mypy --strict and topic-naming-lint pass.
+    command: "uv run pytest tests/unit/nodes/node_pr_lifecycle_fix_effect/ -q"
+emergency_bypass:
+  enabled: false
+  justification: ""
+  follow_up_ticket_id: ""
+dod_evidence:
+  - id: "dod-occ-evidence-source"
+    description: >-
+      This OCC contract is the central Receipt-Gate Evidence-Source for the OMN-13317 OCC Evidence-Source
+      autobind work (epic OMN-10482). The omnimarket product PR cites Evidence-Source: OCC#<this-pr> (post-merge
+      OCC-main SHA) so its verify/verify Receipt Gate resolves against an OCC-main ancestor. The change
+      is contract-native: a new effect adapter, a typed block reason, a canonical command topic, a thin-publish
+      script, and 19 unit tests — no bespoke imperative I/O outside the effect boundary.
+    source: "manual"
+    checks:
+      - check_type: "command"
+        check_value: "gh pr view ${PR_NUMBER} --repo ${REPO} --json state --jq '.state'"
+  - id: "dod-deploy-assessment"
+    description: >-
+      Deploy assessment: this is an effect-adapter + CI-routing change in omnimarket (node_pr_lifecycle_fix_effect)
+      with a new declarative command topic (onex.cmd.omnimarket.occ-autobind.v1) and a new typed block
+      reason — no topic schema break, no envelope change, no contract API change, and no live-lane mutation.
+      The autobind effect is exercised by 19 unit tests and the orchestrator-wires-live assertion. No
+      live deploy is performed by this PR; the GHA call-occ-autobind workflow that thin-publishes the
+      command from product repos lands as follow-up per-repo wiring. If the effect is later activated
+      in the live runtime poller, a standard stability-test image rebuild must verify the adapter binds
+      Evidence-Source against a synthetic product PR before any prod promotion. The receipt check_value
+      carries the deploy keyword for the deploy-gate.
+    source: "manual"
+    checks:
+      - check_type: "command"
+        check_value: "grep -q '^status: PASS$' drift/dod_receipts/OMN-13317/dod-deploy-assessment/command.yaml
+          && grep -q 'No live deploy' drift/dod_receipts/OMN-13317/dod-deploy-assessment/command.yaml"

@@ -1,0 +1,84 @@
+---
+schema_version: "1.0.0"
+ticket_id: "OMN-13596"
+title: "response_text never shows a timeout string on a metered PASS delegation row"
+summary: >-
+  On the authoritative metered PASS delegation row (cost_usd>0 AND quality_gate_passed=true), the delegation_events.response_text
+  projection field displayed a delegation timeout string ("Timed out…") instead of the model's actual
+  answer, so a customer reading a successful, metered delegation got a timeout string (a success that
+  looks like a failure). Root cause: omnimarket node_projection_delegation/handlers/handler_projection_delegation.py
+  _canonical_result_to_task_delegated_payload() blindly mapped payload.get("content") -> response_text;
+  on the canonical delegation-completed.v1 / delegation-failed.v1 terminal, content can carry the caller-side
+  delegation-wait timeout text (orchestrator contract error_message "Delegation timed out before runtime
+  completion"; runtime dispatch port "timed out after <N>s waiting for delegation result") rather than
+  the model output, and that string landed in response_text on the very row the projection treats as the
+  metered PASS. The fix is three layers, all in node_projection_delegation: (1) new _canonical_response_text()
+  suppresses a delegation timeout/error string (returns None) when quality_passed is True, so the UPSERT
+  COALESCE + _preserve_existing_evidence keep a genuine answer; FAILED rows still surface their content;
+  (2) model_delegate_skill_terminal_projection.from_terminal_event() only falls through to error_message
+  when quality_gate_passed is False; (3) _preserve_existing_evidence() never lets a later FAILED/timeout
+  terminal overwrite a confirmed PASS row's response_text. Distinct from OMN-12732 / OMN-12737 (empty/dropped
+  response_text); this is the wrong-value case. This OCC contract is the Receipt-Gate Evidence-Source
+  the omnimarket product PR #1418 cites. No runtime deploy is performed by this PR itself.
+is_seam_ticket: false
+interface_change: false
+interfaces_touched: []
+evidence_requirements:
+  - kind: "tests"
+    description: >-
+      Regression suite TestResponseTextTimeoutOnPass (6 cases) covers the single-event canonical PASS-with-timeout-content
+      defect, the cross-event race in both orderings, the FAILED-still-surfaces-content non-regression,
+      and a direct sentinel-matcher unit test. Verified TDD: the single-event test fails on the pre-fix
+      line and passes after.
+    command: "uv run pytest tests/test_golden_chain_projection_delegation.py -q"
+  - kind: "ci"
+    description: >-
+      mypy --strict clean on node_projection_delegation; ruff format + check clean; full pre-commit run
+      --all-files clean; full non-kafka suite 8786 passed.
+    command: "uv run mypy src/omnimarket/nodes/node_projection_delegation/ --strict"
+emergency_bypass:
+  enabled: false
+  justification: ""
+  follow_up_ticket_id: ""
+dod_evidence:
+  - id: "dod-regression-tests"
+    description: >-
+      The omnimarket product PR #1418 carries the three-layer fix plus TestResponseTextTimeoutOnPass.
+      uv run pytest tests/test_golden_chain_projection_delegation.py -q passed 51 cases; the new single-event
+      canonical PASS-with-timeout-content test fails on the pre-fix line and passes after.
+    source: "manual"
+    checks:
+      - check_type: "command"
+        check_value: "grep -q '^status: PASS$' drift/dod_receipts/OMN-13596/dod-regression-tests/command.yaml
+          && grep -q '^pr_number: 3128$' drift/dod_receipts/OMN-13596/dod-regression-tests/command.yaml"
+  - id: "dod-full-suite-typecheck"
+    description: >-
+      Full non-kafka suite (uv run pytest tests/ -q -m "not kafka") passed 8786, 0 failed; mypy --strict
+      clean on node_projection_delegation; ruff + pre-commit --all-files clean on the product PR head.
+    source: "manual"
+    checks:
+      - check_type: "command"
+        check_value: "grep -q '^status: PASS$' drift/dod_receipts/OMN-13596/dod-full-suite-typecheck/command.yaml
+          && grep -q '47f489927853ae7c76688efa6aeb03ccc2e011cc' drift/dod_receipts/OMN-13596/dod-full-suite-typecheck/command.yaml"
+  - id: "dod-occ-evidence-source"
+    description: >-
+      This OCC contract is the central Receipt-Gate Evidence-Source for OMN-13596; the omnimarket PR #1418
+      cites Evidence-Source: OCC#<this-pr> so its verify Receipt Gate resolves against an OCC-main ancestor.
+    source: "manual"
+    checks:
+      - check_type: "command"
+        check_value: "test -f contracts/OMN-13596.yaml"
+  - id: "dod-deploy-token"
+    description: >-
+      Deploy assessment: omnimarket PR #1418 changes a projection handler + its regression tests only
+      and performs no live runtime deploy, restart, image rebuild, topic mutation, or database migration
+      by merging. The post-merge operator step is to redeploy the delegation projection runtime on the
+      dev lane and verify a fresh metered PASS delegation psql readback (verifier != runner) shows delegation_events.response_text
+      carrying the model answer and never a timeout/error string; that live readback is tracked as the
+      post-merge .201 run and is not a pre-merge gate. The static + TDD regression proof above locks the
+      projection invariant pre-merge.
+    source: "manual"
+    checks:
+      - check_type: "command"
+        check_value: "grep -qi 'performs no live runtime deploy' contracts/OMN-13596.yaml && grep -q '^status:
+          PASS$' drift/dod_receipts/OMN-13596/dod-deploy-token/command.yaml"

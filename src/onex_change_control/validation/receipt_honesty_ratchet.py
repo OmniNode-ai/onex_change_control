@@ -1,0 +1,1947 @@
+# SPDX-FileCopyrightText: 2026 OmniNode.ai Inc.
+# SPDX-License-Identifier: MIT
+"""Receipt-honesty persistent-debt ratchet for OCC (OMN-17495).
+
+The :mod:`omnibase_core.validation.validator_receipt_honesty` module selected
+by this repository's ``uv.lock`` is the only source of honesty-rule semantics.
+CI and local pre-commit run this wrapper through locked ``uv`` commands; the
+runtime provenance check verifies the imported module belongs to that locked
+registry distribution.  OCC adopts core scanner changes only with a lock and
+ledger update in the same OCC change.  The scanner deliberately scans every
+parseable ``*.yaml`` receipt, including superseded receipt bases.  That is an
+important limitation: this first control is a truthful persistent-debt
+migration guard, not a claimed burn-down of active receipt debt.  Making the
+core scanner supersession-aware is follow-up work; this wrapper must never
+reinterpret, filter, or suppress its findings.
+
+The immutable ledger records each historical core finding as the tuple
+``(canonical repo path, EnumHonestyRule value, SHA-256(raw bytes), origin blob
+OID)``.  A full scan passes only when the live set equals the ledger set.  A
+byte edit, path copy, rule addition, repair without ledger removal, or ledger
+entry removal without a real repair consequently fails as both a new and/or a
+stale identity.  The ledger is audit metadata, never a suppression allowlist.
+
+``--seed-baseline`` is intentionally one-shot.  It may write a missing ledger
+only from the controlled bootstrap base and only after independently proving
+the frozen provenance census and live corpus census.  Afterwards the current
+ledger must be a subset of the base commit's ledger; debt can disappear only
+along with the corresponding live core finding.
+"""
+
+from __future__ import annotations
+
+import argparse
+import hashlib
+import importlib.metadata
+import os
+import re
+import shutil
+import stat
+import subprocess
+import sys
+import tarfile
+import tempfile
+import tomllib
+from dataclasses import dataclass
+from pathlib import Path, PurePosixPath
+from typing import TYPE_CHECKING, Any, cast
+
+import yaml
+
+if TYPE_CHECKING:
+    from collections.abc import Callable, Sequence
+    from typing import BinaryIO
+from omnibase_core.validation.validator_receipt_honesty import (
+    EnumHonestyRule,
+    scan_receipt_files,
+    scan_receipts_directory,
+)
+
+_MODULE = "onex_change_control.validation.receipt_honesty_ratchet"
+_BASELINE_RELPATH = PurePosixPath(
+    ".onex_ratchets/omn_17495_receipt_honesty_baseline.yaml"
+)
+_RECEIPTS_RELPATH = PurePosixPath("drift/dod_receipts")
+_CORPUS_HOOK_FILES_RE = (
+    r"^(drift/dod_receipts/.*\.ya?ml|"
+    r"\.onex_ratchets/omn_17495_receipt_honesty_baseline\.yaml)$"
+)
+_ORIGIN_COMMIT = "65a2adbba8a3c4f6cc57c1c7250480bfb708fac0"
+_BOOTSTRAP_BASE_COMMIT = "b2293819e69a3bf4b58107bd2b951f3a45cc377f"
+_SEED_FINDING_COUNT = 1142
+_SEED_RECEIPT_PATH_COUNT = 1055
+_CANONICAL_RECEIPT_PATH_PARTS = 5
+_SCANNER_LIMITATION = (
+    "The locked core scanner includes superseded receipt bases. This ledger is "
+    "a truthful persistent-debt migration control, not a burn-down claim; "
+    "active-supersession scanner work is follow-up."
+)
+_ROOT_KEYS = frozenset(
+    {
+        "schema_version",
+        "origin_commit",
+        "bootstrap_base_commit",
+        "seed_finding_count",
+        "seed_receipt_path_count",
+        "scanner_limitation",
+        "findings",
+    }
+)
+_ENTRY_KEYS = frozenset({"path", "rule", "sha256", "blob_oid"})
+_SHA256_RE = re.compile(r"^[0-9a-f]{64}$")
+_OID_RE = re.compile(r"^[0-9a-f]{40,64}$")
+_GIT_EXECUTABLE = shutil.which("git")
+
+
+class RatchetError(RuntimeError):
+    """A fail-closed receipt-honesty ratchet violation."""
+
+
+class _StrictYamlLoader(yaml.SafeLoader):
+    """Safe loader which treats duplicate and merged keys as malformed."""
+
+
+def _construct_unique_mapping(
+    loader: _StrictYamlLoader, node: yaml.MappingNode, deep: Any = None
+) -> dict[Any, Any]:
+    mapping: dict[Any, Any] = {}
+    construct_object = cast("Callable[[yaml.Node, bool], Any]", loader.construct_object)
+    deep_value = bool(deep)
+    for key_node, value_node in node.value:
+        key = construct_object(key_node, deep_value)
+        if key == "<<":
+            msg = "YAML merge keys are forbidden in the strict ratchet ledger"
+            raise RatchetError(msg)
+        if key in mapping:
+            msg = f"duplicate YAML key: {key!r}"
+            raise RatchetError(msg)
+        mapping[key] = construct_object(value_node, deep_value)
+    return mapping
+
+
+_StrictYamlLoader.add_constructor(
+    yaml.resolver.BaseResolver.DEFAULT_MAPPING_TAG, _construct_unique_mapping
+)
+
+
+@dataclass(frozen=True, order=True)
+class FindingIdentity:
+    """A content-bound core finding; detail text is intentionally not identity."""
+
+    path: str
+    rule: str
+    sha256: str
+    blob_oid: str
+
+    def as_mapping(self) -> dict[str, str]:
+        """Serialize in the ledger's canonical field order."""
+        return {
+            "path": self.path,
+            "rule": self.rule,
+            "sha256": self.sha256,
+            "blob_oid": self.blob_oid,
+        }
+
+
+@dataclass(frozen=True)
+class Baseline:
+    """The strictly parsed receipt-honesty persistent-debt ledger."""
+
+    findings: tuple[FindingIdentity, ...]
+
+    @property
+    def identities(self) -> frozenset[FindingIdentity]:
+        """The set form used for live and base comparisons."""
+        return frozenset(self.findings)
+
+
+def _repo_root(value: Path) -> Path:
+    root = value.resolve()
+    if not (root / ".git").exists() and not (root / ".git").is_file():
+        msg = f"repository root is not a Git worktree: {root}"
+        raise RatchetError(msg)
+    return root
+
+
+def _git(
+    repo_root: Path,
+    *args: str,
+    input_bytes: bytes | None = None,
+    stdout_file: BinaryIO | None = None,
+    stderr_file: BinaryIO | None = None,
+) -> bytes:
+    """Run Git without a shell; errors are gate failures, never fallbacks."""
+    if (stdout_file is None) != (stderr_file is None):
+        msg = "Git output files must be supplied together"
+        raise RatchetError(msg)
+    if _GIT_EXECUTABLE is None:
+        msg = "Git executable is unavailable for receipt-honesty provenance validation"
+        raise RatchetError(msg)
+    result = subprocess.run(  # noqa: S603 -- arguments are fixed Git plumbing
+        [_GIT_EXECUTABLE, *args],
+        cwd=repo_root,
+        input=input_bytes,
+        capture_output=stdout_file is None,
+        stdout=stdout_file,
+        stderr=stderr_file,
+        check=False,
+    )
+    if result.returncode != 0:
+        if stderr_file is not None:
+            stderr_file.seek(0)
+            detail = stderr_file.read(4096).decode("utf-8", errors="replace").strip()
+        else:
+            detail = result.stderr.decode("utf-8", errors="replace").strip()
+        msg = f"git {' '.join(args)} failed"
+        if detail:
+            msg = f"{msg}: {detail}"
+        raise RatchetError(msg)
+    return b"" if stdout_file is not None else result.stdout
+
+
+def _commit_exists(repo_root: Path, commit: str) -> bool:
+    if _GIT_EXECUTABLE is None:
+        return False
+    result = subprocess.run(  # noqa: S603 -- arguments are fixed Git plumbing
+        [_GIT_EXECUTABLE, "rev-parse", "--verify", "--quiet", f"{commit}^{{commit}}"],
+        cwd=repo_root,
+        capture_output=True,
+        check=False,
+    )
+    return result.returncode == 0
+
+
+def _head_commit(repo_root: Path) -> str:
+    return _git(repo_root, "rev-parse", "HEAD").decode("ascii").strip()
+
+
+def _is_ancestor(repo_root: Path, ancestor: str, descendant: str) -> bool:
+    if _GIT_EXECUTABLE is None:
+        return False
+    result = subprocess.run(  # noqa: S603 -- arguments are fixed Git plumbing
+        [_GIT_EXECUTABLE, "merge-base", "--is-ancestor", ancestor, descendant],
+        cwd=repo_root,
+        capture_output=True,
+        check=False,
+    )
+    return result.returncode == 0
+
+
+def _normalize_base_commit(repo_root: Path, candidate: str) -> str:
+    """Require an exact commit OID which is an ancestor of current HEAD.
+
+    ``git rev-parse <name>^{commit}`` alone is insufficient: it accepts tags
+    and branch-like names, and a resolved commit can still be non-linear after
+    a force push.  The ledger comparison is meaningful only for an exact base
+    commit in HEAD's history, so reject both cases before any base-tree read.
+    """
+    object_format = _git_object_format(repo_root)
+    expected_length = 40 if object_format == "sha1" else 64
+    if not re.fullmatch(rf"[0-9a-f]{{{expected_length}}}", candidate):
+        msg = (
+            "receipt-honesty base must be a full canonical "
+            f"{object_format} commit OID, not a ref, tag, or abbreviation: "
+            f"{candidate!r}"
+        )
+        raise RatchetError(msg)
+    normalized = (
+        _git(repo_root, "rev-parse", "--verify", f"{candidate}^{{commit}}")
+        .decode("ascii")
+        .strip()
+    )
+    if normalized != candidate:
+        msg = (
+            "receipt-honesty base did not normalize to its exact commit OID: "
+            f"{candidate!r}"
+        )
+        raise RatchetError(msg)
+    head = _head_commit(repo_root)
+    if not _is_ancestor(repo_root, normalized, head):
+        msg = (
+            "receipt-honesty base is not an ancestor of HEAD; refusing a "
+            f"force-push or non-linear comparison: base={normalized}, head={head}"
+        )
+        raise RatchetError(msg)
+    return normalized
+
+
+def _normalize_branch_ref(repo_root: Path, value: str, event_name: str) -> str:
+    """Normalize only a ``refs/heads/`` prefix and validate an exact branch name."""
+    branch = value.removeprefix("refs/heads/")
+    if not branch:
+        msg = f"{event_name} receipt-honesty base branch is missing"
+        raise RatchetError(msg)
+    _git(repo_root, "check-ref-format", "--branch", branch)
+    return branch
+
+
+def _merge_base_for_branch(repo_root: Path, branch: str) -> str:
+    """Fetch one exact remote branch and return its ancestor-verified merge base."""
+    _git(repo_root, "fetch", "origin", branch, "--no-tags")
+    base = (
+        _git(repo_root, "merge-base", f"origin/{branch}", "HEAD")
+        .decode("ascii")
+        .strip()
+    )
+    return _normalize_base_commit(repo_root, base)
+
+
+def _resolve_local_tracking_ref(repo_root: Path) -> str:
+    """Resolve only the repository default branch, without guessing.
+
+    A feature branch can track itself after its first push, so ``@{upstream}``
+    is not authoritative for corpus monotonicity.  Only origin/HEAD is accepted.
+    Shallow CI checkouts may omit that symbolic ref, so hydrate it from the
+    remote's declared HEAD and then revalidate the exact ref.
+    """
+    if _GIT_EXECUTABLE is None:
+        msg = "Git executable is unavailable for local receipt-honesty base resolution"
+        raise RatchetError(msg)
+    candidate = "refs/remotes/origin/HEAD"
+    result = subprocess.run(  # noqa: S603 -- fixed Git plumbing
+        [
+            _GIT_EXECUTABLE,
+            "rev-parse",
+            "--verify",
+            "--quiet",
+            f"{candidate}^{{commit}}",
+        ],
+        cwd=repo_root,
+        capture_output=True,
+        check=False,
+    )
+    if result.returncode == 0:
+        return candidate
+    if result.returncode != 1:
+        detail = result.stderr.decode("utf-8", errors="replace").strip()
+        msg = f"unable to resolve local receipt-honesty default ref {candidate}"
+        if detail:
+            msg = f"{msg}: {detail}"
+        raise RatchetError(msg)
+    set_head = subprocess.run(  # noqa: S603 -- fixed Git plumbing
+        [_GIT_EXECUTABLE, "remote", "set-head", "origin", "--auto"],
+        cwd=repo_root,
+        capture_output=True,
+        check=False,
+    )
+    if set_head.returncode == 0:
+        retry = subprocess.run(  # noqa: S603 -- fixed Git plumbing
+            [
+                _GIT_EXECUTABLE,
+                "rev-parse",
+                "--verify",
+                "--quiet",
+                f"{candidate}^{{commit}}",
+            ],
+            cwd=repo_root,
+            capture_output=True,
+            check=False,
+        )
+        if retry.returncode == 0:
+            return candidate
+    msg = "local receipt-honesty base requires refs/remotes/origin/HEAD"
+    detail = set_head.stderr.decode("utf-8", errors="replace").strip()
+    if detail:
+        msg = f"{msg}; git remote set-head origin --auto failed: {detail}"
+    raise RatchetError(msg)
+
+
+def resolve_local_base(repo_root: Path) -> str:
+    """Resolve an offline, ancestor-verified local corpus base without fetching."""
+    ref = _resolve_local_tracking_ref(repo_root)
+    base = _git(repo_root, "merge-base", ref, "HEAD").decode("ascii").strip()
+    return _normalize_base_commit(repo_root, base)
+
+
+@dataclass(frozen=True)
+class CiBaseRequest:
+    """The event fields needed to derive one CI monotonicity base."""
+
+    event_name: str
+    pr_base_ref: str
+    merge_group_base_ref: str
+    before_sha: str
+    default_branch: str
+
+
+def resolve_ci_base(repo_root: Path, request: CiBaseRequest) -> str:
+    """Resolve an event-correct, ancestor-verified CI monotonicity base.
+
+    Pull requests and merge groups may only use their event payload branch;
+    ordinary pushes use their exact before commit. New branches, zero-before
+    force-push sentinels, and manual dispatch require an explicit repository
+    default branch supplied by CI's authenticated API lookup. There is no
+    branch-name fallback.
+    """
+    if request.event_name == "pull_request":
+        branch = _normalize_branch_ref(
+            repo_root, request.pr_base_ref, request.event_name
+        )
+        return _merge_base_for_branch(repo_root, branch)
+    if request.event_name == "merge_group":
+        branch = _normalize_branch_ref(
+            repo_root, request.merge_group_base_ref, request.event_name
+        )
+        return _merge_base_for_branch(repo_root, branch)
+    if request.before_sha and request.before_sha != "0" * 40:
+        return _normalize_base_commit(repo_root, request.before_sha)
+    branch = _normalize_branch_ref(
+        repo_root, request.default_branch, request.event_name
+    )
+    return _merge_base_for_branch(repo_root, branch)
+
+
+def _git_object_format(repo_root: Path) -> str:
+    value = _git(repo_root, "rev-parse", "--show-object-format").decode("ascii").strip()
+    if value not in {"sha1", "sha256"}:
+        msg = f"unsupported Git object format for receipt ledger: {value!r}"
+        raise RatchetError(msg)
+    return value
+
+
+def _git_blob_oid(raw: bytes, object_format: str) -> str:
+    digest = hashlib.new(object_format)
+    digest.update(f"blob {len(raw)}\0".encode("ascii"))
+    digest.update(raw)
+    return digest.hexdigest()
+
+
+def _canonical_receipt_path(value: str) -> str:
+    """Reject non-canonical, non-receipt, and traversal ledger paths."""
+    if not isinstance(value, str) or not value:
+        msg = "ledger finding path must be a non-empty string"
+        raise RatchetError(msg)
+    if "\\" in value:
+        msg = f"ledger finding path must use canonical POSIX separators: {value!r}"
+        raise RatchetError(msg)
+    path = PurePosixPath(value)
+    if value != path.as_posix():
+        msg = f"ledger finding path is not exact canonical POSIX spelling: {value!r}"
+        raise RatchetError(msg)
+    if path.is_absolute() or any(part in {"", ".", ".."} for part in path.parts):
+        msg = (
+            f"ledger finding path is not canonical or traverses directories: {value!r}"
+        )
+        raise RatchetError(msg)
+    if not path.is_relative_to(_RECEIPTS_RELPATH) or path.suffix != ".yaml":
+        msg = f"ledger finding path is outside canonical receipt corpus: {value!r}"
+        raise RatchetError(msg)
+    return path.as_posix()
+
+
+def _read_yaml_document(raw: bytes, source: str) -> Any:
+    try:
+        documents = list(yaml.load_all(raw.decode("utf-8"), Loader=_StrictYamlLoader))
+    except (UnicodeDecodeError, yaml.YAMLError, RatchetError) as exc:
+        msg = f"malformed receipt-honesty baseline {source}: {exc}"
+        raise RatchetError(msg) from exc
+    if len(documents) != 1:
+        msg = (
+            f"malformed receipt-honesty baseline {source}: exactly one YAML "
+            "document is required"
+        )
+        raise RatchetError(msg)
+    return documents[0]
+
+
+def _validate_baseline_metadata(document: dict[str, Any], source: str) -> list[Any]:
+    """Validate exact root keys and immutable bootstrap metadata."""
+    if not isinstance(document, dict) or set(document) != _ROOT_KEYS:
+        msg = (
+            f"malformed receipt-honesty baseline {source}: root keys must be exactly "
+            f"{sorted(_ROOT_KEYS)!r}"
+        )
+        raise RatchetError(msg)
+    expected_scalars: dict[str, object] = {
+        "schema_version": 1,
+        "origin_commit": _ORIGIN_COMMIT,
+        "bootstrap_base_commit": _BOOTSTRAP_BASE_COMMIT,
+        "seed_finding_count": _SEED_FINDING_COUNT,
+        "seed_receipt_path_count": _SEED_RECEIPT_PATH_COUNT,
+        "scanner_limitation": _SCANNER_LIMITATION,
+    }
+    for key, expected in expected_scalars.items():
+        if document[key] != expected or type(document[key]) is not type(expected):
+            msg = (
+                f"malformed receipt-honesty baseline {source}: {key!r} must equal "
+                f"the immutable {expected!r}"
+            )
+            raise RatchetError(msg)
+    raw_findings = document["findings"]
+    if not isinstance(raw_findings, list):
+        msg = f"malformed receipt-honesty baseline {source}: findings must be a list"
+        raise RatchetError(msg)
+    return raw_findings
+
+
+def _parse_finding(raw_entry: Any, source: str, index: int) -> FindingIdentity:
+    """Parse one exactly shaped ledger identity."""
+    if not isinstance(raw_entry, dict) or set(raw_entry) != _ENTRY_KEYS:
+        msg = (
+            f"malformed receipt-honesty baseline {source}: finding {index} keys "
+            f"must be exactly {sorted(_ENTRY_KEYS)!r}"
+        )
+        raise RatchetError(msg)
+    path = _canonical_receipt_path(raw_entry["path"])
+    rule = raw_entry["rule"]
+    sha256 = raw_entry["sha256"]
+    blob_oid = raw_entry["blob_oid"]
+    if not isinstance(rule, str) or rule not in {
+        item.value for item in EnumHonestyRule
+    }:
+        msg = (
+            f"malformed receipt-honesty baseline {source}: invalid rule at "
+            f"finding {index}"
+        )
+        raise RatchetError(msg)
+    if not isinstance(sha256, str) or not _SHA256_RE.fullmatch(sha256):
+        msg = (
+            f"malformed receipt-honesty baseline {source}: invalid SHA-256 at "
+            f"finding {index}"
+        )
+        raise RatchetError(msg)
+    if not isinstance(blob_oid, str) or not _OID_RE.fullmatch(blob_oid):
+        msg = (
+            f"malformed receipt-honesty baseline {source}: invalid blob OID at "
+            f"finding {index}"
+        )
+        raise RatchetError(msg)
+    return FindingIdentity(path, rule, sha256, blob_oid)
+
+
+def parse_baseline(raw: bytes, source: str = "baseline") -> Baseline:
+    """Load a fail-closed strict schema; no unknown fields or duplicate identities."""
+    document = _read_yaml_document(raw, source)
+    if not isinstance(document, dict):
+        msg = f"malformed receipt-honesty baseline {source}: root is not a mapping"
+        raise RatchetError(msg)
+    raw_findings = _validate_baseline_metadata(document, source)
+
+    findings: list[FindingIdentity] = []
+    seen_pairs: set[tuple[str, str]] = set()
+    for index, raw_entry in enumerate(raw_findings):
+        finding = _parse_finding(raw_entry, source, index)
+        pair = (finding.path, finding.rule)
+        if pair in seen_pairs:
+            msg = (
+                f"malformed receipt-honesty baseline {source}: duplicate path/rule "
+                f"identity {pair!r}"
+            )
+            raise RatchetError(msg)
+        seen_pairs.add(pair)
+        findings.append(finding)
+
+    if findings != sorted(findings):
+        msg = (
+            f"malformed receipt-honesty baseline {source}: findings are not "
+            "deterministic-sorted"
+        )
+        raise RatchetError(msg)
+    if len(set(findings)) != len(findings):
+        msg = f"malformed receipt-honesty baseline {source}: duplicate finding identity"
+        raise RatchetError(msg)
+    return Baseline(tuple(findings))
+
+
+def _baseline_path(repo_root: Path) -> Path:
+    return repo_root / Path(_BASELINE_RELPATH)
+
+
+def _read_regular_worktree_file(
+    repo_root: Path, path: PurePosixPath, label: str
+) -> bytes:
+    candidate = repo_root / Path(path)
+    try:
+        mode = candidate.lstat().st_mode
+    except OSError as exc:
+        msg = f"{label} is missing or unreadable: {candidate}"
+        raise RatchetError(msg) from exc
+    if not stat.S_ISREG(mode) or mode & 0o111:
+        msg = f"{label} must be a regular non-symlink file: {candidate}"
+        raise RatchetError(msg)
+    try:
+        return candidate.read_bytes()
+    except OSError as exc:
+        msg = f"{label} is missing or unreadable: {candidate}"
+        raise RatchetError(msg) from exc
+
+
+def load_baseline(repo_root: Path) -> Baseline:
+    """Read the working-tree ledger; absence or unreadability always fails closed."""
+    raw = _read_regular_worktree_file(
+        repo_root, _BASELINE_RELPATH, "receipt-honesty baseline"
+    )
+    return parse_baseline(raw, str(_baseline_path(repo_root)))
+
+
+def _read_regular_index_file(repo_root: Path, path: PurePosixPath, label: str) -> bytes:
+    """Read one exact stage-0 regular blob; no working-tree fallback is allowed."""
+    return _read_regular_index_files(repo_root, (path,), label)[path]
+
+
+def _read_regular_index_files(  # noqa: C901 -- one fail-closed batch parser
+    repo_root: Path, paths: tuple[PurePosixPath, ...], label: str
+) -> dict[PurePosixPath, bytes]:
+    """Batch-read exact stage-0 100644 blobs with NUL-safe Git plumbing."""
+    if not paths:
+        return {}
+    expected = tuple(sorted(set(paths)))
+    raw_entries = _git(
+        repo_root,
+        "ls-files",
+        "--stage",
+        "-z",
+        "--",
+        *(path.as_posix() for path in expected),
+    )
+    entries = [entry for entry in raw_entries.split(b"\0") if entry]
+    index_oids: dict[PurePosixPath, str] = {}
+    for entry in entries:
+        try:
+            metadata, raw_path = entry.split(b"\t", 1)
+            mode, oid, stage = metadata.split(b" ", 2)
+            indexed_path = PurePosixPath(raw_path.decode("utf-8"))
+            decoded_oid = oid.decode("ascii")
+        except (UnicodeDecodeError, ValueError) as exc:
+            msg = f"{label} has an unreadable staged index entry"
+            raise RatchetError(msg) from exc
+        if (
+            indexed_path not in expected
+            or mode != b"100644"
+            or stage != b"0"
+            or not _OID_RE.fullmatch(decoded_oid)
+            or indexed_path in index_oids
+        ):
+            msg = f"{label} must have one stage-0 regular index entry: {indexed_path}"
+            raise RatchetError(msg)
+        index_oids[indexed_path] = decoded_oid
+    if set(index_oids) != set(expected):
+        missing = sorted(path.as_posix() for path in set(expected) - set(index_oids))
+        msg = f"{label} is missing staged index entries: {', '.join(missing[:5])}"
+        raise RatchetError(msg)
+
+    # Feed object IDs, not ``:<path>`` revision expressions: cat-file's batch
+    # protocol is newline-framed, while Git paths may legally contain newlines.
+    request = b"".join(f"{index_oids[path]}\n".encode() for path in expected)
+    raw_blobs = _git(repo_root, "cat-file", "--batch", input_bytes=request)
+    cursor = 0
+    blobs: dict[PurePosixPath, bytes] = {}
+    for path in expected:
+        newline = raw_blobs.find(b"\n", cursor)
+        if newline < 0:
+            msg = f"{label} has truncated staged blob data: {path}"
+            raise RatchetError(msg)
+        header = raw_blobs[cursor:newline].split()
+        cursor = newline + 1
+        try:
+            oid, object_type, raw_size = header
+            size = int(raw_size)
+        except ValueError as exc:
+            msg = f"{label} has malformed staged blob data: {path}"
+            raise RatchetError(msg) from exc
+        if (
+            oid.decode("ascii", errors="strict") != index_oids[path]
+            or object_type != b"blob"
+            or size < 0
+            or cursor + size >= len(raw_blobs)
+            or raw_blobs[cursor + size : cursor + size + 1] != b"\n"
+        ):
+            msg = f"{label} has invalid staged blob data: {path}"
+            raise RatchetError(msg)
+        blobs[path] = raw_blobs[cursor : cursor + size]
+        cursor += size + 1
+    if cursor != len(raw_blobs):
+        msg = f"{label} has trailing staged blob data"
+        raise RatchetError(msg)
+    return blobs
+
+
+def _validate_receipt_file(candidate: Path, receipts_dir: Path) -> None:
+    """Reject links, executable files, FIFOs, and devices before the core opens them."""
+    try:
+        relative = candidate.relative_to(receipts_dir)
+        canonical = _canonical_receipt_path((_RECEIPTS_RELPATH / relative).as_posix())
+        mode = candidate.lstat().st_mode
+    except (OSError, ValueError) as exc:
+        msg = f"receipt path is unreadable or escaped its corpus root: {candidate}"
+        raise RatchetError(msg) from exc
+    if not stat.S_ISREG(mode) or mode & 0o111:
+        msg = f"receipt path must be regular non-executable YAML: {canonical}"
+        raise RatchetError(msg)
+
+
+def _validate_receipt_corpus(receipts_dir: Path) -> None:
+    """Walk the corpus without following links, before handing any path to core."""
+    try:
+        root_mode = receipts_dir.lstat().st_mode
+    except OSError as exc:
+        msg = f"canonical receipt directory is unreadable: {receipts_dir}"
+        raise RatchetError(msg) from exc
+    if not stat.S_ISDIR(root_mode):
+        msg = f"canonical receipt directory must be a real directory: {receipts_dir}"
+        raise RatchetError(msg)
+    pending = [receipts_dir]
+    while pending:
+        directory = pending.pop()
+        try:
+            with os.scandir(directory) as entries:
+                children = list(entries)
+        except OSError as exc:
+            msg = f"canonical receipt directory is unreadable: {directory}"
+            raise RatchetError(msg) from exc
+        for entry in children:
+            candidate = Path(entry.path)
+            try:
+                mode = entry.stat(follow_symlinks=False).st_mode
+            except OSError as exc:
+                msg = f"receipt corpus entry is unreadable: {candidate}"
+                raise RatchetError(msg) from exc
+            if stat.S_ISDIR(mode):
+                pending.append(candidate)
+                continue
+            if candidate.suffix == ".yaml":
+                _validate_receipt_file(candidate, receipts_dir)
+
+
+def _require_worktree_matches_index(
+    repo_root: Path, path: PurePosixPath, label: str
+) -> bytes:
+    """Reject a pre-commit view that differs from the bytes about to be committed."""
+    working = _read_regular_worktree_file(repo_root, path, label)
+    indexed = _read_regular_index_file(repo_root, path, label)
+    if working != indexed:
+        msg = f"{label} working tree differs from staged index bytes: {path}"
+        raise RatchetError(msg)
+    return indexed
+
+
+def _require_worktree_matches_index_files(
+    repo_root: Path, paths: tuple[PurePosixPath, ...], label: str
+) -> None:
+    """Compare a changed-file batch to its index using two Git subprocesses."""
+    for path, indexed in _read_regular_index_files(repo_root, paths, label).items():
+        working = _read_regular_worktree_file(repo_root, path, label)
+        if working != indexed:
+            msg = f"{label} working tree differs from staged index bytes: {path}"
+            raise RatchetError(msg)
+
+
+def _baseline_at_commit(repo_root: Path, commit: str) -> Baseline | None:
+    """Return the exact base ledger, or None when the committed ledger is absent."""
+    if not _commit_exists(repo_root, commit):
+        msg = f"base commit is unavailable for receipt-honesty comparison: {commit}"
+        raise RatchetError(msg)
+    if _GIT_EXECUTABLE is None:
+        msg = "Git executable is unavailable for base-ledger validation"
+        raise RatchetError(msg)
+    entries = _git(
+        repo_root,
+        "ls-tree",
+        "-z",
+        commit,
+        "--",
+        _BASELINE_RELPATH.as_posix(),
+    ).split(b"\0")
+    entries = [entry for entry in entries if entry]
+    if not entries:
+        return None
+    if len(entries) != 1:
+        msg = f"base receipt-honesty baseline is ambiguous at {commit}"
+        raise RatchetError(msg)
+    try:
+        metadata, encoded_path = entries[0].split(b"\t", 1)
+        mode, object_type, _oid = metadata.split(b" ", 2)
+        path = encoded_path.decode("utf-8")
+    except (UnicodeDecodeError, ValueError) as exc:
+        msg = f"base receipt-honesty baseline entry is malformed at {commit}"
+        raise RatchetError(msg) from exc
+    if (
+        path != _BASELINE_RELPATH.as_posix()
+        or mode != b"100644"
+        or object_type != b"blob"
+    ):
+        msg = f"base receipt-honesty baseline is not a regular file at {commit}"
+        raise RatchetError(msg)
+    return parse_baseline(
+        _git(repo_root, "show", f"{commit}:{_BASELINE_RELPATH.as_posix()}"),
+        f"{commit}:{_BASELINE_RELPATH}",
+    )
+
+
+def _tree_blobs(repo_root: Path, commit: str) -> dict[str, str]:
+    """Return the committed receipt-tree path -> blob OID map, fail-closed."""
+    raw = _git(
+        repo_root,
+        "ls-tree",
+        "-r",
+        "-z",
+        "--full-tree",
+        commit,
+        "--",
+        _RECEIPTS_RELPATH.as_posix(),
+    )
+    blobs: dict[str, str] = {}
+    for record in raw.split(b"\0"):
+        if not record:
+            continue
+        try:
+            metadata, encoded_path = record.split(b"\t", 1)
+            mode, object_type, oid = metadata.split(b" ", 2)
+            raw_path = encoded_path.decode("utf-8")
+            decoded_oid = oid.decode("ascii")
+        except (UnicodeDecodeError, ValueError) as exc:
+            msg = f"unreadable receipt tree entry at {commit}"
+            raise RatchetError(msg) from exc
+        # The locked core directory scanner itself scans only ``*.yaml``.
+        # Ignore sibling receipt-like extensions here for semantic parity; they
+        # are not a hidden exclusion introduced by this wrapper.
+        if PurePosixPath(raw_path).suffix != ".yaml":
+            continue
+        path = _canonical_receipt_path(raw_path)
+        if (
+            mode != b"100644"
+            or object_type != b"blob"
+            or not _OID_RE.fullmatch(decoded_oid)
+        ):
+            msg = f"non-blob or malformed receipt tree object at {commit}: {path}"
+            raise RatchetError(msg)
+        if path in blobs:
+            msg = f"duplicate canonical receipt path in origin tree: {path}"
+            raise RatchetError(msg)
+        blobs[path] = decoded_oid
+    return blobs
+
+
+def _extract_origin_receipts(
+    repo_root: Path,
+    destination: Path,
+    receipt_paths: tuple[str, ...] | None = None,
+) -> None:
+    """Spool the frozen archive to disk and copy each member in bounded chunks."""
+    paths = receipt_paths or (_RECEIPTS_RELPATH.as_posix(),)
+    try:
+        with tempfile.TemporaryFile() as archive, tempfile.TemporaryFile() as errors:
+            _git(
+                repo_root,
+                "archive",
+                "--format=tar",
+                _ORIGIN_COMMIT,
+                "--",
+                *paths,
+                stdout_file=archive,
+                stderr_file=errors,
+            )
+            archive.seek(0)
+            with tarfile.open(fileobj=archive, mode="r|") as tar:
+                while (member := tar.next()) is not None:
+                    cast("list[tarfile.TarInfo]", vars(tar)["members"]).clear()
+                    if member.isdir():
+                        continue
+                    if not member.isfile():
+                        msg = (
+                            "frozen receipt archive contains unsupported member: "
+                            f"{member.name}"
+                        )
+                        raise RatchetError(msg)
+                    target = (destination / member.name).resolve()
+                    try:
+                        target.relative_to(destination.resolve())
+                    except ValueError as exc:
+                        msg = (
+                            "frozen receipt archive contains traversal member: "
+                            f"{member.name}"
+                        )
+                        raise RatchetError(msg) from exc
+                    payload = tar.extractfile(member)
+                    if payload is None:
+                        msg = (
+                            "frozen receipt archive member is unreadable: "
+                            f"{member.name}"
+                        )
+                        raise RatchetError(msg)
+                    target.parent.mkdir(parents=True, exist_ok=True)
+                    with payload, target.open("wb") as output:
+                        shutil.copyfileobj(payload, output, length=64 * 1024)
+    except (tarfile.TarError, OSError) as exc:
+        msg = "unable to materialize frozen receipt corpus for provenance validation"
+        raise RatchetError(msg) from exc
+
+
+def _identity_for(
+    *,
+    path: str,
+    rule: str,
+    raw: bytes,
+    object_format: str,
+    blob_oid: str | None = None,
+) -> FindingIdentity:
+    return FindingIdentity(
+        path=path,
+        rule=rule,
+        sha256=hashlib.sha256(raw).hexdigest(),
+        blob_oid=blob_oid or _git_blob_oid(raw, object_format),
+    )
+
+
+def _scan_directory_identities(
+    repo_root: Path,
+    receipts_dir: Path,
+    *,
+    blob_oids: dict[str, str] | None = None,
+) -> frozenset[FindingIdentity]:
+    """Adapt locked core findings to content-bound identities without filtering.
+
+    The wrapper never changes which locked-core rules apply.
+    """
+    _validate_receipt_corpus(receipts_dir)
+    object_format = _git_object_format(repo_root)
+    findings: set[FindingIdentity] = set()
+    for finding in scan_receipts_directory(receipts_dir):
+        try:
+            relative = finding.receipt_path.resolve().relative_to(
+                receipts_dir.resolve()
+            )
+        except ValueError as exc:
+            msg = f"core scanner escaped receipt root: {finding.receipt_path}"
+            raise RatchetError(msg) from exc
+        path = _canonical_receipt_path((_RECEIPTS_RELPATH / relative).as_posix())
+        raw = finding.receipt_path.read_bytes()
+        expected_blob = blob_oids[path] if blob_oids is not None else None
+        for violation in finding.violations:
+            findings.add(
+                _identity_for(
+                    path=path,
+                    rule=violation.rule.value,
+                    raw=raw,
+                    object_format=object_format,
+                    blob_oid=expected_blob,
+                )
+            )
+    return frozenset(findings)
+
+
+def _scan_explicit_identities(
+    repo_root: Path, receipt_paths: list[str], *, require_index: bool = False
+) -> frozenset[FindingIdentity]:
+    """Scan only the files pre-commit supplied, retaining exact core semantics."""
+    receipts_dir = repo_root / Path(_RECEIPTS_RELPATH)
+    explicit: list[Path] = []
+    canonical_paths = tuple(
+        PurePosixPath(_canonical_receipt_path(value)) for value in receipt_paths
+    )
+    if require_index:
+        _require_worktree_matches_index_files(
+            repo_root, canonical_paths, "changed receipt"
+        )
+    for canonical_path in canonical_paths:
+        candidate = repo_root / Path(canonical_path)
+        _validate_receipt_file(candidate, receipts_dir)
+        explicit.append(candidate)
+    object_format = _git_object_format(repo_root)
+    findings: set[FindingIdentity] = set()
+    for finding in scan_receipt_files(explicit):
+        try:
+            relative = finding.receipt_path.resolve().relative_to(
+                receipts_dir.resolve()
+            )
+        except ValueError as exc:
+            msg = f"core scanner escaped receipt root: {finding.receipt_path}"
+            raise RatchetError(msg) from exc
+        identity_path = _canonical_receipt_path(
+            (_RECEIPTS_RELPATH / relative).as_posix()
+        )
+        raw = finding.receipt_path.read_bytes()
+        for violation in finding.violations:
+            findings.add(
+                _identity_for(
+                    path=identity_path,
+                    rule=violation.rule.value,
+                    raw=raw,
+                    object_format=object_format,
+                )
+            )
+    return frozenset(findings)
+
+
+def origin_identities(
+    repo_root: Path, receipt_paths: list[str] | None = None
+) -> frozenset[FindingIdentity]:
+    """Scan the exact frozen provenance tree, optionally for selected paths."""
+    if not _commit_exists(repo_root, _ORIGIN_COMMIT):
+        msg = f"immutable origin commit is unavailable: {_ORIGIN_COMMIT}"
+        raise RatchetError(msg)
+    blobs = _tree_blobs(repo_root, _ORIGIN_COMMIT)
+    selected_paths: tuple[str, ...] | None = None
+    if receipt_paths is not None:
+        canonical = tuple(
+            sorted({_canonical_receipt_path(value) for value in receipt_paths})
+        )
+        selected_paths = tuple(path for path in canonical if path in blobs)
+        if not selected_paths:
+            return frozenset()
+    with tempfile.TemporaryDirectory(prefix="omn-17495-receipt-honesty-") as temporary:
+        root = Path(temporary)
+        _extract_origin_receipts(repo_root, root, selected_paths)
+        receipts_dir = root / Path(_RECEIPTS_RELPATH)
+        if not receipts_dir.is_dir():
+            msg = (
+                "frozen receipt archive does not contain the canonical receipt "
+                "directory"
+            )
+            raise RatchetError(msg)
+        identities = _scan_directory_identities(
+            repo_root,
+            receipts_dir,
+            blob_oids=blobs,
+        )
+    for identity in identities:
+        oid = blobs.get(identity.path)
+        if oid != identity.blob_oid:
+            msg = f"frozen finding lacks an exact origin blob binding: {identity.path}"
+            raise RatchetError(msg)
+    return identities
+
+
+def current_identities(repo_root: Path) -> frozenset[FindingIdentity]:
+    """Run the locked core scanner over the actual current working-tree corpus."""
+    receipts_dir = repo_root / Path(_RECEIPTS_RELPATH)
+    if not receipts_dir.is_dir():
+        msg = f"canonical receipt directory is missing: {receipts_dir}"
+        raise RatchetError(msg)
+    return _scan_directory_identities(repo_root, receipts_dir)
+
+
+def _scanner_retired(
+    repo_root: Path,
+    candidates: frozenset[FindingIdentity],
+    live: frozenset[FindingIdentity],
+) -> frozenset[FindingIdentity]:
+    """Return the ledger lines the locked core scanner itself has stopped reporting.
+
+    A line is retired only when all of these hold: the scanner reports it
+    neither at the frozen origin (the caller passes only such candidates) nor
+    in the live corpus, the origin tree still binds its path to its exact blob
+    OID, and that blob's raw bytes still hash to its SHA-256.  The receipt
+    bytes are then provably unchanged, so the only thing that moved is the
+    scanner's verdict on them.  A retired line hides no live finding: equality
+    still refuses every live identity the ledger lacks, and a repaired receipt
+    keeps its origin finding, so it still reads as a stale ledger line.
+    """
+    if not candidates:
+        return frozenset()
+    blobs = _tree_blobs(repo_root, _ORIGIN_COMMIT)
+    retired: set[FindingIdentity] = set()
+    for item in candidates:
+        if item in live or blobs.get(item.path) != item.blob_oid:
+            continue
+        raw = _git(repo_root, "cat-file", "blob", item.blob_oid)
+        current = _read_regular_worktree_file(
+            repo_root, PurePosixPath(item.path), "scanner-retired receipt"
+        )
+        if (
+            hashlib.sha256(raw).hexdigest() == item.sha256
+            and hashlib.sha256(current).hexdigest() == item.sha256
+        ):
+            retired.add(item)
+    return frozenset(retired)
+
+
+def _validate_provenance(
+    repo_root: Path,
+    baseline: Baseline,
+    *,
+    live: frozenset[FindingIdentity],
+) -> frozenset[FindingIdentity]:
+    """Verify every ledger line's origin tree, object, raw-byte, and rule commitment.
+
+    Returns the ledger lines the scanner has retired (see ``_scanner_retired``).
+    The CI gate scans with omnibase_core at the base branch while pre-commit
+    scans with the locked release, so one ledger must hold under both until
+    OMN-20136 gives them one source; a scanner-side fix therefore retires lines
+    instead of making every ledger unprovable.
+    """
+    origin = origin_identities(repo_root)
+    unknown = baseline.identities - origin
+    retired = _scanner_retired(repo_root, unknown, live)
+    unknown -= retired
+    if unknown:
+        msg = "baseline contains findings not committed by the immutable origin tree"
+        raise RatchetError(_identity_report(msg, unknown))
+    return retired
+
+
+def _identity_report(
+    label: str, identities: frozenset[FindingIdentity] | set[FindingIdentity]
+) -> str:
+    sample = ", ".join(
+        f"{item.path} [{item.rule}] sha256={item.sha256}"
+        for item in sorted(identities)[:5]
+    )
+    return f"{label}: {len(identities)} identity(s); sample: {sample}"
+
+
+def _assert_live_equals_baseline(
+    live: frozenset[FindingIdentity],
+    baseline: Baseline,
+    *,
+    retired: frozenset[FindingIdentity] = frozenset(),
+) -> None:
+    """Reject both directions: no new/modified identity and no stale ledger line."""
+    new = live - baseline.identities
+    stale = baseline.identities - live - retired
+    if not new and not stale:
+        return
+    reports: list[str] = [
+        "RECEIPT HONESTY RATCHET FAILED: live identity set differs from ledger"
+    ]
+    if new:
+        reports.append(_identity_report("new or modified core finding", new))
+    if stale:
+        reports.append(_identity_report("stale ledger finding", stale))
+    raise RatchetError("\n".join(reports))
+
+
+def _assert_base_monotonic(
+    repo_root: Path,
+    baseline: Baseline,
+    base_commit: str,
+    *,
+    live: frozenset[FindingIdentity],
+) -> None:
+    """Forbid ledger growth and require every comparison base to carry the ledger."""
+    committed_baseline = _baseline_at_commit(repo_root, base_commit)
+    if committed_baseline is None:
+        msg = "receipt-honesty bootstrap sealed: base must contain ledger"
+        raise RatchetError(msg)
+
+    _validate_provenance(repo_root, committed_baseline, live=live)
+    growth = baseline.identities - committed_baseline.identities
+    if growth:
+        raise RatchetError(
+            _identity_report(
+                "RECEIPT HONESTY RATCHET FAILED: baseline growth is forbidden", growth
+            )
+        )
+
+
+def enforce_corpus(repo_root: Path, request: CiBaseRequest | None = None) -> None:
+    """Authoritative full-corpus gate: provenance, equality, then base monotonicity."""
+    baseline = load_baseline(repo_root)
+    indexed_baseline = parse_baseline(
+        _require_worktree_matches_index(
+            repo_root, _BASELINE_RELPATH, "receipt-honesty baseline"
+        ),
+        f":{_BASELINE_RELPATH.as_posix()}",
+    )
+    if baseline != indexed_baseline:
+        msg = "receipt-honesty baseline changed after working-tree validation"
+        raise RatchetError(msg)
+    live = current_identities(repo_root)
+    retired = _validate_provenance(repo_root, baseline, live=live)
+    _assert_live_equals_baseline(live, baseline, retired=retired)
+    normalized_base = (
+        resolve_ci_base(repo_root, request)
+        if request is not None
+        else resolve_local_base(repo_root)
+    )
+    _assert_base_monotonic(repo_root, baseline, normalized_base, live=live)
+    sys.stdout.write(
+        "RECEIPT HONESTY RATCHET PASSED: "
+        f"{len(live)} findings across "
+        f"{len({item.path for item in live})} receipt paths\n"
+    )
+
+
+def enforce_changed(
+    repo_root: Path, receipt_paths: list[str], *, require_index: bool = False
+) -> None:
+    """Fast changed-file gate, preserving historical debt only by exact identity."""
+    baseline = load_baseline(repo_root)
+    requested_paths = {_canonical_receipt_path(value) for value in receipt_paths}
+    live = _scan_explicit_identities(
+        repo_root, sorted(requested_paths), require_index=require_index
+    )
+    existing = frozenset(
+        item for item in baseline.identities if item.path in requested_paths
+    )
+    absent = existing - live
+    origin = origin_identities(repo_root, sorted({item.path for item in absent}))
+    retired_candidates = absent - origin
+    retired = _scanner_retired(repo_root, retired_candidates, live)
+    new = live - baseline.identities
+    stale = absent - retired
+    if new or stale:
+        reports = [
+            "RECEIPT HONESTY FAST RATCHET FAILED: changed receipt identity "
+            "differs from ledger"
+        ]
+        if new:
+            reports.append(_identity_report("new or modified core finding", new))
+        if stale:
+            reports.append(_identity_report("stale ledger finding", stale))
+        raise RatchetError("\n".join(reports))
+    sys.stdout.write(
+        "RECEIPT HONESTY FAST RATCHET PASSED: "
+        f"{len(live)} finding(s) across "
+        f"{len(requested_paths)} changed receipt path(s)\n"
+    )
+
+
+def seed_baseline(repo_root: Path) -> None:
+    """Create the baseline exactly once, only from the controlled bootstrap state."""
+    path = _baseline_path(repo_root)
+    if path.exists():
+        msg = f"refusing to overwrite existing receipt-honesty baseline: {path}"
+        raise RatchetError(msg)
+    head = _head_commit(repo_root)
+    if head != _BOOTSTRAP_BASE_COMMIT:
+        msg = (
+            "receipt-honesty bootstrap is allowed only at exact bootstrap HEAD "
+            f"{_BOOTSTRAP_BASE_COMMIT}; got {head}"
+        )
+        raise RatchetError(msg)
+    if _baseline_at_commit(repo_root, head) is not None:
+        msg = (
+            "receipt-honesty bootstrap requires the baseline to be absent from "
+            "bootstrap HEAD"
+        )
+        raise RatchetError(msg)
+    origin = origin_identities(repo_root)
+    live = current_identities(repo_root)
+    if (
+        len(origin) != _SEED_FINDING_COUNT
+        or len({item.path for item in origin}) != _SEED_RECEIPT_PATH_COUNT
+    ):
+        msg = (
+            "immutable origin receipt-honesty census changed: expected "
+            f"{_SEED_FINDING_COUNT}/{_SEED_RECEIPT_PATH_COUNT}, got "
+            f"{len(origin)}/{len({item.path for item in origin})}"
+        )
+        raise RatchetError(msg)
+    if (
+        len(live) != _SEED_FINDING_COUNT
+        or len({item.path for item in live}) != _SEED_RECEIPT_PATH_COUNT
+    ):
+        msg = (
+            "live bootstrap receipt-honesty census changed: expected "
+            f"{_SEED_FINDING_COUNT}/{_SEED_RECEIPT_PATH_COUNT}, got "
+            f"{len(live)}/{len({item.path for item in live})}"
+        )
+        raise RatchetError(msg)
+    if live != origin:
+        msg = "live bootstrap corpus differs from immutable origin finding identities"
+        raise RatchetError(msg)
+    document: dict[str, object] = {
+        "schema_version": 1,
+        "origin_commit": _ORIGIN_COMMIT,
+        "bootstrap_base_commit": _BOOTSTRAP_BASE_COMMIT,
+        "seed_finding_count": _SEED_FINDING_COUNT,
+        "seed_receipt_path_count": _SEED_RECEIPT_PATH_COUNT,
+        "scanner_limitation": _SCANNER_LIMITATION,
+        "findings": [item.as_mapping() for item in sorted(origin)],
+    }
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(yaml.safe_dump(document, sort_keys=False), encoding="utf-8")
+    sys.stdout.write(
+        "RECEIPT HONESTY BASELINE SEEDED: "
+        f"{len(origin)} findings across "
+        f"{len({item.path for item in origin})} receipt paths\n"
+    )
+
+
+def _load_workflow(path: Path) -> dict[str, Any]:
+    try:
+        data = yaml.safe_load(path.read_text(encoding="utf-8"))
+    except (OSError, yaml.YAMLError) as exc:
+        msg = f"wiring file is missing or malformed: {path}"
+        raise RatchetError(msg) from exc
+    if not isinstance(data, dict):
+        msg = f"wiring file is not a mapping: {path}"
+        raise RatchetError(msg)
+    return data
+
+
+def _hook_by_id(config: dict[str, Any], hook_id: str) -> list[dict[str, Any]]:
+    repos = config.get("repos")
+    if not isinstance(repos, list):
+        return []
+    return [
+        hook
+        for repo in repos
+        if isinstance(repo, dict) and isinstance(repo.get("hooks"), list)
+        for hook in repo["hooks"]
+        if isinstance(hook, dict) and hook.get("id") == hook_id
+    ]
+
+
+def _run_blob(job: dict[str, Any]) -> str:
+    steps = job.get("steps")
+    if not isinstance(steps, list):
+        return ""
+    return "\n".join(
+        step["run"]
+        for step in steps
+        if isinstance(step, dict) and isinstance(step.get("run"), str)
+    )
+
+
+def _strict_gate_jobs(gate_module: Path) -> tuple[str, ...] | None:
+    """Extract the literal strict registration without importing executable CI code."""
+    try:
+        source = gate_module.read_text(encoding="utf-8")
+    except OSError:
+        return None
+    match = re.search(
+        r"STRICT_GATE_JOBS\s*:\s*tuple\[str,\s*\.\.\.\]\s*=\s*\((.*?)\n\)",
+        source,
+        flags=re.DOTALL,
+    )
+    if match is None:
+        return None
+    return tuple(re.findall(r'"([^"]+)"', match.group(1)))
+
+
+def _check_fast_hook(config: dict[str, Any]) -> list[str]:
+    """Assert the low-latency changed-file hook stays change scoped."""
+    failures: list[str] = []
+    fast_hooks = _hook_by_id(config, "check-receipt-honesty")
+    if len(fast_hooks) != 1:
+        failures.append("fast `check-receipt-honesty` hook is absent or duplicated")
+    else:
+        hook = fast_hooks[0]
+        entry = hook.get("entry")
+        if (
+            not isinstance(entry, str)
+            or f"uv run --locked python -m {_MODULE} --changed --index" not in entry
+        ):
+            failures.append(
+                "fast receipt-honesty hook must use `uv run --locked` with "
+                "wrapper --changed --index"
+            )
+        if hook.get("pass_filenames") is False:
+            failures.append(
+                "fast receipt-honesty hook must receive changed receipt filenames"
+            )
+        if (
+            not isinstance(hook.get("files"), str)
+            or "drift/dod_receipts" not in hook["files"]
+        ):
+            failures.append("fast receipt-honesty hook is not receipt-change scoped")
+    return failures
+
+
+def _check_corpus_hook(config: dict[str, Any], repo_root: Path) -> list[str]:
+    """Assert the unbatched authority hook and focused test module remain present."""
+    failures: list[str] = []
+    corpus_hooks = _hook_by_id(config, "receipt-honesty-corpus-ratchet")
+    if len(corpus_hooks) != 1:
+        failures.append(
+            "authoritative `receipt-honesty-corpus-ratchet` hook is absent or "
+            "duplicated"
+        )
+    else:
+        hook = corpus_hooks[0]
+        entry = hook.get("entry")
+        if (
+            not isinstance(entry, str)
+            or f"uv run --locked python -m {_MODULE} --corpus" not in entry
+        ):
+            failures.append(
+                "authoritative receipt-honesty hook must use `uv run --locked` "
+                "with wrapper --corpus"
+            )
+        if hook.get("pass_filenames") is not False:
+            failures.append(
+                "authoritative receipt-honesty hook must set pass_filenames: false"
+            )
+        files = hook.get("files")
+        if hook.get("always_run") is not True and files != _CORPUS_HOOK_FILES_RE:
+            failures.append(
+                "authoritative receipt-honesty hook must either be always_run "
+                "or be scoped exactly to receipt corpus and baseline changes"
+            )
+        if hook.get("stages") != ["pre-commit"]:
+            failures.append(
+                "authoritative receipt-honesty hook must run at pre-commit stage"
+            )
+    if not (
+        repo_root / "tests" / "unit" / "validation" / "test_receipt_honesty_ratchet.py"
+    ).is_file():
+        failures.append("focused receipt-honesty ratchet tests are missing")
+    if not (
+        repo_root
+        / "src"
+        / "onex_change_control"
+        / "validation"
+        / "receipt_honesty_ratchet.py"
+    ).is_file():
+        failures.append("receipt-honesty ratchet wrapper is missing")
+    return failures
+
+
+def _step_with_id(steps: list[Any], step_id: str) -> dict[str, Any] | None:
+    for step in steps:
+        if isinstance(step, dict) and step.get("id") == step_id:
+            return step
+    return None
+
+
+def _checks_out_core_repository(steps: list[Any]) -> bool:
+    for step in steps:
+        if not isinstance(step, dict) or step.get("uses") != "actions/checkout@v7":
+            continue
+        options = step.get("with")
+        if not isinstance(options, dict):
+            continue
+        if options.get("repository") == "OmniNode-ai/omnibase_core":
+            return True
+    return False
+
+
+def _locked_core_artifact(repo_root: Path) -> tuple[str, tuple[str, ...]]:
+    """Read the sole registry-backed omnibase-core identity from uv.lock."""
+    lock_path = repo_root / "uv.lock"
+    try:
+        lock_data = tomllib.loads(lock_path.read_text(encoding="utf-8"))
+    except (OSError, tomllib.TOMLDecodeError) as exc:
+        msg = f"unable to read valid uv.lock for receipt-honesty provenance: {exc}"
+        raise RatchetError(msg) from exc
+    packages = lock_data.get("package")
+    if not isinstance(packages, list):
+        msg = "uv.lock package table is missing or malformed"
+        raise RatchetError(msg)
+    matches = [
+        package
+        for package in packages
+        if isinstance(package, dict)
+        and isinstance(package.get("name"), str)
+        and package["name"].replace("_", "-").lower() == "omnibase-core"
+    ]
+    if len(matches) != 1:
+        msg = (
+            "uv.lock must declare exactly one omnibase-core package, "
+            f"found {len(matches)}"
+        )
+        raise RatchetError(msg)
+    package = matches[0]
+    version = package.get("version")
+    source = package.get("source")
+    if not isinstance(version, str) or not re.fullmatch(r"\d+\.\d+\.\d+", version):
+        msg = "uv.lock omnibase-core version must be a basic numeric SemVer string"
+        raise RatchetError(msg)
+    # Compare the registry recorded in uv.lock only; this does not open a connection.
+    if source != {
+        "registry": "https://pypi.org/simple"  # url-authority-ok: lock metadata
+    }:
+        msg = "uv.lock omnibase-core must resolve from the canonical PyPI registry"
+        raise RatchetError(msg)
+    wheels = package.get("wheels")
+    if not isinstance(wheels, list) or not wheels:
+        msg = "uv.lock omnibase-core registry artifact has no pinned wheel hashes"
+        raise RatchetError(msg)
+    hashes = tuple(
+        sorted(
+            wheel["hash"]
+            for wheel in wheels
+            if isinstance(wheel, dict)
+            and isinstance(wheel.get("hash"), str)
+            and re.fullmatch(r"sha256:[0-9a-f]{64}", wheel["hash"])
+        )
+    )
+    if len(hashes) != len(wheels):
+        msg = "uv.lock omnibase-core contains an unpinned registry wheel"
+        raise RatchetError(msg)
+    return version, hashes
+
+
+def _check_installed_core_artifact(
+    repo_root: Path, imported_module_path: Path | None = None
+) -> list[str]:
+    """Bind the loaded scanner to the exact lock-selected installed distribution."""
+    failures: list[str] = []
+    try:
+        locked_version, locked_hashes = _locked_core_artifact(repo_root)
+    except RatchetError as exc:
+        return [str(exc)]
+    try:
+        distribution = importlib.metadata.distribution("omnibase-core")
+    except importlib.metadata.PackageNotFoundError:
+        failures.append(
+            "locked omnibase-core distribution is not installed in the active "
+            "uv environment"
+        )
+    else:
+        if distribution.version != locked_version:
+            failures.append(
+                "installed omnibase-core version does not match uv.lock: "
+                f"installed={distribution.version}, locked={locked_version}"
+            )
+        if distribution.read_text("direct_url.json") is not None:
+            failures.append(
+                "installed omnibase-core is a direct/editable source, "
+                "not the locked registry artifact"
+            )
+        else:
+            module_relative_path = (
+                "omnibase_core/validation/validator_receipt_honesty.py"
+            )
+            distribution_files = distribution.files
+            if distribution_files is None or not any(
+                str(file_path) == module_relative_path
+                for file_path in distribution_files
+            ):
+                failures.append(
+                    "locked omnibase-core distribution does not own "
+                    "the receipt scanner file"
+                )
+            expected_module = Path(
+                str(distribution.locate_file(module_relative_path))
+            ).resolve()
+            actual_module = (
+                imported_module_path
+                if imported_module_path is not None
+                else Path(scan_receipts_directory.__code__.co_filename)
+            ).resolve()
+            if actual_module != expected_module:
+                failures.append(
+                    "imported receipt-honesty scanner is shadowed or outside "
+                    "the locked distribution: "
+                    f"imported={actual_module}, installed={expected_module}"
+                )
+            else:
+                distribution_root = Path(str(distribution.locate_file(""))).resolve()
+                try:
+                    actual_module.relative_to(distribution_root)
+                except ValueError:
+                    failures.append(
+                        "imported receipt-honesty scanner is outside installed "
+                        "site-packages"
+                    )
+        if not locked_hashes:
+            failures.append("uv.lock core artifact has no usable pinned wheel digest")
+    return failures
+
+
+def _uses_uv_python_312(steps: list[Any]) -> bool:
+    for step in steps:
+        if (
+            not isinstance(step, dict)
+            or step.get("uses") != "./.github/actions/setup-uv"
+        ):
+            continue
+        options = step.get("with")
+        if isinstance(options, dict) and str(options.get("python-version")) == "3.12":
+            return True
+    return False
+
+
+def _check_ci_import_environment(job: dict[str, Any], steps: list[Any]) -> list[str]:
+    """Reject workflow-level overrides that can replace the locked core import."""
+    failures: list[str] = []
+    job_environment = job.get("env")
+    if not isinstance(job_environment, dict) or str(
+        job_environment.get("UV_LOCKED", "")
+    ).lower() not in {"1", "true"}:
+        failures.append("Receipt Honesty Gate must set UV_LOCKED before setup-uv runs")
+    if isinstance(job_environment, dict) and "PYTHONPATH" in job_environment:
+        failures.append(
+            "Receipt Honesty Gate must not set PYTHONPATH or shadow locked core imports"
+        )
+    defaults = job.get("defaults")
+    run_defaults = defaults.get("run") if isinstance(defaults, dict) else None
+    if isinstance(run_defaults, dict) and run_defaults.get("working-directory") not in (
+        None,
+        ".",
+    ):
+        failures.append("Receipt Honesty Gate must run from the OCC uv.lock root")
+    if _checks_out_core_repository(steps):
+        failures.append(
+            "Receipt Honesty Gate must not checkout omnibase_core "
+            "independently of uv.lock"
+        )
+    for step in steps:
+        if not isinstance(step, dict):
+            continue
+        env = step.get("env")
+        run = str(step.get("run", ""))
+        if (isinstance(env, dict) and "PYTHONPATH" in env) or "PYTHONPATH" in run:
+            failures.append(
+                "Receipt Honesty Gate must not set PYTHONPATH or shadow "
+                "locked core imports"
+            )
+    return failures
+
+
+def _check_setup_uv_action(repo_root: Path) -> list[str]:
+    """Ensure setup-uv syncs the lock and does not override the caller's lock mode."""
+    failures: list[str] = []
+    setup_action_path = repo_root / ".github" / "actions" / "setup-uv" / "action.yml"
+    try:
+        setup_action = _load_workflow(setup_action_path)
+    except RatchetError as exc:
+        failures.append(str(exc))
+    else:
+        runs = setup_action.get("runs")
+        action_steps = runs.get("steps") if isinstance(runs, dict) else None
+        action_runs = "\n".join(
+            step["run"]
+            for step in action_steps or []
+            if isinstance(step, dict) and isinstance(step.get("run"), str)
+        )
+        if any(
+            isinstance(step, dict)
+            and isinstance(step.get("env"), dict)
+            and "UV_LOCKED" in step["env"]
+            for step in action_steps or []
+        ):
+            failures.append(
+                "Receipt Honesty Gate setup action must inherit UV_LOCKED "
+                "without overriding it"
+            )
+        if "uv sync --all-groups" not in action_runs:
+            failures.append(
+                "Receipt Honesty Gate setup action must sync the OCC "
+                "uv.lock environment"
+            )
+    return failures
+
+
+def _check_ci_setup_order(steps: list[Any], repo_root: Path) -> list[str]:
+    """Ensure locked uv setup runs from the OCC root before either scanner call."""
+    failures: list[str] = []
+    setup_index = next(
+        (
+            index
+            for index, step in enumerate(steps)
+            if isinstance(step, dict)
+            and step.get("uses") == "./.github/actions/setup-uv"
+        ),
+        None,
+    )
+    scanner_indices = [
+        index
+        for index, step in enumerate(steps)
+        if isinstance(step, dict)
+        and f"python -m {_MODULE} --corpus" in str(step.get("run", ""))
+    ]
+    if setup_index is None or not scanner_indices or setup_index > min(scanner_indices):
+        failures.append(
+            "Receipt Honesty Gate must install its uv.lock environment before scanning"
+        )
+    locked_commands = (
+        f"python -m {_MODULE} --corpus",
+        f"python -m {_MODULE} --check-wiring",
+        "pytest tests/unit/validation/test_receipt_honesty_ratchet.py",
+    )
+    for step in steps:
+        if not isinstance(step, dict) or not isinstance(step.get("run"), str):
+            continue
+        lines = [line.strip() for line in step["run"].splitlines()]
+        for command in locked_commands:
+            if any(command in line and "uv run --locked" not in line for line in lines):
+                failures.append(
+                    f"Receipt Honesty Gate commands must use uv run --locked: {command}"
+                )
+                break
+    if any(
+        isinstance(step, dict) and step.get("working-directory") is not None
+        for step in steps
+        if "--corpus" in str(step.get("run", ""))
+        or "--check-wiring" in str(step.get("run", ""))
+    ):
+        failures.append(
+            "Receipt Honesty Gate scanner commands must run from the OCC lock root"
+        )
+    failures.extend(_check_setup_uv_action(repo_root))
+    return failures
+
+
+def _check_ci_locked_source(
+    job: dict[str, Any], steps: list[Any], repo_root: Path
+) -> list[str]:
+    """Ensure setup, scanning, and local execution share the OCC locked environment."""
+    return [
+        *_check_ci_import_environment(job, steps),
+        *_check_ci_setup_order(steps, repo_root),
+    ]
+
+
+def _check_ci_job(  # noqa: C901, PLR0912 -- static fail-closed wiring vectors share one report
+    job: dict[str, Any], repo_root: Path
+) -> list[str]:
+    """Assert unconditional CI enforcement against the locked OCC core artifact."""
+    failures: list[str] = []
+    if job.get("name") != "Receipt Honesty Gate":
+        failures.append(
+            "CI job `honesty-gate` must retain exact name `Receipt Honesty Gate`"
+        )
+    if "if" in job or "needs" in job:
+        failures.append("Receipt Honesty Gate must remain unconditional (no if/needs)")
+    steps = job.get("steps")
+    if not isinstance(steps, list):
+        return [*failures, "Receipt Honesty Gate has no steps list"]
+    if not _uses_uv_python_312(steps):
+        failures.append("Receipt Honesty Gate must use setup-uv with Python 3.12")
+    failures.extend(_check_ci_locked_source(job, steps, repo_root))
+
+    run_blob = _run_blob(job)
+    required_fragments = (
+        f"python -m {_MODULE} --corpus",
+        "--event-name",
+        "BEFORE_SHA",
+        "test_receipt_honesty_ratchet.py",
+        f"python -m {_MODULE} --check-wiring",
+        "uv run --locked python",
+        "uv run --locked pytest",
+        "gh api",
+        "default_branch",
+        "PR_BASE_REF",
+        "MERGE_GROUP_BASE_REF",
+    )
+    for fragment in required_fragments:
+        if fragment not in run_blob:
+            failures.append(
+                "Receipt Honesty Gate is missing required full-corpus/base-monotonic "
+                f"wiring: {fragment}"
+            )
+    corpus_step = next(
+        (
+            step
+            for step in steps
+            if isinstance(step, dict)
+            and f"python -m {_MODULE} --corpus" in str(step.get("run"))
+        ),
+        None,
+    )
+    corpus_environment = (
+        corpus_step.get("env") if isinstance(corpus_step, dict) else None
+    )
+    if not isinstance(corpus_environment, dict):
+        failures.append("Receipt Honesty Gate corpus step must declare an environment")
+        return failures
+    corpus_run = str(corpus_step.get("run")) if isinstance(corpus_step, dict) else ""
+    if "--base" in corpus_run or "--resolve-ci-base" in corpus_run:
+        failures.append(
+            "Receipt Honesty Gate corpus step must invoke its canonical resolver "
+            "directly, not pass a base SHA"
+        )
+    for fragment in (
+        "--event-name",
+        "--pr-base-ref",
+        "--merge-group-base-ref",
+        "--before-sha",
+        "--default-branch",
+    ):
+        if fragment not in corpus_run:
+            failures.append(
+                "Receipt Honesty Gate corpus command does not feed canonical "
+                "resolver input: "
+                f"{fragment}"
+            )
+    if "BASE_REF" in corpus_environment:
+        failures.append(
+            "Receipt Honesty Gate must not use a fallback BASE_REF for PR or "
+            "merge_group"
+        )
+    if (
+        corpus_environment.get("PR_BASE_REF")
+        != "${{ github.event.pull_request.base.ref || '' }}"
+    ):
+        failures.append(
+            "Receipt Honesty Gate must use an explicit pull_request base ref"
+        )
+    if corpus_environment.get("MERGE_GROUP_BASE_REF") != (
+        "${{ github.event.merge_group.base_ref || '' }}"
+    ):
+        failures.append(
+            "Receipt Honesty Gate must use an explicit merge_group base ref"
+        )
+    if not isinstance(corpus_environment, dict) or corpus_environment.get(
+        "GH_TOKEN"
+    ) != ("${{ github.token }}"):
+        failures.append("Receipt Honesty Gate default-branch lookup must have GH_TOKEN")
+    strict = _strict_gate_jobs(repo_root / "scripts" / "ci" / "ci_summary_gate.py")
+    if strict is None or "Receipt Honesty Gate" not in strict:
+        failures.append(
+            "Receipt Honesty Gate is not registered in CI Summary STRICT_GATE_JOBS"
+        )
+    return failures
+
+
+def check_wiring(repo_root: Path) -> list[str]:
+    """Static anti-removal anchor for both hooks and the strict CI context."""
+    precommit_path = repo_root / ".pre-commit-config.yaml"
+    ci_path = repo_root / ".github" / "workflows" / "ci.yml"
+    try:
+        precommit = _load_workflow(precommit_path)
+    except RatchetError as exc:
+        return [str(exc)]
+    failures = _check_fast_hook(precommit)
+    failures.extend(_check_corpus_hook(precommit, repo_root))
+    try:
+        _locked_core_artifact(repo_root)
+    except RatchetError as exc:
+        failures.append(str(exc))
+
+    try:
+        ci = _load_workflow(ci_path)
+    except RatchetError as exc:
+        failures.append(str(exc))
+        return failures
+    jobs = ci.get("jobs")
+    job = jobs.get("honesty-gate") if isinstance(jobs, dict) else None
+    if not isinstance(job, dict):
+        failures.append("CI job `honesty-gate` is missing")
+        return failures
+    failures.extend(_check_ci_job(job, repo_root))
+    return failures
+
+
+def _check_wiring_or_raise(repo_root: Path) -> None:
+    failures = check_wiring(repo_root)
+    if failures:
+        raise RatchetError(
+            "RECEIPT HONESTY RATCHET WIRING FAILED:\n"
+            + "\n".join(f"- {item}" for item in failures)
+        )
+    sys.stdout.write("RECEIPT HONESTY RATCHET WIRING PASSED\n")
+
+
+def _check_core_runtime_or_raise(repo_root: Path) -> None:
+    """Fail if the imported scanner is not the registry artifact pinned by uv.lock."""
+    failures = _check_installed_core_artifact(repo_root)
+    if failures:
+        raise RatchetError(
+            "RECEIPT HONESTY CORE SOURCE FAILED:\n"
+            + "\n".join(f"- {failure}" for failure in failures)
+        )
+    version, hashes = _locked_core_artifact(repo_root)
+    module_path = Path(scan_receipts_directory.__code__.co_filename).resolve()
+    sys.stdout.write(
+        "RECEIPT HONESTY CORE SOURCE PASSED "
+        f"package=omnibase-core version={version} "
+        f"wheel_hashes={','.join(hashes)} module={module_path}\n"
+    )
+
+
+def _parse_args(argv: Sequence[str] | None) -> argparse.Namespace:
+    parser = argparse.ArgumentParser(description=__doc__)
+    mode = parser.add_mutually_exclusive_group(required=True)
+    mode.add_argument(
+        "--seed-baseline", action="store_true", help="one-time controlled ledger seed"
+    )
+    mode.add_argument(
+        "--corpus", action="store_true", help="authoritative full-corpus identity gate"
+    )
+    mode.add_argument(
+        "--changed", action="store_true", help="fast changed-receipt identity gate"
+    )
+    mode.add_argument(
+        "--check-wiring", action="store_true", help="static anti-removal wiring check"
+    )
+    mode.add_argument(
+        "--resolve-ci-base",
+        action="store_true",
+        help="resolve the event-correct, ancestor-verified CI ledger base",
+    )
+    parser.add_argument(
+        "--index",
+        action="store_true",
+        help="require changed receipt paths to match stage-0 index blobs",
+    )
+    parser.add_argument("--event-name", default="")
+    parser.add_argument("--pr-base-ref", default="")
+    parser.add_argument("--merge-group-base-ref", default="")
+    parser.add_argument("--before-sha", default="")
+    parser.add_argument("--default-branch", default="")
+    parser.add_argument("--repo-root", type=Path, default=Path.cwd())
+    parser.add_argument(
+        "receipt_paths", nargs="*", help="canonical changed receipt paths for --changed"
+    )
+    return parser.parse_args(argv)
+
+
+def _reject_if(condition: Any, message: str) -> None:
+    """Raise one consistent CLI-shape error outside main's reporting boundary."""
+    if condition:
+        raise RatchetError(message)
+
+
+def _run_mode(args: argparse.Namespace, root: Path) -> None:
+    """Dispatch a fully validated command mode."""
+    ci_base_args = (
+        args.event_name,
+        args.pr_base_ref,
+        args.merge_group_base_ref,
+        args.before_sha,
+        args.default_branch,
+    )
+    if args.resolve_ci_base:
+        _reject_if(
+            bool(args.receipt_paths) or args.index,
+            "--resolve-ci-base accepts no ledger inputs",
+        )
+        sys.stdout.write(
+            resolve_ci_base(
+                root,
+                CiBaseRequest(
+                    event_name=args.event_name,
+                    pr_base_ref=args.pr_base_ref,
+                    merge_group_base_ref=args.merge_group_base_ref,
+                    before_sha=args.before_sha,
+                    default_branch=args.default_branch,
+                ),
+            )
+            + "\n"
+        )
+    elif args.seed_baseline:
+        _reject_if(any(ci_base_args), "--seed-baseline does not accept CI event inputs")
+        _reject_if(
+            args.receipt_paths or args.index,
+            "--seed-baseline accepts neither index mode nor receipt paths",
+        )
+        seed_baseline(root)
+    elif args.corpus:
+        _reject_if(
+            bool(args.receipt_paths) or args.index,
+            "--corpus does not accept receipt paths or --index",
+        )
+        request = (
+            CiBaseRequest(
+                event_name=args.event_name,
+                pr_base_ref=args.pr_base_ref,
+                merge_group_base_ref=args.merge_group_base_ref,
+                before_sha=args.before_sha,
+                default_branch=args.default_branch,
+            )
+            if any(ci_base_args)
+            else None
+        )
+        enforce_corpus(root, request)
+    elif args.changed:
+        _reject_if(any(ci_base_args), "--changed does not accept CI event inputs")
+        enforce_changed(root, args.receipt_paths, require_index=args.index)
+    else:
+        _reject_if(any(ci_base_args), "--check-wiring does not accept CI event inputs")
+        _reject_if(
+            args.receipt_paths or args.index,
+            "--check-wiring accepts neither index mode nor receipt paths",
+        )
+        _check_wiring_or_raise(root)
+
+
+def main(argv: Sequence[str] | None = None) -> int:
+    """Run one fail-closed receipt-honesty ratchet mode."""
+    args = _parse_args(argv)
+    try:
+        root = _repo_root(args.repo_root)
+        _check_core_runtime_or_raise(root)
+        _run_mode(args, root)
+    except RatchetError as exc:
+        sys.stderr.write(f"{exc}\n")
+        return 1
+    return 0
+
+
+if __name__ == "__main__":  # pragma: no cover - CLI entrypoint
+    raise SystemExit(main())

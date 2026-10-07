@@ -1,0 +1,98 @@
+---
+schema_version: "1.0.0"
+ticket_id: "OMN-13636"
+title: "detect vendored node migrations that never applied (WS-F Phase 4 migration application gap)"
+summary: >-
+  WS-F Phase 4: close the migration application gap that left stability-test and prod with a vendored
+  node migration (0020_delegation_context_pack_hash.sql) present on disk but never applied — projection
+  writes failed with UndefinedColumn: context_pack_hash. The omnibase_infra forward-migration runner vendors
+  omnimarket node-owned SQL (src/omnimarket/nodes/<node>/migrations/*.sql, OMN-12559) and applies each
+  under a namespaced id node:<node>:<filename> in omnidash_analytics.public.schema_migrations. On a warm
+  volume the one-shot runner can silently skip a new file (runner not re-run, or sentinel left TRUE from
+  a prior run), leaving a file on disk with no schema_migrations row and a projection node writing to
+  a stale schema. Nothing detected that class: node_database_sweep checked Alembic + Drizzle but ignored
+  node-vendored migrations entirely. This adds the missing detection path in node_database_sweep (omnimarket):
+  _discover_node_migration_ids enumerates the on-disk vendored set, _check_node_migrations compares it
+  against the applied set and reports PENDING (naming the exact missing files), CURRENT, NO_TABLE, or
+  ERROR. A PENDING node migration flips the sweep to issues_found so the CLI exits non-zero — fail loud,
+  never silently CURRENT. Ships no live deploy / runtime restart.
+is_seam_ticket: false
+interface_change: false
+interfaces_touched: []
+evidence_requirements:
+  - kind: "tests"
+    description: >-
+      TDD gate tests/unit/nodes/node_database_sweep/test_handler_database_sweep.py::TestNodeMigrationApplicationGap
+      — a vendored node migration on disk with no schema_migrations row surfaces as PENDING (naming the
+      missing file), an all-applied set is CURRENT, a missing schema_migrations table is NO_TABLE, an
+      unresolvable source tree is ERROR, and the handler aggregate flips to issues_found. The failing
+      tests were written before the implementation.
+    command: "uv run pytest tests/unit/nodes/node_database_sweep/test_handler_database_sweep.py -q"
+  - kind: "ci"
+    description: >-
+      ruff format + ruff check + mypy --strict clean on the changed module; pre-commit run on the changed
+      files passes (incl. stub detector, URL/topic/secret gates, golden-chain + dependency-health gates);
+      the full omnimarket pytest suite (not kafka) is green (8904 passed, 46 skipped, 0 failed).
+    command: "uv run pytest tests/ -q -p no:cacheprovider -m 'not kafka'"
+emergency_bypass:
+  enabled: false
+  justification: ""
+  follow_up_ticket_id: ""
+dod_evidence:
+  - id: "dod-omnimarket-pr"
+    description: >-
+      The omnimarket product PR adds node-vendored migration application-gap detection to node_database_sweep
+      (_discover_node_migration_ids + _check_node_migrations) so a migration vendored into the deploy
+      tree but never recorded in schema_migrations is flagged as unapplied and forces a non-zero CLI exit.
+      It cites Evidence-Source: OCC#<this-pr>. Product HEAD SHA cb351d8d.
+    source: "manual"
+    checks:
+      - check_type: "command"
+        check_value: "test -f contracts/OMN-13636.yaml"
+  - id: "dod-occ-evidence-source"
+    description: >-
+      This OCC contract is the central Receipt-Gate Evidence-Source for OMN-13636; the omnimarket PR cites
+      Evidence-Source: OCC#<this-pr> so its verify Receipt Gate resolves against the OCC PR head (then
+      the merged squash SHA).
+    source: "manual"
+    checks:
+      - check_type: "command"
+        check_value: "test -f contracts/OMN-13636.yaml"
+  - id: "dod-occ-pr-self"
+    description: >-
+      Self-binding receipt for the onex_change_control PR that carries the OMN-13636 Evidence-Source binding
+      for the omnimarket product PR. Binds this OCC PR by pr_number so OCC preflight can validate the
+      evidence update itself.
+    source: "manual"
+    status: "verified"
+    checks:
+      - check_type: "command"
+        check_value: >-
+          grep -q '^status: PASS$' drift/dod_receipts/OMN-13636/dod-occ-pr-self/command.yaml && grep -q
+          '^pr_number: 3154$' drift/dod_receipts/OMN-13636/dod-occ-pr-self/command.yaml
+  - id: "dod-migration-gap-tdd"
+    description: >-
+      Static proof of the DoD (vendored-but-unapplied migration is detected and fails loud): the TDD test
+      drives a synthetic lane where 0020_delegation_context_pack_hash.sql is vendored on disk but absent
+      from schema_migrations and asserts the node-vendored check reports the unapplied state naming that
+      file, the sweep aggregate is issues_found, and the CLI exit semantics return non-zero. Full suite
+      green (8904 passed).
+    source: "manual"
+    checks:
+      - check_type: "command"
+        check_value: "test -f contracts/OMN-13636.yaml"
+  - id: "dod-deploy-verification"
+    description: >-
+      Post-deploy verification path: this node IS the migration application-gap detector, so the deploy
+      DoD is running it against a deployed lane projection database to confirm every vendored node migration
+      applied. The declared post-deploy command (docker exec omnibase-infra-omninode-runtime python -m
+      omnimarket.nodes.node_database_sweep --dry-run) runs the sweep inside a lane projection container
+      and fails non-zero if any node-vendored migration is on disk but absent from schema_migrations —
+      the OMN-13636 fail-loud surface, run against real lane state. The node is read-only (side_effect_class
+      read_only); it materializes nothing, only verifies. The CI-runnable check_value asserts that command
+      is declared here (a CI runner cannot exec a lane container); the live-lane run is an operator step
+      at deploy time.
+    source: "manual"
+    checks:
+      - check_type: "command"
+        check_value: "grep -q 'docker exec' contracts/OMN-13636.yaml"

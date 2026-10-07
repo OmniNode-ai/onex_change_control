@@ -1,0 +1,75 @@
+---
+schema_version: "1.0.0"
+ticket_id: "OMN-15738"
+title: "pgweb + umami crashloop in onex-dev — NetworkPolicy egress + Postgres secret drift"
+summary: >
+  OCC contract for OmniNode-ai/omninode_infra PR #826 (branch jonah/omn-15738-pgweb-umami-onexdev). Binds
+  live evidence for the pgweb fix (fully resolved: NetworkPolicy egress gap closed, pod 1/1 Running) and
+  the umami connectivity/TLS layer (fixed: pod now TLS-connects to RDS). umami's remaining ownership-drift
+  + prisma-resolve work is out of scope for this ticket's contract and is tracked as a distinct database-ownership
+  defect under the OMN-15746 follow-up ticket and its own OCC companion (OCC#6203).
+is_seam_ticket: false
+interface_change: false
+interfaces_touched: []
+evidence_requirements:
+  - kind: "ci"
+    description: "PR #826 CI checks"
+    command: "gh pr checks 826 --repo OmniNode-ai/omninode_infra"
+  - kind: "manual"
+    description: "pgweb pod Running; umami TLS-connecting; NetworkPolicy applied"
+emergency_bypass:
+  enabled: false
+  justification: ""
+  follow_up_ticket_id: ""
+dod_evidence:
+  - id: "dod-OmniNode-ai-omninode_infra-pr-826-omn15738"
+    description: "PR #826 on OmniNode-ai/omninode_infra — Evidence-Source autobind."
+    source: "manual"
+    status: "verified"
+    checks:
+      - check_type: "command"
+        check_value: "gh pr view 826 --repo OmniNode-ai/omninode_infra --json number,state,files"
+  - id: "dod-omn15738-pgweb-running"
+    description: >-
+      Live readback: pgweb pod is 1/1 Running on onex-dev via kubectl-ssm against i-06169517a92b45f86
+      (2026-08-08), after the NetworkPolicy egress fix (this PR's k8s/onex-dev/networkpolicies.yaml change)
+      was applied live.
+    source: "manual"
+    status: "verified"
+    checks:
+      - check_type: "command"
+        check_value: |-
+          grep -qF 'phase=Running' drift/dod_receipts/OMN-15738/dod-omn15738-pgweb-running/command.yaml
+  - id: "dod-omn15738-umami-tls-connect"
+    description: >-
+      Live readback: umami app container reaches "Database connection successful" over TLS against RDS
+      after the umami-credentials Secret fix (sslmode=require&uselibpqcompat=true), fixing the NetworkPolicy
+      and TLS layers this ticket diagnosed. Remaining failure is the distinct ownership-drift/P3009 migration-resolve
+      defect tracked under OMN-15746 (2026-08-08).
+    source: "manual"
+    status: "verified"
+    checks:
+      - check_type: "command"
+        check_value: |-
+          grep -qF 'Database connection successful' drift/dod_receipts/OMN-15738/dod-omn15738-umami-tls-connect/command.yaml
+  - id: "dod-omn15738-networkpolicy-applied"
+    description: >-
+      Live readback: onex-dev-allow-egress-managed-postgres NetworkPolicy in the onex-dev namespace includes
+      both pgweb and umami in its podSelector allowlist (2026-08-08), confirming this ticket's manifest
+      change is live, not just committed.
+    source: "manual"
+    status: "verified"
+    checks:
+      - check_type: "command"
+        check_value: |-
+          grep -qF '"pgweb"' drift/dod_receipts/OMN-15738/dod-omn15738-networkpolicy-applied/command.yaml && grep -qF '"umami"' drift/dod_receipts/OMN-15738/dod-omn15738-networkpolicy-applied/command.yaml
+  - id: "dod-omn15738-followup-filed"
+    description: >-
+      Follow-up ticket OMN-15746 filed for the remaining umami ownership repair + prisma resolve work,
+      with its own OCC companion OCC#6203.
+    source: "manual"
+    status: "verified"
+    checks:
+      - check_type: "command"
+        check_value: "gh api repos/OmniNode-ai/onex_change_control/pulls/6203 --jq '.title' | grep -qF
+          'OMN-15746'"
