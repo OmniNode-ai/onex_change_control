@@ -7,6 +7,23 @@ summary: "Hand-authored OCC evidence (OMN-15247) for OmniNode-ai/omnimarket#3212
 is_seam_ticket: false
 interface_change: false
 interfaces_touched: []
+requirements:
+  - id: req-live-linear-acceptance-closer-gaps
+    statement: Acceptance criteria and falsifiers transcribed from the live Linear ticket on 2026-10-06.
+      The previously merged evidence entries are preserved.
+    acceptance:
+      - id: AC1
+        statement: 'AC1: A typed read (`onex.cmd.omnimarket.projection-read.v1`) against a SQLite-backed
+          delegation store returns rows for a declared `projection_api` exposure -- falsifier: the same
+          read against a seeded SQLite store returns `projection_binding_unsupported` or zero rows in
+          a node_projection_read_effect handler test'
+      - id: AC2
+        statement: 'AC2: The Postgres path is unchanged -- falsifier: the existing node_projection_read_effect
+          Postgres tests fail or need edits to their expectations'
+      - id: AC3
+        statement: 'AC3: Focused tests cover the SQLite read and the Postgres refusal and success cases
+          -- falsifier: uv run pytest on the node_projection_read_effect test directory lacks a SQLite
+          case or fails'
 evidence_requirements:
   - kind: "ci"
     description: "PR #3212 product diff scope present"
@@ -170,3 +187,68 @@ dod_evidence:
           pr view 3220 --repo OmniNode-ai/omnimarket --json mergedAt --jq '.mergedAt // "null"')" && test
           "$state" = "CLOSED" && test "$merged" = "null" && printf 'omnimarket PR #3220 closed-unmerged
           terminal-state PASS\n'
+  - id: dod-closer-gaps-20329-sqlite-postgres
+    description: 'Execute the complete projection-read unit directory against the pinned source commit:
+      SQLite rows, unchanged Postgres success/refusal tests, and a SQLite-resolution-branch removal that
+      must turn the original seeded-row falsifier RED. Remove the ambient tenant for the suite that explicitly
+      tests absence of a tenant.'
+    source: generated
+    execution_scope: local_done_gate
+    checks:
+      - check_type: test_passes
+        check_value: |-
+          python3 - <<'PY'
+          import base64, json, os, subprocess, tempfile
+          from pathlib import Path
+          with tempfile.TemporaryDirectory(prefix='closer-gaps-proof-') as directory:
+              root = Path(directory)
+              refs = {'omnimarket': '341ceb1bd6d74df7b313979dbf65bbeef30f6a93'}
+              for repo, ref in refs.items():
+                  tree = root / repo
+                  tree.mkdir()
+                  endpoint = 'repos/OmniNode-ai/omnimarket/tarball/' + ref if repo == 'omnimarket' else 'repos/OmniNode-ai/' + repo + '/tarball/' + ref
+                  archive = subprocess.check_output(['gh', 'api', '--cache', '1h', endpoint])
+                  subprocess.run(['tar', 'xz', '--strip-components=1', '-C', str(tree)], input=archive, check=True)
+                  print(repo + ' source_commit=' + ref, flush=True)
+              env = dict(os.environ)
+              env.pop('PYTHONPATH', None)
+              env.pop('ONEX_TENANT_ID', None)
+              env['UV_PROJECT_ENVIRONMENT'] = str(root / 'venv')
+              env['OMN_15651_CANDIDATE_WORKSPACE'] = str(root)
+              tree = root / 'omnimarket'
+              test = ['uv', 'run', '--frozen', 'pytest', 'tests/unit/nodes/node_projection_read_effect', '-q', '-p', 'no:cacheprovider']
+              green = subprocess.run(test, cwd=tree, env=env, capture_output=True, text=True)
+              print(green.stdout + green.stderr, end='', flush=True)
+              assert green.returncode == 0, 'current declared falsifier must pass'
+              assert ' skipped' not in green.stdout, 'a skipped test is not proof'
+              resolver = tree / 'src/omnimarket/nodes/node_projection_read_effect/ports/read_source_resolution.py'
+              payload = resolver.read_text()
+              assert 'if scheme in SQLITE_SCHEMES:' in payload
+              resolver.write_text(payload.replace('if scheme in SQLITE_SCHEMES:', 'if scheme in frozenset():'))
+              red_test = ['uv', 'run', '--frozen', 'pytest', 'tests/unit/nodes/node_projection_read_effect/test_projection_read_effect_sqlite_omn20329.py::test_sqlite_binding_serves_the_tenants_rows', '-q', '-p', 'no:cacheprovider']
+              red = subprocess.run(red_test, cwd=tree, env=env, capture_output=True, text=True)
+              print(red.stdout + red.stderr, end='', flush=True)
+              assert red.returncode == 1 and 'assert False is True' in red.stdout and 'names a database that is neither Postgres nor a SQLite file' in red.stdout
+              print(json.dumps({'sqlite_branch_removed_red_exit': red.returncode}, sort_keys=True))
+              print(json.dumps({'green_exit': green.returncode, 'sources': refs}, sort_keys=True))
+          PY
+    binds_ac:
+      - AC1
+      - AC2
+      - AC3
+    ac_bindings:
+      - label: AC1
+        criterion_hash: 0f2883531bddee8379dcbf82a9fd5d6f95e3f1442f05b148eaf5642407d7145d
+        proposed_by: closer-gaps-2017
+        accepted_by: closer-gaps-2017-independent-evidence
+        accepted_at: '2026-10-06T20:57:36Z'
+      - label: AC2
+        criterion_hash: 86bb5ada509718dbd2cd522e5456b6c2dc107dfb3a2343be80ea747605c39aa8
+        proposed_by: closer-gaps-2017
+        accepted_by: closer-gaps-2017-independent-evidence
+        accepted_at: '2026-10-06T20:57:36Z'
+      - label: AC3
+        criterion_hash: 69aa0e4e3d51dcf1113ab5491c861037a99fe0010566b6ad00ee8cbc87ee7710
+        proposed_by: closer-gaps-2017
+        accepted_by: closer-gaps-2017-independent-evidence
+        accepted_at: '2026-10-06T20:57:36Z'
