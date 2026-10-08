@@ -7,6 +7,7 @@ from __future__ import annotations
 import json
 import subprocess
 from pathlib import Path
+from typing import Any
 from unittest import mock
 
 import pytest
@@ -20,7 +21,7 @@ NODE = "onex_change_control.nodes.node_contract_drift_effect"
 ROOT = Path(__file__).resolve().parents[2]
 
 
-def _request(**claim_changes: object):
+def _request(**claim_changes: object) -> Any:
     from onex_change_control.nodes.node_contract_drift_effect.models import (
         model_enforcement_placement,
     )
@@ -52,8 +53,12 @@ jobs:
 
 
 def _run(
-    request=None, *, source="real refusal", workflow=GOOD_WORKFLOW, protection=None
-):
+    request: Any = None,
+    *,
+    source: str | None = "real refusal",
+    workflow: str = GOOD_WORKFLOW,
+    protection: dict[str, Any] | None = None,
+) -> Any:
     from onex_change_control.nodes.node_contract_drift_effect.handlers import (
         handler_enforcement_placement,
     )
@@ -61,9 +66,9 @@ def _run(
     protection = (
         protection if protection is not None else {"contexts": ["example-refusal"]}
     )
-    seen = []
+    seen: list[tuple[str, str, str]] = []
 
-    def read(path, ref, **kwargs):
+    def read(path: str, ref: str, **kwargs: Any) -> str | None:
         seen.append((kwargs["repo"], path, ref))
         if path == "src/example.py":
             return source
@@ -88,7 +93,9 @@ def _run(
 @pytest.mark.parametrize(
     ("failures", "passed"), [((), False), (("absent enforcement surface",), True)]
 )
-def test_serialized_verdict_cannot_disagree_with_findings(failures, passed):
+def test_serialized_verdict_cannot_disagree_with_findings(
+    failures: tuple[str, ...], *, passed: bool
+) -> None:
     from onex_change_control.nodes.node_contract_drift_effect.models import (
         model_enforcement_placement,
     )
@@ -103,7 +110,7 @@ def test_serialized_verdict_cannot_disagree_with_findings(failures, passed):
         )
 
 
-def test_positive_control_checks_a_real_surface_and_live_main_protection():
+def test_positive_control_checks_a_real_surface_and_live_main_protection() -> None:
     result, seen, protection_read = _run()
     assert result.passed
     assert result.checked_surface_count == 1
@@ -119,7 +126,9 @@ def test_positive_control_checks_a_real_surface_and_live_main_protection():
 
 
 @pytest.mark.parametrize("source", [None, ""])
-def test_absent_surface_on_main_fails_even_if_the_checkout_has_it(source):
+def test_absent_surface_on_main_fails_even_if_the_checkout_has_it(
+    source: str | None,
+) -> None:
     result, _, _ = _run(source=source)
     assert not result.passed
     assert "src/example.py" in " ".join(result.failures)
@@ -128,14 +137,14 @@ def test_absent_surface_on_main_fails_even_if_the_checkout_has_it(source):
 
 @pytest.mark.parametrize("protection", [{"contexts": []}, {"checks": []}])
 def test_a_workflow_comment_or_local_manifest_is_not_live_required_protection(
-    protection,
-):
+    protection: dict[str, Any],
+) -> None:
     result, _, _ = _run(protection=protection)
     assert not result.passed
     assert "example-refusal" in " ".join(result.failures)
 
 
-def test_checks_shape_is_a_positive_control_for_app_bound_required_contexts():
+def test_checks_shape_is_a_positive_control_for_app_bound_required_contexts() -> None:
     result, _, _ = _run(
         protection={"checks": [{"context": "example-refusal", "app_id": 42}]}
     )
@@ -160,13 +169,15 @@ def test_checks_shape_is_a_positive_control_for_app_bound_required_contexts():
         GOOD_WORKFLOW.replace("python src/example.py", "true python src/example.py"),
     ],
 )
-def test_a_present_file_with_no_reachable_required_producer_fails(workflow):
+def test_a_present_file_with_no_reachable_required_producer_fails(
+    workflow: str,
+) -> None:
     result, _, _ = _run(workflow=workflow)
     assert not result.passed
     assert "example-refusal" in " ".join(result.failures)
 
 
-def test_a_required_rollup_must_actually_hold_the_claimed_job():
+def test_a_required_rollup_must_actually_hold_the_claimed_job() -> None:
     request = _request(required_context="CI Summary", rollup_job_id="summary")
     workflow = (
         GOOD_WORKFLOW
@@ -183,7 +194,7 @@ def test_a_required_rollup_must_actually_hold_the_claimed_job():
     ].passed
 
 
-def test_empty_claims_cannot_turn_into_a_vacuous_pass():
+def test_empty_claims_cannot_turn_into_a_vacuous_pass() -> None:
     from onex_change_control.nodes.node_contract_drift_effect.models import (
         model_enforcement_placement,
     )
@@ -197,12 +208,14 @@ def test_empty_claims_cannot_turn_into_a_vacuous_pass():
 @pytest.mark.parametrize(
     "protection", [{}, {"contexts": "example-refusal"}, {"checks": [None]}]
 )
-def test_unreadable_protection_shape_is_inconclusive(protection):
+def test_unreadable_protection_shape_is_inconclusive(
+    protection: dict[str, Any],
+) -> None:
     with pytest.raises(tripwire.TripwireInconclusiveError):
         _run(protection=protection)
 
 
-def test_a_permission_failure_propagates_instead_of_passing():
+def test_a_permission_failure_propagates_instead_of_passing() -> None:
     from onex_change_control.nodes.node_contract_drift_effect.handlers import (
         handler_enforcement_placement,
     )
@@ -218,7 +231,7 @@ def test_a_permission_failure_propagates_instead_of_passing():
         handler_enforcement_placement.HandlerEnforcementPlacement().handle(_request())
 
 
-def test_committed_claim_is_routed_to_the_handler_over_declared_topics():
+def test_committed_claim_is_routed_to_the_handler_over_declared_topics() -> None:
     contract = yaml.safe_load(
         (
             ROOT
@@ -235,7 +248,7 @@ def test_committed_claim_is_routed_to_the_handler_over_declared_topics():
     assert claims[0]["governed_branch"] == "main"
 
 
-def test_ci_and_precommit_execute_the_same_focused_regression_file():
+def test_ci_and_precommit_execute_the_same_focused_regression_file() -> None:
     workflow = yaml.safe_load((ROOT / ".github/workflows/ci.yml").read_text())
     steps = workflow["jobs"]["check-platform-leads-review-tripwire"]["steps"]
     test_path = "tests/unit/test_enforcement_surface_placement.py"
@@ -248,7 +261,7 @@ def test_ci_and_precommit_execute_the_same_focused_regression_file():
     )
 
 
-def test_existing_tripwire_fails_when_live_protection_loses_its_context():
+def test_existing_tripwire_fails_when_live_protection_loses_its_context() -> None:
     good_module = " ".join(tripwire.MAIN_SELF_APPROVAL_MARKERS)
     workflow = (
         "on: {pull_request: {branches: [main]}}\n"
@@ -286,7 +299,7 @@ def test_existing_tripwire_fails_when_live_protection_loses_its_context():
         assert tripwire.authoring_time_refusal_present_on_main(repo="owner/example")[0]
 
 
-def test_a_ref_override_cannot_prove_a_claim_about_a_different_branch():
+def test_a_ref_override_cannot_prove_a_claim_about_a_different_branch() -> None:
     with mock.patch.object(tripwire, "_run_gh_checked") as read:
         ok, detail = tripwire.enforcement_placement_present(
             repo="owner/example", ref="dev"
@@ -305,12 +318,12 @@ def test_a_ref_override_cannot_prove_a_claim_about_a_different_branch():
         "src/%2e%2e/example.py",
     ],
 )
-def test_a_claim_cannot_override_the_governed_branch_query(path):
+def test_a_claim_cannot_override_the_governed_branch_query(path: str) -> None:
     with pytest.raises(ValidationError):
         _request(source_path=path)
 
 
-def test_a_rate_limited_protection_read_is_inconclusive_and_never_passes():
+def test_a_rate_limited_protection_read_is_inconclusive_and_never_passes() -> None:
     from onex_change_control.nodes.node_contract_drift_effect.handlers import (
         handler_enforcement_placement,
     )
@@ -327,14 +340,16 @@ def test_a_rate_limited_protection_read_is_inconclusive_and_never_passes():
 
 
 @pytest.mark.parametrize(("passed", "expected"), [(True, 0), (False, 1)])
-def test_precommit_adapter_returns_the_node_verdict(passed, expected):
+def test_precommit_adapter_returns_the_node_verdict(
+    *, passed: bool, expected: int
+) -> None:
     with mock.patch.object(
         tripwire, "enforcement_placement_present", return_value=(passed, "placement")
     ):
         assert tripwire.main(["--placement-only"]) == expected
 
 
-def test_precommit_adapter_fails_closed_on_an_unreadable_branch():
+def test_precommit_adapter_fails_closed_on_an_unreadable_branch() -> None:
     with mock.patch.object(
         tripwire,
         "enforcement_placement_present",
@@ -347,8 +362,8 @@ def test_precommit_adapter_fails_closed_on_an_unreadable_branch():
     ("on_main", "expected"), [((False, "absent on main"), 1), (None, 2)]
 )
 def test_a_deferred_cross_repo_read_cannot_hide_missing_main_placement(
-    on_main, expected
-):
+    on_main: tuple[bool, str] | None, expected: int
+) -> None:
     with (
         mock.patch.object(
             tripwire, "authoring_time_refusal_behaves", return_value=(True, "behaves")
@@ -374,7 +389,7 @@ def test_a_deferred_cross_repo_read_cannot_hide_missing_main_placement(
         assert tripwire.main([]) == expected
 
 
-def test_one_passing_member_cannot_hide_a_missing_member_and_reads_are_cached():
+def test_one_passing_member_cannot_hide_a_missing_member_and_reads_are_cached() -> None:
     request = _request()
     second = request.surfaces[0].model_copy(
         update={"name": "second", "source_path": "src/missing.py"}
