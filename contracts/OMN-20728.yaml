@@ -1,0 +1,74 @@
+---
+schema_version: "1.0.0"
+ticket_id: "OMN-20728"
+title: "onex dashboard's served page reads tenant-scoped exposures as the install's tenant"
+summary: "The local dashboard server declares the tenant it serves in its GET /projections catalogue,
+  and omnidash reads tenant-scoped exposures as that declared tenant when no build-time tenant is configured.
+  A build-time tenant still wins, and with neither the page still refuses with Tenant not configured.
+  omnidash cuts a release and onex dashboard pins the new bundle."
+is_seam_ticket: false
+interface_change: false
+interfaces_touched: []
+requirements:
+  - id: "req-catalogue-tenant"
+    statement: |-
+      The served page learns the install's tenant from the catalogue the local server publishes, with no silent default.
+    acceptance:
+      - id: "AC1"
+        statement: |-
+          AC1: `GET /projections` from `onex dashboard` names the install's tenant, and a scoped read sent with that tenant returns 200 -- falsifier: the catalogue carries no tenant, or a read with it is refused
+      - id: "AC2"
+        statement: |-
+          AC2: The bundle `onex dashboard` serves, opened in a browser on a machine with an install identity and at least one delegation, issues `GET /projection/onex.snapshot.projection.delegation.decisions.v1?tenant=<install tenant>` and the Runs page shows a row from it -- falsifier: the network log has no such read, or Runs still says Tenant not configured
+      - id: "AC3"
+        statement: |-
+          AC3: With no build-time tenant and no catalogue tenant, a scoped panel still shows Tenant not configured and sends no scoped read -- falsifier: a scoped read goes out with no tenant, or a panel renders rows
+evidence_requirements:
+  - kind: "ci"
+    description: "PR #3557 on OmniNode-ai/omnimarket and PR #374 on OmniNode-ai/omnidash product diff
+      scope present"
+    command: "gh pr view ${PR_NUMBER} --repo ${REPO} --json files"
+  - kind: "manual"
+    description: |-
+      Hand-authored per OMN-15247. omnimarket#3557 touches a runtime path, so its deploy gate needs a
+      falsifiable probe here (OMN-8912); occ-autobind declined omnidash#374 with skip:NO_RED_DERIVABLE_CHECK
+      because no candidate grammar reads TypeScript.
+    command: |-
+      gh api repos/OmniNode-ai/omnimarket/contents/src/omnimarket/nodes/node_local_dashboard_serve_effect/handlers/handler_local_dashboard_serve.py?ref=49f6a112645c15f582f8df34ee4bd4db2107110a --jq .content | base64 -d | grep -c '"tenant": tenant,'
+emergency_bypass:
+  enabled: false
+  justification: ""
+  follow_up_ticket_id: ""
+dod_evidence:
+  - id: "dod-omn20728-omnimarket-3557-deploy"
+    description: |-
+      PR #3557 on OmniNode-ai/omnimarket — deploy probe (OMN-8912), hermetic form for a ticket with no
+      live deploy. The serving handler at the PR head puts the served tenant into the GET /projections
+      body. Red at omnimarket dev 0b6171479516, where the catalogue carries topics only.
+    source: "manual"
+    checks:
+      - check_type: "command"
+        check_value: |-
+          gh api repos/OmniNode-ai/omnimarket/contents/src/omnimarket/nodes/node_local_dashboard_serve_effect/handlers/handler_local_dashboard_serve.py?ref=49f6a112645c15f582f8df34ee4bd4db2107110a --jq .content | base64 -d | grep -c '"tenant": tenant,'
+  - id: "dod-omn20728-omnidash-374-catalogue-tenant"
+    description: |-
+      PR #374 on OmniNode-ai/omnidash — the tenant resolver at the PR head falls back to the tenant the
+      catalogue declares when no build-time tenant is set. Hand-authored per OMN-15247: occ-autobind
+      declined this head with skip:NO_RED_DERIVABLE_CHECK. Red at omnidash dev c2957521b503.
+    source: "manual"
+    checks:
+      - check_type: "command"
+        check_value: |-
+          gh api repos/OmniNode-ai/omnidash/contents/src/data-source/projection-tenant.ts?ref=bfdf658a46d1610d0e130aea85ec249d826dd568 --jq .content | base64 -d | grep -c 'resolveConfiguredTenant() ?? catalogue.tenant'
+  - id: "dod-OmniNode-ai-omnimarket-pr-3557-ci"
+    description: "PR #3557 on OmniNode-ai/omnimarket — product diff scope check (OMN-14425)."
+    source: "generated"
+    checks:
+      - check_type: "command"
+        check_value: "gh pr view 3557 --repo OmniNode-ai/omnimarket --json files"
+  - id: "dod-OmniNode-ai-omnidash-pr-374-ci"
+    description: "PR #374 on OmniNode-ai/omnidash — product diff scope check (OMN-14425)."
+    source: "generated"
+    checks:
+      - check_type: "command"
+        check_value: "gh pr view 374 --repo OmniNode-ai/omnidash --json files"
