@@ -486,3 +486,45 @@ class TestWiring:
 
         assert "uv run check-ac-binding-acceptance --local" in config
         assert "uv run check-ac-binding-acceptance" in workflow
+
+
+@pytest.mark.parametrize("omitted", [None, "AC1", "AC2", "AC3", "AC4", "AC5", "AC6"])
+def test_omn18625_behavior_bindings_do_not_reactivate_retired_readbacks(
+    omitted: str | None,
+) -> None:
+    """The real companion covers each criterion; losing a probe holds that
+    criterion instead of reviving its merge-state/source-file surrogate."""
+    contract = yaml.safe_load(
+        (Path(__file__).parents[1] / "contracts" / "OMN-18625.yaml").read_text(
+            encoding="utf-8"
+        )
+    )
+    criteria = contract["requirements"][0]["acceptance"]
+    body = "## Acceptance criteria\n\n" + "\n".join(
+        "- " + criterion["statement"] for criterion in criteria
+    )
+    probes = [
+        item
+        for item in contract["dod_evidence"]
+        if item["id"].startswith("dod-omn18625-")
+    ]
+    assert {label for item in probes for label in item["binds_ac"]} == {
+        "AC1",
+        "AC2",
+        "AC3",
+        "AC4",
+        "AC5",
+        "AC6",
+    }
+    for item in probes:
+        assert all(check["check_type"] == "test_passes" for check in item["checks"])
+        if omitted in item["binds_ac"]:
+            item["binds_ac"] = []
+            item["ac_bindings"] = []
+    findings = check_contract_ac_bindings("OMN-18625", contract, body)
+    if omitted is None:
+        assert findings == []
+    else:
+        assert len(findings) == 1
+        assert findings[0].rule == "ac_binding_criterion_retired_unbound"
+        assert omitted in findings[0].message
