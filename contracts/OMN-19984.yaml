@@ -243,3 +243,121 @@ dod_evidence:
     ac_bindings:
       - label: "AC1"
         criterion_hash: "4a0fc6e74e255568eb135fcb02fec711570f49cebc024eed63f8a32b90ed706f"
+  - id: dod-omn19984-pr1853-ac2a-draft
+    description: 'PR #1853 companion repair for the AC2 split declared on OMN-19984 on 2026-10-08. DRAFT,
+      not accepted and not a PASS claim. The proposed check first requires C31 and C32 in the required-context
+      registry, then runs existing generic missing, skipped and other-head negative tests. Named negative
+      tests for each local_dashboard_parity and local_auth_boundary check remain owed; these generic tests
+      alone do not settle AC2a.'
+    source: manual
+    execution_scope: local_done_gate
+    status: pending
+    checks:
+      - check_type: command
+        check_value: |
+          python3 - <<'CHECK'
+          import runpy
+          import subprocess
+
+          gate = runpy.run_path("scripts/ci/ci_summary_gate.py")
+          required = set(gate["EXPECTED_EXTERNAL_CONTEXTS"]) | set(gate["STRICT_GATE_JOBS"])
+          for name in (
+              "C31 local dashboard parity (six pages, figures reconcile)",
+              "C32 local auth boundary (loopback plus a per-start token)",
+          ):
+              assert name in required, f"required-check registration missing: {name}"
+          subprocess.run(["uv", "run", "pytest", "tests/ci/test_ci_summary_gate.py", "-q",
+                          "-k", "external_context_skipped_fails_closed or external_context_absent_is_pending_never_success or skip_on_a_different_head_is_not_superseded"], check=True)
+          CHECK
+        cwd: ${OMNI_HOME}/omninode_infra
+    binds_ac:
+      - AC2a
+    ac_bindings:
+      - label: AC2a
+        criterion_hash: 5662a2243e6b4aa3d416237c25d80ecf90e6d358990c8cbfc6c2fbc5d462151f
+        proposed_by: codex-landing-L5439
+    supersedes_ac_binding:
+      - item: dod-OmniNode-ai-omninode_infra-pr-1759
+        label: AC2
+        reason: Jonah split AC2 into AC2a and AC2b on 2026-10-08T15:23Z, as recorded in the live OMN-19984
+          ticket. The historical combined-criterion pin no longer describes either criterion. This record
+          retires only that AC2 binding; the item and its AC1 binding remain intact. The new bindings
+          are unaccepted drafts.
+      - item: dod-OmniNode-ai-omninode_infra-pr-1781
+        label: AC2
+        reason: Jonah split AC2 into AC2a and AC2b on 2026-10-08T15:23Z, as recorded in the live OMN-19984
+          ticket. The historical combined-criterion pin no longer describes either criterion. This record
+          retires only that AC2 binding; the item and its AC1 binding remain intact. The new bindings
+          are unaccepted drafts.
+      - item: dod-OmniNode-ai-omninode_infra-pr-1798
+        label: AC2
+        reason: Jonah split AC2 into AC2a and AC2b on 2026-10-08T15:23Z, as recorded in the live OMN-19984
+          ticket. The historical combined-criterion pin no longer describes either criterion. This record
+          retires only that AC2 binding; the item and its AC1 binding remain intact. The new bindings
+          are unaccepted drafts.
+      - item: dod-OmniNode-ai-omninode_infra-pr-1823
+        label: AC2
+        reason: Jonah split AC2 into AC2a and AC2b on 2026-10-08T15:23Z, as recorded in the live OMN-19984
+          ticket. The historical combined-criterion pin no longer describes either criterion. This record
+          retires only that AC2 binding; the item and its AC1 binding remain intact. The new bindings
+          are unaccepted drafts.
+  - id: dod-omn19984-pr1853-ac2b-draft
+    description: 'PR #1853 companion repair for the AC2 split declared on OMN-19984 on 2026-10-08. DRAFT,
+      not accepted; no scheduled-green readback or PASS receipt is claimed. The proposed live check requires
+      C31 success on three distinct scheduled dev heads and C30 success on three consecutive scheduled
+      dev runs, with successful matching jobs and check-runs at those heads. C32 remains excluded from
+      this readback until OMN-19916 lands, exactly as the current criterion states. Its inclusion and
+      a new readback are owed when that prerequisite lands.'
+    source: manual
+    execution_scope: local_done_gate
+    status: pending
+    checks:
+      - check_type: command
+        check_value: |
+          python3 - <<'CHECK'
+          import json
+          import subprocess
+
+          repo = "OmniNode-ai/omninode_infra"
+          def api(path):
+              pages = json.loads(subprocess.check_output(
+                  ["gh", "api", "--paginate", "--slurp", f"repos/{repo}/{path}"], text=True))
+              return pages
+
+          for workflow, check, consecutive in (
+              ("c31-local-dashboard-parity.yml", "C31 local dashboard parity (six pages, figures reconcile)", False),
+              ("c30-claude-code-plugin-delegate.yml", "C30 Claude Code plugin delegation (first hour, clean profile)", True),
+          ):
+              runs = [run for page in api(f"actions/workflows/{workflow}/runs?event=schedule&branch=dev&per_page=100")
+                      for run in page["workflow_runs"]
+                      if run["event"] == "schedule" and run["head_branch"] == "dev"]
+              runs.sort(key=lambda run: (run["created_at"], run["id"]), reverse=True)
+              candidates = runs[:3] if consecutive else runs
+              green_heads = set()
+              green_runs = []
+              for run in candidates:
+                  if run["status"] != "completed" or run["conclusion"] != "success":
+                      continue
+                  jobs = [job for page in api(f"actions/runs/{run['id']}/jobs?per_page=100") for job in page["jobs"]]
+                  matching = [job for job in jobs if job["name"] == check]
+                  if len(matching) != 1 or matching[0]["status"] != "completed" or matching[0]["conclusion"] != "success":
+                      continue
+                  checks = [row for page in api(f"commits/{run['head_sha']}/check-runs?per_page=100") for row in page["check_runs"]]
+                  if not any(row["name"] == check and row["head_sha"] == run["head_sha"]
+                             and row["status"] == "completed" and row["conclusion"] == "success"
+                             and row.get("details_url") == matching[0]["html_url"] for row in checks):
+                      continue
+                  green_heads.add(run["head_sha"])
+                  green_runs.append(run["id"])
+                  if not consecutive and len(green_heads) >= 3:
+                      break
+              assert len(green_runs) >= 3 if consecutive else len(green_heads) >= 3, (workflow, green_runs, sorted(green_heads))
+              print(workflow, green_runs, sorted(green_heads))
+          CHECK
+        cwd: ${OMNI_HOME}/omninode_infra
+    binds_ac:
+      - AC2b
+    ac_bindings:
+      - label: AC2b
+        criterion_hash: 9451fd90b9ad783f1ed19f95d70f5d1f83a40269da70f9b4c45799245710148c
+        proposed_by: codex-landing-L5439

@@ -90,7 +90,10 @@ class TestComplianceGateAcceptsBinding:
         assert validated is not None
         assert validated["binds_ac"] == []
 
-    @pytest.mark.parametrize("label", ["AC1", "ac-1", "AC_2", "AC 3", "DoD2", "dod4"])
+    @pytest.mark.parametrize(
+        "label",
+        ["AC1", "ac-1", "AC_2", "AC 3", "DoD2", "dod4", "AC2a", "AC2b", "ac-2B"],
+    )
     def test_accepted_label_spellings(self, label: str) -> None:
         """Every form here canonicalises identically on the closer's side."""
         _, error = _validate_dod_item(_item(binds_ac=[label]))
@@ -110,7 +113,16 @@ class TestComplianceGateStillRefuses:
 
     @pytest.mark.parametrize(
         "malformed",
-        [["AC"], ["criterion one"], [""], ["AC1 -- the gate is wired"], ["ACC1"]],
+        [
+            ["AC"],
+            ["criterion one"],
+            [""],
+            ["AC1 -- the gate is wired"],
+            ["ACC1"],
+            ["AC2bb"],
+            ["AC2-b"],
+            ["AC2a -- prose"],
+        ],
     )
     def test_malformed_binding_entry_is_rejected(self, malformed: list[str]) -> None:
         """An entry that cannot join is a failure, not an empty binding."""
