@@ -1,0 +1,88 @@
+---
+schema_version: "1.0.0"
+ticket_id: "OMN-20753"
+title: "The decisions exposure does not serve run status or cost, so Runs shows Not recorded for values
+  the store holds"
+summary: "The decisions exposure serves terminal_ok and cost_usd from delegation_events, and the local
+  store declares terminal_ok, so Runs can show a run status and cost the receipt recorded; a cost never
+  measured is served null."
+is_seam_ticket: false
+interface_change: false
+interfaces_touched: []
+requirements:
+  - id: "req-decisions-status-and-cost"
+    statement: |-
+      The decisions exposure serves each run terminal status and cost, and an unmeasured cost stays distinguishable from zero.
+    acceptance:
+      - id: "AC1"
+        statement: |-
+          AC1: The decisions exposure serves each run's terminal status and cost, and Runs shows success and $0.00 for a run whose receipt records them -- falsifier: a pytest that writes one delegation_events row with terminal_ok 1 and cost_usd 0.0, reads the decisions exposure through create_dashboard_app, and fails when either field is absent from the served row
+      - id: "AC2"
+        statement: |-
+          AC2: A run whose cost was never measured still shows Not recorded, never $0.00 -- falsifier: a vitest Runs page test serving one row with cost_usd null and one with 0.0, failing unless the first renders Not recorded and the second $0.00
+evidence_requirements:
+  - kind: "ci"
+    description: "PR #3588 on OmniNode-ai/omnimarket and PR #376 on OmniNode-ai/omnidash product diff
+      scope present"
+    command: "gh pr view ${PR_NUMBER} --repo ${REPO} --json files"
+  - kind: "manual"
+    description: |-
+      Hand-authored per OMN-15247. omnimarket#3588 changes a runtime path (the delegation projection
+      contract and the local store), so its deploy gate needs a falsifiable probe here (OMN-8912).
+      omnidash#376 is TypeScript, which no occ-autobind candidate grammar reads.
+    command: |-
+      gh api repos/OmniNode-ai/omnimarket/contents/src/omnimarket/nodes/node_projection_delegation/contract.yaml?ref=2aeafc361610803dd3b4ddf48af4991c417241b2 --jq .content | base64 -d | grep -c '^        - terminal_ok$'
+emergency_bypass:
+  enabled: false
+  justification: ""
+  follow_up_ticket_id: ""
+dod_evidence:
+  - id: "dod-omn20753-omnimarket-3588-deploy"
+    description: |-
+      PR #3588 on OmniNode-ai/omnimarket — deploy probe (OMN-8912), hermetic form for a ticket with no
+      live deploy. The delegation projection contract at the PR head declares terminal_ok on the
+      decisions exposure. Red at omnimarket dev 20ca4a983ed6, where no exposure declares it.
+    source: "manual"
+    checks:
+      - check_type: "command"
+        check_value: |-
+          gh api repos/OmniNode-ai/omnimarket/contents/src/omnimarket/nodes/node_projection_delegation/contract.yaml?ref=2aeafc361610803dd3b4ddf48af4991c417241b2 --jq .content | base64 -d | grep -c '^        - terminal_ok$'
+  - id: "dod-omn20753-omnidash-376-cost-from-decision"
+    description: |-
+      PR #376 on OmniNode-ai/omnidash — the local pages read a run's cost from the decision row when no
+      savings session is served, and read 1/0 as a served verdict. Hand-authored per OMN-15247.
+      Red at omnidash dev 3617a5cc18c3.
+    source: "manual"
+    checks:
+      - check_type: "command"
+        check_value: |-
+          gh api repos/OmniNode-ai/omnidash/contents/src/pages/LocalDashboardPage.tsx?ref=aaf70a49b7f4e296b383119fe216fcf5c4091a7a --jq .content | base64 -d | grep -c 'function costOf(session: Row | undefined, decision: Row): string'
+  - id: "dod-OmniNode-ai-omnimarket-pr-3588-ci"
+    description: "PR #3588 on OmniNode-ai/omnimarket — product diff scope check (OMN-14425)."
+    source: "generated"
+    checks:
+      - check_type: "command"
+        check_value: "gh pr view 3588 --repo OmniNode-ai/omnimarket --json files"
+  - id: "dod-OmniNode-ai-omnidash-pr-376-ci"
+    description: "PR #376 on OmniNode-ai/omnidash — product diff scope check (OMN-14425)."
+    source: "generated"
+    checks:
+      - check_type: "command"
+        check_value: "gh pr view 376 --repo OmniNode-ai/omnidash --json files"
+  - id: "dod-omn20753-omnidash-declares-1-1-7"
+    description: |-
+      PR #377 on OmniNode-ai/omnidash — the package manifest at the PR head declares version 1.1.7, the
+      tag publish-dashboard-bundle.yml checks out to build the bundle the omnimarket pin downloads, so
+      a published bundle carries #376. Hand-authored per OMN-15247: occ-autobind reads no package.json.
+      Red at omnidash dev b0bf3d0b10c1, which declares 1.1.6.
+    source: "manual"
+    checks:
+      - check_type: "command"
+        check_value: |-
+          gh api repos/OmniNode-ai/omnidash/contents/package.json?ref=de2d5e63d0e21415378785adf2bd1a34d74c30f1 --jq .content | base64 -d | grep -c '"version": "1.1.7"'
+  - id: "dod-OmniNode-ai-omnidash-pr-377-ci"
+    description: "PR #377 on OmniNode-ai/omnidash — product diff scope check (OMN-14425)."
+    source: "generated"
+    checks:
+      - check_type: "command"
+        check_value: "gh pr view 377 --repo OmniNode-ai/omnidash --json files"
