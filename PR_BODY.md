@@ -1,41 +1,16 @@
-## Summary
+Quoted cause from the owning ticket: "Nothing anywhere reads whether a named enforcement surface exists on the branch the work actually targets."
 
-This adds the append-only OCC contract evidence required for [OMN-20008](https://linear.app/omninode/issue/OMN-20008).
+The existing drift effect node and tripwire now route committed enforcement claims through HandlerEnforcementPlacement. The handler reads the source, workflow producer and live required_status_checks on the claim's governed branch. Missing sources, missing contexts, wrong-branch producers and unreadable protection cannot certify an active claim. The node contract declares the command and result topics, and CI and pre-commit use the same handler.
 
-## What changed
+Focused verification on h201:
+- New placement suite: 37 passed; original tripwire suite: 79 passed.
+- Changed-file Ruff and mypy checks passed.
+- Both previously failed hooks now pass: the imperative contract guard and canonical-file-shape ratchet. The node remains declarative, the handler uses public transport adapters, and the serialized verdict is validated without suppression comments.
+- The enforcement-surface-placement pre-commit hook passed, including its live main read.
+- The full live tripwire passed all four facts.
+- Live positive control: one committed surface resolves against main protection.
+- Live negative control: a named source absent from main returns passed=false, with one surface checked.
 
-- Pins OmniMarket #3361, OmniDash #354, and OmniBase Infra #4547 to their exact implementation heads.
-- Binds AC1–AC6 to behavior-running test checks and falsifiable deploy probes.
-- Adds deploy probes that read the exact product/infra files through GitHub and fail when the claimed behavior is absent.
-- Keeps emergency bypass disabled and preserves the existing acceptance vocabulary.
+Lab: host=h201 lane=lab-fill-omn18945-10080430 command=uv run pytest tests/unit/test_enforcement_surface_placement.py -q --no-cov -p no:cacheprovider observed=37 passed
 
-## How it was verified
-
-- Repository pre-commit validation passed for the contract, including YAML schema, DoD evidence, substance floor, AC binding, receipt hardening, canonical shape, and fail-closed checks.
-- The probes are content-bound to the exact product and infrastructure commit SHAs; no receipt or contract self-grep is used as behavior evidence.
-
-## Local gates
-
-- Signed commit and normal repository hooks are required before push.
-- No gate was bypassed.
-
-## Not in this change
-
-- No product source, migration, dashboard code, receipt, or merged contract is rewritten.
-- No PR is merged and no Linear status is changed.
-
-## Failure paths
-
-- A missing or changed symbol at any pinned head makes its corresponding deploy probe exit non-zero.
-- Product and infrastructure CI remain responsible for executing the declared behavior checks in their own repositories.
-- The evidence is incomplete if any size, base, or live-verdict check cannot be measured; no unresolved check is treated as green.
-- A no-answer or unavailable live check is reported as unverified rather than treated as green.
-- n/a: no-answer is reported as unverified rather than treated as green.
-
-## Open defects
-
-none
-
-Overlap-Reviewed: #12744 — its auto-companion already carries generated OMN-20008 contract/receipt entries for OmniMarket #3361; this evidence-only change is the required correction for the missing deploy probes and the two product PRs that the auto-companion does not cover.
-
-Evidence-Ticket: OMN-20008
+Remaining for OMN-18945: AC-3 still needs validate-prod-promotion-grants in main's live required contexts; AC-4 still needs main's grant-bearing rollup dependencies to require success. The live protection read and main workflow confirm both gaps. This dev change supplies the general placement mechanism; those main changes remain necessary before ticket closeout. The new bus operation is declared and handler-tested; deployed bus registration has not been exercised in this lane.

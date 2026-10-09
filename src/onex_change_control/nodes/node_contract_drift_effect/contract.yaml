@@ -5,8 +5,8 @@
 name: node_contract_drift_effect
 contract_name: node_contract_drift_effect
 node_name: node_contract_drift_effect
-contract_version: {major: 1, minor: 0, patch: 0}
-node_version: {major: 1, minor: 0, patch: 0}
+contract_version: {major: 1, minor: 1, patch: 0}
+node_version: {major: 1, minor: 1, patch: 0}
 node_type: EFFECT_GENERIC
 
 description: >
@@ -16,15 +16,54 @@ event_bus:
   topic_base: "onex.evt.onex-change-control.contract-drift-detected.v1"
   partition_key_field: "contract_name"
   partition_strategy: "hash"
+  subscribe_topics:
+    - "onex.cmd.onex-change-control.enforcement-placement-check.v1"
+  publish_topics:
+    - "onex.evt.onex-change-control.enforcement-placement-checked.v1"
+
+# OMN-18945: active claims resolve on the branch the work governs, not dev.
+enforcement_surfaces:
+  - name: prod-promotion-self-approval
+    governed_branch: main
+    source_path: src/onex_change_control/scripts/validate_prod_promotion_grant_self_approval.py
+    workflow_path: .github/workflows/ci.yml
+    job_id: prod-promotion-grant-self-approval
+    command: validate-prod-promotion-grant-self-approval
+    required_context: CI Summary
+    rollup_job_id: ci-summary
+
+input_model:
+  name: ModelEnforcementPlacementRequest
+  module: onex_change_control.nodes.node_contract_drift_effect.models.model_enforcement_placement
+output_model:
+  name: ModelEnforcementPlacementResult
+  module: onex_change_control.nodes.node_contract_drift_effect.models.model_enforcement_placement
+handler:
+  module: onex_change_control.nodes.node_contract_drift_effect.handlers.handler_enforcement_placement
+  class: HandlerEnforcementPlacement
+  input_model: onex_change_control.nodes.node_contract_drift_effect.models.model_enforcement_placement.ModelEnforcementPlacementRequest
 
 io_operations:
   - operation_id: emit_drift_event
     description: "Emit contract drift detection event to Kafka"
     idempotent: false
+  - operation: check_enforcement_placement
+    description: "Resolve active enforcement claims against governed-branch files and live protection"
+    idempotent: true
 
 handler_routing:
-  routing_strategy: backend_match
-  default_backend: kafka
+  routing_strategy: operation_match
+  handlers:
+    - operation: check_enforcement_placement
+      handler:
+        name: HandlerEnforcementPlacement
+        module: onex_change_control.nodes.node_contract_drift_effect.handlers.handler_enforcement_placement
+      output_fields:
+        - repository
+        - governed_branch
+        - checked_surface_count
+        - failures
+        - passed
 
 descriptor:
   node_archetype: effect
