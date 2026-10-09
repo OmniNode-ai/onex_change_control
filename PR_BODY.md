@@ -1,41 +1,26 @@
 ## Summary
+Ticket OMN-20157 has every acceptance criterion proven (falsifiers pass, a fresh lab receipt exists, independent acceptance merged in onex_change_control#13195 and #13316) but cannot pass dod_verify, because four old draft bindings stay unaccepted and dod_verify counts every unaccepted binding, including those on superseded items, with no way to retire one. Accepting bindings that prove nothing would weaken the gate, so they are retired instead, with the typed retirement that omnimarket#3570 teaches node_dod_verify to read.
 
-This adds the append-only OCC contract evidence required for [OMN-20008](https://linear.app/omninode/issue/OMN-20008).
+## Changes
+- `ModelAcBindingRetirement` (the `supersedes_ac_binding` entry) gains four optional fields: `reason_kind` (`superseded_by` or `no_longer_applicable`), `superseded_by`, `retired_by`, `retired_at`. They are optional so retirements already merged still parse; a half-written typed retirement is refused. New tests: `tests/test_omn_20157_typed_binding_retirement.py` (12 passed), beside `tests/test_omn_18577_static_evidence_on_live_criterion.py`.
+- `contracts/OMN-20157.yaml` gains one `dod_evidence` item, `dod-omn20157-retire-unproven-draft-bindings`, with four retirements (`retired_by` dod-retire-binding-1620, `retired_at` 2026-10-08T16:48:51Z). It binds no criterion and accepts nothing; the retired items stay in the contract and keep running their own checks.
 
-## What changed
+## Retirements
+- AC5 from dod-omn20157-ac5-gemini-delegation-receipt (superseded_by dod-omn20157-accept-ac5-gemini-receipt-fec634b0: its check greps ledger text about lab run 39465f89, whose run directory is gone)
+- AC5 from dod-omn20157-fill-ac5-gemini-run-f8a0b10d (superseded_by the same item: greps ledger text about lab run f8a0b10d, not re-read)
+- AC5 from dod-omn20157-fill-ac5-plan-refusal-run-02b68882 (no_longer_applicable: a refusal run, BYOK_CODING_PLAN_NOT_PERMITTED, not a Gemini delegation; the GLM coding-plan leg was left out of the beta by ruling 2026-09-30T23:01:09Z)
+- AC6 from dod-OmniNode-ai-omnimarket-pr-3310 (superseded_by dod-omn20157-accept-fill-ac6-typed-refusals: greps the class name ByokPinNotPermittedError)
 
-- Pins OmniMarket #3361, OmniDash #354, and OmniBase Infra #4547 to their exact implementation heads.
-- Binds AC1–AC6 to behavior-running test checks and falsifiable deploy probes.
-- Adds deploy probes that read the exact product/infra files through GitHub and fail when the claimed behavior is absent.
-- Keeps emergency bypass disabled and preserves the existing acceptance vocabulary.
+Each reason is written out in the contract. The AC1 to AC5 bindings on pr-3310 are accepted and are not touched.
 
-## How it was verified
+## Evidence
+- Receipt: drift/dod_receipts/OMN-20157/dod-omn20157-retire-unproven-draft-bindings/test_passes.yaml, captured with check_receipt_hardening.py --capture-probe on lab host h202: the retirement tests from omnimarket#3570 at omnimarket 65d5e9ad1539, 51 passed.
+- Verdict before: dod_verify for OMN-20157 reported AC_BINDING_SELF_ACCEPTED naming exactly the four bindings (acceptance_self_accepted_bindings 4).
+- Verdict with omnimarket#3570 code and this contract: acceptance_self_accepted_bindings 0, acceptance_retired_bindings 4, acceptance_refused_retirements 0; the only failing check was this item's own test, because tests/unit/nodes/node_dod_verify/test_ac_binding_retirement.py is not yet on the canonical omnimarket clone.
 
-- Repository pre-commit validation passed for the contract, including YAML schema, DoD evidence, substance floor, AC binding, receipt hardening, canonical shape, and fail-closed checks.
-- The probes are content-bound to the exact product and infrastructure commit SHAs; no receipt or contract self-grep is used as behavior evidence.
+## Order of landing
+omnimarket#3570 first, then this PR. Landing this first leaves the old verifier ignoring the retirements and this item's check failing until #3570 is on the canonical omnimarket clone.
+## Lab
+Lab: h202, lane dod-retire-binding-1620, check_receipt_hardening.py --capture-probe of the omnimarket#3570 retirement tests at omnimarket 65d5e9ad1539: 51 passed.
 
-## Local gates
-
-- Signed commit and normal repository hooks are required before push.
-- No gate was bypassed.
-
-## Not in this change
-
-- No product source, migration, dashboard code, receipt, or merged contract is rewritten.
-- No PR is merged and no Linear status is changed.
-
-## Failure paths
-
-- A missing or changed symbol at any pinned head makes its corresponding deploy probe exit non-zero.
-- Product and infrastructure CI remain responsible for executing the declared behavior checks in their own repositories.
-- The evidence is incomplete if any size, base, or live-verdict check cannot be measured; no unresolved check is treated as green.
-- A no-answer or unavailable live check is reported as unverified rather than treated as green.
-- n/a: no-answer is reported as unverified rather than treated as green.
-
-## Open defects
-
-none
-
-Overlap-Reviewed: #12744 — its auto-companion already carries generated OMN-20008 contract/receipt entries for OmniMarket #3361; this evidence-only change is the required correction for the missing deploy probes and the two product PRs that the auto-companion does not cover.
-
-Evidence-Ticket: OMN-20008
+Reopened as the onexbot-occ-writer App; replaces onex_change_control#13323, closed because check-human-authored-privileged-pr refuses a human-authored PR on src/.
