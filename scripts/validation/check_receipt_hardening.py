@@ -1142,6 +1142,7 @@ _KNOWN_REPO_HINTS: frozenset[str] = frozenset(
     f"OmniNode-ai/{name}"
     for name in (
         "knowledge-base",
+        "knowledge_base",
         "knowledge-base-internal",
         "omniclaude",
         "omniclaude-internal",
