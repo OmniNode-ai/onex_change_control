@@ -839,6 +839,40 @@ def _read_repo_file_at_ref(
     return result.stdout
 
 
+def run_gh_checked(
+    args: Sequence[str],
+    *,
+    action: str,
+    credential_origin: str,
+    deadline: float | None = None,
+) -> subprocess.CompletedProcess[str]:
+    """Share the tripwire's bounded transport with contract-routed handlers."""
+    return _run_gh_checked(
+        args,
+        action=action,
+        credential_origin=credential_origin,
+        deadline=deadline,
+    )
+
+
+def read_repo_file_at_ref(
+    path: str,
+    ref: str,
+    *,
+    repo: str,
+    credential_origin: str,
+    deadline: float | None,
+) -> str | None:
+    """Share branch reads with the same absence and retry semantics."""
+    return _read_repo_file_at_ref(
+        path,
+        ref,
+        repo=repo,
+        credential_origin=credential_origin,
+        deadline=deadline,
+    )
+
+
 def _main_refusal_job_failures(jobs: dict[str, Any], ref: str) -> list[str]:
     """Sub-facts about the refusal JOB itself on the other branch.
 
@@ -987,6 +1021,14 @@ def authoring_time_refusal_present_on_main(
 
     missing.extend(_main_refusal_job_failures(jobs, ref))
     missing.extend(_main_rollup_failures(jobs, ref))
+    placement_ok, placement_detail = enforcement_placement_present(
+        repo=repo,
+        ref=ref,
+        credential_origin=credential_origin,
+        deadline=deadline,
+    )
+    if not placement_ok:
+        missing.append(placement_detail)
 
     if missing:
         joined = "\n      - ".join(missing)
@@ -999,7 +1041,75 @@ def authoring_time_refusal_present_on_main(
         f"{ref} carries {MAIN_SELF_APPROVAL_MODULE} with both markers, "
         f"declares `{MAIN_SELF_APPROVAL_JOB}` unconditionally with "
         f"`{REQUESTER_FLAG}`, and holds it in `{MAIN_CI_SUMMARY_JOB}`'s "
-        "`needs:` under the required `CI Summary` context"
+        "`needs:` under the live-required `CI Summary` context; "
+        f"{placement_detail}"
+    )
+
+
+def enforcement_placement_present(
+    *,
+    repo: str,
+    ref: str,
+    credential_origin: str = "unknown",
+    deadline: float | None = None,
+) -> tuple[bool, str]:
+    """OMN-18945: run committed claims through the existing drift effect handler.
+
+    The contract owns the claims and governed branch. A CLI ref override cannot
+    turn a dev readback into proof of a main claim. The handler is also routed
+    by the node contract for event-bus consumers; this existing CLI is its CI
+    adapter, preserving the tripwire's bounded retry budget and diagnostics.
+    """
+    from pydantic import ValidationError
+
+    from onex_change_control.nodes.node_contract_drift_effect.handlers import (
+        handler_enforcement_placement,
+    )
+    from onex_change_control.nodes.node_contract_drift_effect.models import (
+        model_enforcement_placement,
+    )
+
+    contract_path = (
+        Path(__file__).resolve().parents[1]
+        / "nodes/node_contract_drift_effect/contract.yaml"
+    )
+    try:
+        contract = yaml.safe_load(contract_path.read_text(encoding="utf-8"))
+        claims = (
+            contract.get("enforcement_surfaces") if isinstance(contract, dict) else None
+        )
+        if not isinstance(claims, list) or not claims:
+            message = "drift effect contract declares no enforcement surfaces"
+            raise TripwireInconclusiveError(message)
+        branches = {claim["governed_branch"] for claim in claims}
+        if branches != {ref}:
+            return (
+                False,
+                f"committed claims govern {sorted(branches)!r}; "
+                f"{ref} is the wrong readback branch",
+            )
+        request = model_enforcement_placement.ModelEnforcementPlacementRequest(
+            repository=repo,
+            governed_branch=ref,
+            surfaces=[
+                {key: value for key, value in claim.items() if key != "governed_branch"}
+                for claim in claims
+            ],
+        )
+    except (OSError, yaml.YAMLError, KeyError, TypeError, ValidationError) as exc:
+        message = (
+            "could not resolve committed enforcement claims "
+            "from the drift effect contract"
+        )
+        raise TripwireInconclusiveError(message) from exc
+    result = handler_enforcement_placement.HandlerEnforcementPlacement(
+        credential_origin=credential_origin, deadline=deadline
+    ).handle(request)
+    return result.passed, (
+        "; ".join(result.failures)
+        if result.failures
+        else f"{result.checked_surface_count} committed enforcement surface(s) "
+        f"resolve against {repo}@{ref} live protection"
     )
 
 
@@ -1105,6 +1215,11 @@ def evaluate(
 def main(argv: Sequence[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument(
+        "--placement-only",
+        action="store_true",
+        help="Resolve committed governed-branch claims (pre-commit adapter).",
+    )
+    parser.add_argument(
         "--ci-workflow",
         type=Path,
         default=Path(DEFAULT_CI_WORKFLOW),
@@ -1141,9 +1256,30 @@ def main(argv: Sequence[str] | None = None) -> int:
     args = parser.parse_args(argv)
     retry_deadline = time.monotonic() + GH_SHARED_RETRY_DEADLINE_SECONDS
 
+    if args.placement_only:
+        try:
+            ok, detail = enforcement_placement_present(
+                repo=args.this_repo,
+                ref=args.main_ref,
+                credential_origin=args.credential_origin,
+                deadline=retry_deadline,
+            )
+        except TripwireInconclusiveError as exc:
+            print(f"PLACEMENT INCONCLUSIVE: {exc}", file=sys.stderr)
+            return 2
+        print(f"{'PASS' if ok else 'PLACEMENT FAILED'}: {detail}")
+        return 0 if ok else 1
+
     authoring = authoring_time_refusal_behaves()
+    on_main = None
     try:
         wired = authoring_time_refusal_wired(args.ci_workflow)
+        on_main = authoring_time_refusal_present_on_main(
+            repo=args.this_repo,
+            ref=args.main_ref,
+            credential_origin=args.credential_origin,
+            deadline=retry_deadline,
+        )
         promotion = promotion_time_refusal_present(
             args.promotion_gate_repo,
             args.promotion_gate_path,
@@ -1151,13 +1287,16 @@ def main(argv: Sequence[str] | None = None) -> int:
             credential_origin=args.credential_origin,
             deadline=retry_deadline,
         )
-        on_main = authoring_time_refusal_present_on_main(
-            repo=args.this_repo,
-            ref=args.main_ref,
-            credential_origin=args.credential_origin,
-            deadline=retry_deadline,
-        )
     except TripwireDeferredRateLimitError as exc:
+        if on_main is None:
+            print(
+                f"TRIPWIRE INCONCLUSIVE: main placement unreadable: {exc}",
+                file=sys.stderr,
+            )
+            return 2
+        if not on_main[0]:
+            print(f"TRIPWIRE TRIPPED: {on_main[1]}", file=sys.stderr)
+            return 1
         print(f"TRIPWIRE DEFERRED: {exc}", file=sys.stderr)
         return 0
     except TripwireInconclusiveError as exc:
