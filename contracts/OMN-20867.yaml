@@ -1,0 +1,46 @@
+# SPDX-FileCopyrightText: 2026 OmniNode.ai Inc.
+# SPDX-License-Identifier: MIT
+---
+schema_version: "1.0.0"
+ticket_id: "OMN-20867"
+title: "Lab-fill, hourly and throughput decisions run from the runtime tick"
+summary: "Three decision nodes route platform.runtime-tick to interval gates using their contract schedules
+  and publish scheduled fires on their terminal topics. Existing command handlers and launchd triggers
+  remain available; fire consumers are outside this change."
+is_seam_ticket: false
+interface_change: true
+interfaces_touched: ["events", "topics"]
+requirements:
+  - id: "req-runtime-tick-schedules"
+    statement: "The runtime tick opens the configured lab-fill, hourly and throughput windows through
+      the real node contracts."
+    acceptance:
+      - id: "AC1"
+        statement: "AC1: each contract routes platform.runtime-tick to its interval handler; lab-fill
+          uses interval 1200 offset 600, hourly uses interval 3600 offset 900, and throughput uses interval
+          600 offset 0."
+      - id: "AC2"
+        statement: "AC2: a tick opening a window returns a stable scheduled fire; subsequent ticks inside
+          the interval return no output."
+      - id: "AC3"
+        statement: "AC3: wire_from_manifest loads all three real contracts and publishing runtime tick
+          envelopes produces the expected fires on their terminal topics; ticks outside opening windows
+          publish nothing."
+evidence_requirements:
+  - kind: "tests"
+    description: "Scheduling and runtime boot tests exercise interval decisions and terminal publication."
+    command: "uv run pytest tests/unit/nodes/test_runtime_tick_schedule_fires.py -q -p no:randomly"
+emergency_bypass:
+  enabled: false
+  justification: ""
+  follow_up_ticket_id: ""
+dod_evidence:
+  - id: "dod-omn20867-pr3678-deploy-source-readback"
+    description: "PR 3678 on OmniNode-ai/omnimarket: read the interval gate at c42a979df91561d2671d9736681e606f95499280
+      and count its tick-window comparison. The module is absent at merge base ede46b09a25a0534ed82b5b81ab4e7fc299f1120.
+      This is source readback, not a production deployment claim."
+    source: "manual"
+    checks:
+      - check_type: "command"
+        check_value: "gh api -H 'Accept: application/vnd.github.raw' 'repos/OmniNode-ai/omnimarket/contents/src/omnimarket/models/model_runtime_tick_schedule.py?ref=c42a979df91561d2671d9736681e606f95499280'
+          | grep -Fc 'if now - start < dt.timedelta(milliseconds=tick_interval_ms):'"

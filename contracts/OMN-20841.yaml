@@ -1,0 +1,255 @@
+---
+schema_version: 1.0.0
+ticket_id: OMN-20841
+title: Remote-lane Codex landing step keeps the change when the lab host's commit or push fails
+summary: Hand-authored evidence for OmniNode-ai/omniclaude-internal#509 (squash 17ea864ad1e3). AC1 to
+  AC5 are bound to their own test selections of tests/test_remote_lane.py, run at the merge commit and,
+  as a must-fail control, at the merge parent with the merged tests overlaid. AC6 is bound to a read of
+  the pull request body with a control body.
+is_seam_ticket: false
+interface_change: false
+interfaces_touched: []
+requirements:
+  - id: req-transcribed-acceptance-criteria
+    statement: The acceptance criteria this ticket's author declared, transcribed verbatim from the ticket
+      body. The ticket body is the source and this block is the copy; each criterion's id is the label
+      the sibling binds_ac entry claims.
+    acceptance:
+      - id: AC1
+        statement: 'AC1: a lane whose commit or push fails leaves a durable artifact of its staged change
+          on the launching host, named in the receipt with the failure shape -- falsifier: uv run pytest
+          tests/test_remote_lane.py -q -k landing_failure_preserves_change'
+      - id: AC2
+        statement: 'AC2: such a lane''s TERMINAL and parent notice carry a landing-failed status and the
+          failure shape -- falsifier: uv run pytest tests/test_remote_lane.py -q -k landing_failure_status'
+      - id: AC3
+        statement: 'AC3: re-working a held PR branch pushes with force-with-lease against the start head
+          and refuses a moved head -- falsifier: uv run pytest tests/test_remote_lane.py -q -k existing_branch_lease_push'
+      - id: AC4
+        statement: 'AC4: a hook failure the resumed thread leaves unchanged twice in a row stops early
+          and reports the hook name -- falsifier: uv run pytest tests/test_remote_lane.py -q -k unchanged_hook_failure_stops'
+      - id: AC5
+        statement: 'AC5: the landing push and PR open target the repository URL, not a remote name the
+          host clone may lack -- falsifier: uv run pytest tests/test_remote_lane.py -q -k landing_pushes_to_repo_url'
+      - id: AC6
+        statement: 'AC6: the PR body carries a lab readback on h201 showing a hook-refused commit, a refused
+          push and one normal landing -- falsifier: the lab line in the PR body names host h201, the three
+          runs and their receipts'
+evidence_requirements:
+  - kind: tests
+    description: The Codex landing-failure tests of tests/test_remote_lane.py pass at the merge commit.
+    command: uv run --no-project --python 3.13 --with-requirements tests/skill_suites_requirements.txt
+      python -m pytest -q tests/test_remote_lane.py -k 'landing_failure or existing_branch_lease_push
+      or unchanged_hook_failure_stops or landing_pushes_to_repo_url'
+emergency_bypass:
+  enabled: false
+  justification: ''
+  follow_up_ticket_id: ''
+dod_evidence:
+  - id: dod-omn20841-ac1-landing-failure-preserves-change
+    description: 'AC1: tests/test_remote_lane.py -k landing_failure_preserves_change passes at the merge
+      commit (3 tests) and fails on the merge parent with the merged tests overlaid.'
+    source: manual
+    execution_scope: local_done_gate
+    checks:
+      - check_type: test_passes
+        check_value: |-
+          M=17ea864ad1e395112680c8fe8c79cf6331a53af7
+          P=b8bd50ca93acf48943045e3feed66df93b5b98ed
+          gh api repos/OmniNode-ai/omniclaude-internal/commits/$M --jq .sha || exit 2
+          git cat-file -e $M^{commit} || exit 2
+          git cat-file -e $P^{commit} || exit 2
+          fix="$(mktemp -d)" || exit 2
+          base="$(mktemp -d)" || exit 2
+          trap 'rm -rf "$fix" "$base"' EXIT
+          git archive $M | tar -x -C "$fix" || exit 2
+          git archive $P | tar -x -C "$base" || exit 2
+          git show $M:tests/test_remote_lane.py > "$base/tests/test_remote_lane.py" || exit 2
+          run() { d="$1"; shift; (cd "$d" && env -u PYTHONPATH uv run --no-project --python 3.13 --with-requirements tests/skill_suites_requirements.txt python -m pytest -q -p no:cacheprovider -p no:randomly "$@" 2>&1 | tail -n 1); }
+          merged="$(run "$fix" tests/test_remote_lane.py -k landing_failure_preserves_change)"
+          echo "merged $M: $merged"
+          case "$merged" in *passed*) ;; *) exit 1;; esac
+          case "$merged" in *failed*|*error*) exit 1;; esac
+          parent="$(run "$base" tests/test_remote_lane.py -k landing_failure_preserves_change)"
+          echo "merge parent $P with the merged tests: $parent"
+          case "$parent" in *failed*) ;; *) exit 1;; esac
+        cwd: ${OMNI_HOME}/omniclaude-internal
+    binds_ac:
+      - AC1
+    ac_bindings:
+      - label: AC1
+        criterion_hash: 6b195a9e65ae33a4afe6951909a3f50717c2a39f961d0495c803ba61527b72ac
+        proposed_by: lane=contracts-merged-5d21
+  - id: dod-omn20841-ac2-landing-failure-status
+    description: 'AC2: tests/test_remote_lane.py -k landing_failure_status passes at the merge commit
+      (10 tests) and fails on the merge parent with the merged tests overlaid.'
+    source: manual
+    execution_scope: local_done_gate
+    checks:
+      - check_type: test_passes
+        check_value: |-
+          M=17ea864ad1e395112680c8fe8c79cf6331a53af7
+          P=b8bd50ca93acf48943045e3feed66df93b5b98ed
+          gh api repos/OmniNode-ai/omniclaude-internal/commits/$M --jq .sha || exit 2
+          git cat-file -e $M^{commit} || exit 2
+          git cat-file -e $P^{commit} || exit 2
+          fix="$(mktemp -d)" || exit 2
+          base="$(mktemp -d)" || exit 2
+          trap 'rm -rf "$fix" "$base"' EXIT
+          git archive $M | tar -x -C "$fix" || exit 2
+          git archive $P | tar -x -C "$base" || exit 2
+          git show $M:tests/test_remote_lane.py > "$base/tests/test_remote_lane.py" || exit 2
+          run() { d="$1"; shift; (cd "$d" && env -u PYTHONPATH uv run --no-project --python 3.13 --with-requirements tests/skill_suites_requirements.txt python -m pytest -q -p no:cacheprovider -p no:randomly "$@" 2>&1 | tail -n 1); }
+          merged="$(run "$fix" tests/test_remote_lane.py -k landing_failure_status)"
+          echo "merged $M: $merged"
+          case "$merged" in *passed*) ;; *) exit 1;; esac
+          case "$merged" in *failed*|*error*) exit 1;; esac
+          parent="$(run "$base" tests/test_remote_lane.py -k landing_failure_status)"
+          echo "merge parent $P with the merged tests: $parent"
+          case "$parent" in *failed*) ;; *) exit 1;; esac
+        cwd: ${OMNI_HOME}/omniclaude-internal
+    binds_ac:
+      - AC2
+    ac_bindings:
+      - label: AC2
+        criterion_hash: c9ec3760f56b16ff0fc1aac6c20a8c2d49c3a774a5c585bf9d6eefcd05377d98
+        proposed_by: lane=contracts-merged-5d21
+  - id: dod-omn20841-ac3-existing-branch-lease-push
+    description: 'AC3: tests/test_remote_lane.py -k existing_branch_lease_push passes at the merge commit
+      (2 tests) and fails on the merge parent with the merged tests overlaid.'
+    source: manual
+    execution_scope: local_done_gate
+    checks:
+      - check_type: test_passes
+        check_value: |-
+          M=17ea864ad1e395112680c8fe8c79cf6331a53af7
+          P=b8bd50ca93acf48943045e3feed66df93b5b98ed
+          gh api repos/OmniNode-ai/omniclaude-internal/commits/$M --jq .sha || exit 2
+          git cat-file -e $M^{commit} || exit 2
+          git cat-file -e $P^{commit} || exit 2
+          fix="$(mktemp -d)" || exit 2
+          base="$(mktemp -d)" || exit 2
+          trap 'rm -rf "$fix" "$base"' EXIT
+          git archive $M | tar -x -C "$fix" || exit 2
+          git archive $P | tar -x -C "$base" || exit 2
+          git show $M:tests/test_remote_lane.py > "$base/tests/test_remote_lane.py" || exit 2
+          run() { d="$1"; shift; (cd "$d" && env -u PYTHONPATH uv run --no-project --python 3.13 --with-requirements tests/skill_suites_requirements.txt python -m pytest -q -p no:cacheprovider -p no:randomly "$@" 2>&1 | tail -n 1); }
+          merged="$(run "$fix" tests/test_remote_lane.py -k existing_branch_lease_push)"
+          echo "merged $M: $merged"
+          case "$merged" in *passed*) ;; *) exit 1;; esac
+          case "$merged" in *failed*|*error*) exit 1;; esac
+          parent="$(run "$base" tests/test_remote_lane.py -k existing_branch_lease_push)"
+          echo "merge parent $P with the merged tests: $parent"
+          case "$parent" in *failed*) ;; *) exit 1;; esac
+        cwd: ${OMNI_HOME}/omniclaude-internal
+    binds_ac:
+      - AC3
+    ac_bindings:
+      - label: AC3
+        criterion_hash: a354a84f6fa0a3549eb00fa81a11c496c350158ec311758bed9cfa23da57f680
+        proposed_by: lane=contracts-merged-5d21
+  - id: dod-omn20841-ac4-unchanged-hook-failure-stops
+    description: 'AC4: tests/test_remote_lane.py -k unchanged_hook_failure_stops passes at the merge commit
+      (1 test) and fails on the merge parent with the merged tests overlaid.'
+    source: manual
+    execution_scope: local_done_gate
+    checks:
+      - check_type: test_passes
+        check_value: |-
+          M=17ea864ad1e395112680c8fe8c79cf6331a53af7
+          P=b8bd50ca93acf48943045e3feed66df93b5b98ed
+          gh api repos/OmniNode-ai/omniclaude-internal/commits/$M --jq .sha || exit 2
+          git cat-file -e $M^{commit} || exit 2
+          git cat-file -e $P^{commit} || exit 2
+          fix="$(mktemp -d)" || exit 2
+          base="$(mktemp -d)" || exit 2
+          trap 'rm -rf "$fix" "$base"' EXIT
+          git archive $M | tar -x -C "$fix" || exit 2
+          git archive $P | tar -x -C "$base" || exit 2
+          git show $M:tests/test_remote_lane.py > "$base/tests/test_remote_lane.py" || exit 2
+          run() { d="$1"; shift; (cd "$d" && env -u PYTHONPATH uv run --no-project --python 3.13 --with-requirements tests/skill_suites_requirements.txt python -m pytest -q -p no:cacheprovider -p no:randomly "$@" 2>&1 | tail -n 1); }
+          merged="$(run "$fix" tests/test_remote_lane.py -k unchanged_hook_failure_stops)"
+          echo "merged $M: $merged"
+          case "$merged" in *passed*) ;; *) exit 1;; esac
+          case "$merged" in *failed*|*error*) exit 1;; esac
+          parent="$(run "$base" tests/test_remote_lane.py -k unchanged_hook_failure_stops)"
+          echo "merge parent $P with the merged tests: $parent"
+          case "$parent" in *failed*) ;; *) exit 1;; esac
+        cwd: ${OMNI_HOME}/omniclaude-internal
+    binds_ac:
+      - AC4
+    ac_bindings:
+      - label: AC4
+        criterion_hash: 7edd1f66f7c86b451540db1e44e4e43f93ccd2d2127dcbc53e980772ea50788e
+        proposed_by: lane=contracts-merged-5d21
+  - id: dod-omn20841-ac5-landing-pushes-to-repo-url
+    description: 'AC5: tests/test_remote_lane.py -k landing_pushes_to_repo_url passes at the merge commit
+      (1 test) and fails on the merge parent with the merged tests overlaid.'
+    source: manual
+    execution_scope: local_done_gate
+    checks:
+      - check_type: test_passes
+        check_value: |-
+          M=17ea864ad1e395112680c8fe8c79cf6331a53af7
+          P=b8bd50ca93acf48943045e3feed66df93b5b98ed
+          gh api repos/OmniNode-ai/omniclaude-internal/commits/$M --jq .sha || exit 2
+          git cat-file -e $M^{commit} || exit 2
+          git cat-file -e $P^{commit} || exit 2
+          fix="$(mktemp -d)" || exit 2
+          base="$(mktemp -d)" || exit 2
+          trap 'rm -rf "$fix" "$base"' EXIT
+          git archive $M | tar -x -C "$fix" || exit 2
+          git archive $P | tar -x -C "$base" || exit 2
+          git show $M:tests/test_remote_lane.py > "$base/tests/test_remote_lane.py" || exit 2
+          run() { d="$1"; shift; (cd "$d" && env -u PYTHONPATH uv run --no-project --python 3.13 --with-requirements tests/skill_suites_requirements.txt python -m pytest -q -p no:cacheprovider -p no:randomly "$@" 2>&1 | tail -n 1); }
+          merged="$(run "$fix" tests/test_remote_lane.py -k landing_pushes_to_repo_url)"
+          echo "merged $M: $merged"
+          case "$merged" in *passed*) ;; *) exit 1;; esac
+          case "$merged" in *failed*|*error*) exit 1;; esac
+          parent="$(run "$base" tests/test_remote_lane.py -k landing_pushes_to_repo_url)"
+          echo "merge parent $P with the merged tests: $parent"
+          case "$parent" in *failed*) ;; *) exit 1;; esac
+        cwd: ${OMNI_HOME}/omniclaude-internal
+    binds_ac:
+      - AC5
+    ac_bindings:
+      - label: AC5
+        criterion_hash: ceda806f0f84697d0f783882155a1740b2e91b1f0d31a9bdb92c9e30364e28eb
+        proposed_by: lane=contracts-merged-5d21
+  - id: dod-omn20841-ac6-pr-body-lab-readback
+    description: 'AC6: the body of omniclaude-internal#509 carries Lab lines for host h201 showing a hook-refused
+      commit (shape commit-hook-unchanged), a refused push (shape push-non-fast-forward) and one normal
+      landing (landing_failure=null), and the body of omniclaude-internal#508 does not satisfy the same
+      check. The body names the runs by their proof labels and their outputs; it names a receipt directory
+      for one run only, and the accepting lane decides whether that meets ''and their receipts''.'
+    source: manual
+    execution_scope: local_done_gate
+    checks:
+      - check_type: command
+        check_value: |-
+          gh api repos/OmniNode-ai/omniclaude-internal/commits/17ea864ad1e395112680c8fe8c79cf6331a53af7 --jq .sha || exit 2
+          check() { printf '%s\n' "$1" | grep -c '^Lab: host=h201 ' | awk '$1 >= 3 { ok = 1 } END { exit !ok }' && printf '%s\n' "$1" | grep -q 'landing_failure shape=commit-hook-unchanged' && printf '%s\n' "$1" | grep -q 'landing_failure shape=push-non-fast-forward' && printf '%s\n' "$1" | grep -q 'landing_failure=null'; }
+          body="$(gh api repos/OmniNode-ai/omniclaude-internal/pulls/509 --jq .body)" || exit 2
+          other="$(gh api repos/OmniNode-ai/omniclaude-internal/pulls/508 --jq .body)" || exit 2
+          echo "h201 Lab lines in pull request 509: $(printf '%s\n' "$body" | grep -c '^Lab: host=h201 ')"
+          echo "h201 Lab lines in pull request 508: $(printf '%s\n' "$other" | grep -c '^Lab: host=h201 ')"
+          check "$body" || exit 1
+          if check "$other"; then echo "control failed: a body without the readback satisfied the check"; exit 1; fi
+          echo "pull request 509 body names host h201, a hook-refused commit (commit-hook-unchanged), a refused push (push-non-fast-forward) and a normal landing (landing_failure=null); the control body does not"
+        cwd: ${OMNI_HOME}/omniclaude-internal
+    binds_ac:
+      - AC6
+    ac_bindings:
+      - label: AC6
+        criterion_hash: 47be96076186b6b195888dda7418513aa921f3e07745aa6a134efaee1bcc4192
+        proposed_by: lane=contracts-merged-5d21
+  - id: dod-omn20841-hosted-test-at-merge
+    description: 'Hosted presence check: the test that pins the repository-URL landing push is defined
+      in tests/test_remote_lane.py at merge commit 17ea864ad1e3 of omniclaude-internal#509 and is absent
+      at its parent b8bd50ca93ac. The behaviour proofs are the local_done_gate items.'
+    source: manual
+    execution_scope: hosted_and_local
+    checks:
+      - check_type: command
+        check_value: 'gh api -H ''Accept: application/vnd.github.raw'' "repos/OmniNode-ai/omniclaude-internal/contents/tests/test_remote_lane.py?ref=17ea864ad1e395112680c8fe8c79cf6331a53af7"
+          | grep -c ''def test_landing_pushes_to_repo_url_when_the_host_clone_has_no_origin'''

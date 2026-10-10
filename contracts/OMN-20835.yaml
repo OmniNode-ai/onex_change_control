@@ -1,0 +1,237 @@
+---
+schema_version: 1.0.0
+ticket_id: OMN-20835
+title: Plugin parity admission ignores Claude Code's top-level .in_use runtime marker
+summary: Hand-authored evidence for OmniNode-ai/omniclaude-internal#506 (squash 656dc8d6e41b). AC1 to
+  AC3 are bound to test selections of tests/test_lab_host_parity.py run at the merge commit and, as a
+  must-fail control, at the merge parent with the merged tests overlaid. AC4 is a regression guard over
+  two suites. AC5 is bound to a readback of the h101 plugin parity record.
+is_seam_ticket: false
+interface_change: false
+interfaces_touched: []
+requirements:
+  - id: req-transcribed-acceptance-criteria
+    statement: The acceptance criteria this ticket's author declared, transcribed verbatim from the ticket
+      body. The ticket body is the source and this block is the copy; each criterion's id is the label
+      the sibling binds_ac entry claims.
+    acceptance:
+      - id: AC1
+        statement: 'AC1: an installed plugin tree equal to its shipped revision except for a top-level
+          .in_use/<pid> directory probes as state ok with no ParityNeeds items -- falsifier: uv run pytest
+          tests/test_lab_host_parity.py -k claude_code_in_use_marker_passes'
+      - id: AC2
+        statement: 'AC2: a real added, changed or removed file next to the .in_use marker still probes
+          as modified and names that file as the first difference -- falsifier: uv run pytest tests/test_lab_host_parity.py
+          -k in_use_marker_does_not_mask_a_real_difference'
+      - id: AC3
+        statement: 'AC3: a .in_use entry at any depth below the top of the install path, and a top-level
+          .in_use that is a file or a symlink, still counts as a difference -- falsifier: uv run pytest
+          tests/test_lab_host_parity.py -k in_use'
+      - id: AC4
+        statement: 'AC4: the existing parity suites still pass with the change -- falsifier: uv run pytest
+          tests/test_lab_host_parity.py tests/test_validate_plugin.py'
+      - id: AC5
+        statement: 'AC5: with the fix installed on the Mac, the h101 placement read no longer reports
+          a PARITY-FAILED refusal whose first difference is .in_use/<pid> -- falsifier: the remote-lane
+          host table read for h101 after install, shows no first=.in_use/ refusal while a Claude session
+          is open on h101'
+evidence_requirements:
+  - kind: tests
+    description: The .in_use marker tests of tests/test_lab_host_parity.py pass at the merge commit.
+    command: uv run --no-project --python 3.13 --with-requirements tests/skill_suites_requirements.txt
+      python -m pytest -q tests/test_lab_host_parity.py -k in_use
+emergency_bypass:
+  enabled: false
+  justification: ''
+  follow_up_ticket_id: ''
+dod_evidence:
+  - id: dod-omn20835-ac1-marker-passes
+    description: 'AC1: tests/test_lab_host_parity.py -k claude_code_in_use_marker_passes passes at the
+      merge commit (1 test) and fails on the merge parent with the merged tests overlaid.'
+    source: manual
+    execution_scope: local_done_gate
+    checks:
+      - check_type: test_passes
+        check_value: |-
+          M=656dc8d6e41b6cf94839221c1f34f8ea80874bf6
+          P=4437da685e3fffabd77613aa9dc3d28d54ccc8ee
+          gh api repos/OmniNode-ai/omniclaude-internal/commits/$M --jq .sha || exit 2
+          git cat-file -e $M^{commit} || exit 2
+          git cat-file -e $P^{commit} || exit 2
+          fix="$(mktemp -d)" || exit 2
+          base="$(mktemp -d)" || exit 2
+          trap 'rm -rf "$fix" "$base"' EXIT
+          git archive $M | tar -x -C "$fix" || exit 2
+          git archive $P | tar -x -C "$base" || exit 2
+          git show $M:tests/test_lab_host_parity.py > "$base/tests/test_lab_host_parity.py" || exit 2
+          run() { d="$1"; shift; (cd "$d" && env -u PYTHONPATH uv run --no-project --python 3.13 --with-requirements tests/skill_suites_requirements.txt python -m pytest -q -p no:cacheprovider -p no:randomly "$@" 2>&1 | tail -n 1); }
+          merged="$(run "$fix" tests/test_lab_host_parity.py -k claude_code_in_use_marker_passes)"
+          echo "merged $M: $merged"
+          case "$merged" in *passed*) ;; *) exit 1;; esac
+          case "$merged" in *failed*|*error*) exit 1;; esac
+          parent="$(run "$base" tests/test_lab_host_parity.py -k claude_code_in_use_marker_passes)"
+          echo "merge parent $P with the merged tests: $parent"
+          case "$parent" in *failed*) ;; *) exit 1;; esac
+        cwd: ${OMNI_HOME}/omniclaude-internal
+    binds_ac:
+      - AC1
+    ac_bindings:
+      - label: AC1
+        criterion_hash: 8629a658c5e802294ea7626e45cb83fec435d4a9cbff237424068d405ce92e04
+        proposed_by: lane=contracts-merged-5d21
+  - id: dod-omn20835-ac2-marker-masks-no-real-diff
+    description: 'AC2: tests/test_lab_host_parity.py -k in_use_marker_does_not_mask_a_real_difference
+      passes at the merge commit (1 test) and fails on the merge parent with the merged tests overlaid.'
+    source: manual
+    execution_scope: local_done_gate
+    checks:
+      - check_type: test_passes
+        check_value: |-
+          M=656dc8d6e41b6cf94839221c1f34f8ea80874bf6
+          P=4437da685e3fffabd77613aa9dc3d28d54ccc8ee
+          gh api repos/OmniNode-ai/omniclaude-internal/commits/$M --jq .sha || exit 2
+          git cat-file -e $M^{commit} || exit 2
+          git cat-file -e $P^{commit} || exit 2
+          fix="$(mktemp -d)" || exit 2
+          base="$(mktemp -d)" || exit 2
+          trap 'rm -rf "$fix" "$base"' EXIT
+          git archive $M | tar -x -C "$fix" || exit 2
+          git archive $P | tar -x -C "$base" || exit 2
+          git show $M:tests/test_lab_host_parity.py > "$base/tests/test_lab_host_parity.py" || exit 2
+          run() { d="$1"; shift; (cd "$d" && env -u PYTHONPATH uv run --no-project --python 3.13 --with-requirements tests/skill_suites_requirements.txt python -m pytest -q -p no:cacheprovider -p no:randomly "$@" 2>&1 | tail -n 1); }
+          merged="$(run "$fix" tests/test_lab_host_parity.py -k in_use_marker_does_not_mask_a_real_difference)"
+          echo "merged $M: $merged"
+          case "$merged" in *passed*) ;; *) exit 1;; esac
+          case "$merged" in *failed*|*error*) exit 1;; esac
+          parent="$(run "$base" tests/test_lab_host_parity.py -k in_use_marker_does_not_mask_a_real_difference)"
+          echo "merge parent $P with the merged tests: $parent"
+          case "$parent" in *failed*) ;; *) exit 1;; esac
+        cwd: ${OMNI_HOME}/omniclaude-internal
+    binds_ac:
+      - AC2
+    ac_bindings:
+      - label: AC2
+        criterion_hash: 50050ed01861a5a0f9db91ef9fde4b4f23f4d337a943cc989ac1077386da57f5
+        proposed_by: lane=contracts-merged-5d21
+  - id: dod-omn20835-ac3-in-use-below-top-counts
+    description: 'AC3: tests/test_lab_host_parity.py -k in_use passes at the merge commit (6 tests: the
+      marker passes, a real difference is not masked, a .in_use below the top level counts in three places,
+      a top-level .in_use file or link counts) and fails on the merge parent with the merged tests overlaid
+      (2 of the 6 fail there; the other 4 pin behaviour the old code already had).'
+    source: manual
+    execution_scope: local_done_gate
+    checks:
+      - check_type: test_passes
+        check_value: |-
+          M=656dc8d6e41b6cf94839221c1f34f8ea80874bf6
+          P=4437da685e3fffabd77613aa9dc3d28d54ccc8ee
+          gh api repos/OmniNode-ai/omniclaude-internal/commits/$M --jq .sha || exit 2
+          git cat-file -e $M^{commit} || exit 2
+          git cat-file -e $P^{commit} || exit 2
+          fix="$(mktemp -d)" || exit 2
+          base="$(mktemp -d)" || exit 2
+          trap 'rm -rf "$fix" "$base"' EXIT
+          git archive $M | tar -x -C "$fix" || exit 2
+          git archive $P | tar -x -C "$base" || exit 2
+          git show $M:tests/test_lab_host_parity.py > "$base/tests/test_lab_host_parity.py" || exit 2
+          run() { d="$1"; shift; (cd "$d" && env -u PYTHONPATH uv run --no-project --python 3.13 --with-requirements tests/skill_suites_requirements.txt python -m pytest -q -p no:cacheprovider -p no:randomly "$@" 2>&1 | tail -n 1); }
+          merged="$(run "$fix" tests/test_lab_host_parity.py -k in_use)"
+          echo "merged $M: $merged"
+          case "$merged" in *passed*) ;; *) exit 1;; esac
+          case "$merged" in *failed*|*error*) exit 1;; esac
+          parent="$(run "$base" tests/test_lab_host_parity.py -k in_use)"
+          echo "merge parent $P with the merged tests: $parent"
+          case "$parent" in *failed*) ;; *) exit 1;; esac
+        cwd: ${OMNI_HOME}/omniclaude-internal
+    binds_ac:
+      - AC3
+    ac_bindings:
+      - label: AC3
+        criterion_hash: 3dde8f6cfb5a9556f3087cbddc157d0d238bd543563504dcc827755f544e6960
+        proposed_by: lane=contracts-merged-5d21
+  - id: dod-omn20835-ac4-existing-parity-suites
+    description: 'AC4: tests/test_lab_host_parity.py and tests/test_validate_plugin.py both pass at merge
+      commit 656dc8d6e41b (111 tests). This is a regression guard: it has no must-fail control because
+      both suites also pass before the change.'
+    source: manual
+    execution_scope: local_done_gate
+    checks:
+      - check_type: test_passes
+        check_value: |-
+          M=656dc8d6e41b6cf94839221c1f34f8ea80874bf6
+          P=4437da685e3fffabd77613aa9dc3d28d54ccc8ee
+          gh api repos/OmniNode-ai/omniclaude-internal/commits/$M --jq .sha || exit 2
+          git cat-file -e $M^{commit} || exit 2
+          git cat-file -e $P^{commit} || exit 2
+          fix="$(mktemp -d)" || exit 2
+          base="$(mktemp -d)" || exit 2
+          trap 'rm -rf "$fix" "$base"' EXIT
+          git archive $M | tar -x -C "$fix" || exit 2
+          git archive $P | tar -x -C "$base" || exit 2
+          run() { d="$1"; shift; (cd "$d" && env -u PYTHONPATH uv run --no-project --python 3.13 --with-requirements tests/skill_suites_requirements.txt python -m pytest -q -p no:cacheprovider -p no:randomly "$@" 2>&1 | tail -n 1); }
+          merged="$(run "$fix" tests/test_lab_host_parity.py tests/test_validate_plugin.py)"
+          echo "merged $M: $merged"
+          case "$merged" in *passed*) ;; *) exit 1;; esac
+          case "$merged" in *failed*|*error*) exit 1;; esac
+          echo "no must-fail control: a regression guard, the suites pass before the change too"
+        cwd: ${OMNI_HOME}/omniclaude-internal
+    binds_ac:
+      - AC4
+    ac_bindings:
+      - label: AC4
+        criterion_hash: e6f2167d5d49d7bc55569f726d2b27efbd37e1c202694b6b32b688121af01729
+        proposed_by: lane=contracts-merged-5d21
+  - id: dod-omn20835-ac5-h101-parity-readback
+    description: 'AC5: a readback of the plugin parity record of host h101 through the shared lab host
+      table. It passes when h101 is read without error, every installed plugin probes ok, and no difference
+      names a first path under .in_use/. The output also lists the top-level .in_use entries under h101''s
+      installed plugins, which shows whether a Claude session is open there; the command does not require
+      one. The receipt was captured through a nested ssh from h202, because the capturing host holds no
+      key for h101; the contract command reads h101 directly from the launching host.'
+    source: manual
+    execution_scope: local_done_gate
+    checks:
+      - check_type: command
+        check_value: |-
+          M=656dc8d6e41b6cf94839221c1f34f8ea80874bf6
+          gh api repos/OmniNode-ai/omniclaude-internal/commits/$M --jq .sha || exit 2
+          git merge-base --is-ancestor $M HEAD || exit 2
+          python3 - <<'PY'
+          import subprocess, sys
+          sys.path.insert(0, "plugins/omni/skills/merge-drain/scripts")
+          import landing_placement as lp
+          pool = lp.load_pool()
+          host = next(h for h in pool if h.name == "h101")
+          MARK = "for d in ~/.claude/plugins/cache/omninode-internal/*/*/.in_use; do ls -A $d; done 2>/dev/null"
+          SSH = ["ssh", "-o", "BatchMode=yes", "-o", "ConnectTimeout=10"]
+          r = lp.read_pool([host])[0]
+          marks = subprocess.run(SSH + [host.target, MARK], capture_output=True, text=True, timeout=60).stdout
+          print("h101 read error:", r.error if r else "unreadable")
+          if r is None or r.error is not None or r.parity is None:
+              sys.exit(2)
+          bad = False
+          for p in r.parity.plugins:
+              print("plugin", p.name, p.state, p.detail)
+              if p.state != "ok" or "first=.in_use/" in p.detail:
+                  bad = True
+          print("parity refusal:", r.parity_refusal)
+          print("top-level .in_use entries under the installed omninode-internal plugins:", marks.split() or "none")
+          sys.exit(1 if bad or "first=.in_use/" in (r.parity_refusal or "") else 0)
+          PY
+        cwd: ${OMNI_HOME}/omniclaude-internal
+    binds_ac:
+      - AC5
+    ac_bindings:
+      - label: AC5
+        criterion_hash: 27a274a3da2ae2424689a688b1e4437fc4106d23b816cf3108220d9f9367a26a
+        proposed_by: lane=contracts-merged-5d21
+  - id: dod-omn20835-hosted-test-at-merge
+    description: 'Hosted presence check: the test that pins the .in_use fix is defined in tests/test_lab_host_parity.py
+      at merge commit 656dc8d6e41b of omniclaude-internal#506 and is absent at its parent 4437da685e3f.
+      The behaviour proofs are the local_done_gate items.'
+    source: manual
+    execution_scope: hosted_and_local
+    checks:
+      - check_type: command
+        check_value: 'gh api -H ''Accept: application/vnd.github.raw'' "repos/OmniNode-ai/omniclaude-internal/contents/tests/test_lab_host_parity.py?ref=656dc8d6e41b6cf94839221c1f34f8ea80874bf6"
+          | grep -c ''def test_parity_plugin_tree_hash_claude_code_in_use_marker_passes'''
