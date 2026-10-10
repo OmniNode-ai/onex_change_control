@@ -88,7 +88,8 @@ jobs:
   # would change to reveal it.
   route:
     name: Runner Route (OMN-18031)
-    uses: OmniNode-ai/omniclaude/.github/workflows/route-runner-reusable.yml@966d61ce9f0c2eb6e18b317c2453bdfbe9eeb7d0
+    # OMN-20704: route-runner-reusable.yml now lives in omnimarket.
+    uses: OmniNode-ai/omnimarket/.github/workflows/route-runner-reusable.yml@01a0d1b3e7d7ba1a09012f9af245ba29afa000b5
     with:
       workflow_path: .github/workflows/ci.yml
     secrets:
@@ -292,7 +293,7 @@ jobs:
           ONEX_SEAM_CONTRACT_BASE: origin/${{ github.base_ref || (github.ref_name == 'main' && 'main' || 'dev') }}
           ONEX_SEAM_CONTRACT_HEAD_REF: ${{ github.sha }}
           ONEX_SEAM_CONTRACT_TICKET_ID: ${{ github.head_ref || github.ref_name }}
-        run: SKIP=check-receipt-honesty,check-receipt-hardening,reject-required-check-skip-vector uv run pre-commit run --all-files
+        run: SKIP=check-receipt-honesty,check-receipt-hardening,reject-required-check-skip-vector,enforcement-surface-placement uv run pre-commit run --all-files
       - name: Run dev PR changed-file pre-commit
         if: needs.zone-filter.outputs.docs_only != 'true' && github.event_name == 'pull_request' && github.base_ref == 'dev'
         env:
@@ -324,7 +325,7 @@ jobs:
             echo "Dev PR fast-lane: no changed files for pre-commit."
             exit 0
           fi
-          SKIP=check-receipt-honesty,check-receipt-hardening,reject-required-check-skip-vector uv run pre-commit run --files "${changed_files[@]}"
+          SKIP=check-receipt-honesty,check-receipt-hardening,reject-required-check-skip-vector,enforcement-surface-placement uv run pre-commit run --files "${changed_files[@]}"
       - name: Run evidence-only pre-commit
         if: needs.zone-filter.outputs.docs_only == 'true'
         env:
@@ -348,7 +349,7 @@ jobs:
             echo "Evidence-only fast-lane: no changed contract or receipt YAML files."
             exit 0
           fi
-          SKIP=check-receipt-honesty,check-receipt-hardening,reject-required-check-skip-vector uv run pre-commit run --files "${changed_files[@]}"
+          SKIP=check-receipt-honesty,check-receipt-hardening,reject-required-check-skip-vector,enforcement-surface-placement uv run pre-commit run --files "${changed_files[@]}"
       # OMN-16373: CROSS_REPO_PAT retirement. Mint a short-lived
       # onexbot-occ-writer App installation token (org secrets
       # ONEXBOT_OCC_APP_ID / ONEXBOT_OCC_PRIVATE_KEY) for the sibling-repo
@@ -2733,7 +2734,16 @@ jobs:
           # mystery. secrets.CROSS_REPO_PAT != '' is '' (falsy) when the
           # secret is unset OR withheld by GitHub for a fork-origin PR.
           TOKEN_SOURCE: ${{ secrets.CROSS_REPO_PAT != '' && 'cross_repo_pat' || 'fallback' }}
-        run: uv run check-platform-leads-review-tripwire --credential-origin "$TOKEN_SOURCE"
+        # OMN-18945: the governed-branch placement proof runs in this step so it
+        # reuses this step's token; the Pre-commit job's github.token cannot read
+        # live branch protection, so the enforcement-surface-placement hook is
+        # skipped there and runs here. A separate step would add a third
+        # CROSS_REPO_PAT read, which the OMN-16373 exact-count ratchet refuses.
+        run: |
+          uv run check-platform-leads-review-tripwire --credential-origin "$TOKEN_SOURCE"
+          uv run check-platform-leads-review-tripwire --placement-only
+      - name: Test governed-branch enforcement placement (OMN-18945)
+        run: uv run pytest tests/unit/test_enforcement_surface_placement.py -q --no-cov -p no:cacheprovider
 
   check-bot-authored-authz-guard:
     name: check-bot-authored-authz-guard
