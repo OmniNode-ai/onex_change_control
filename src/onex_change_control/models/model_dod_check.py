@@ -40,19 +40,31 @@ _MAX_LIST_ITEMS = 1000
 # The closer (omnibase_infra ``handler_evidence_autoclose_sweep``) canonicalises
 # BOTH sides of its join -- the ticket's criterion text and this field's entries
 # -- through a single ``_canonical_ac_label`` built on
-# ``^[\s>*_+-]*(?:\*\*)?\s*(AC|DOD)[-_ .]?(\d+)\b``. That regex tolerates
+# ``^[\s>*_+-]*(?:\*\*)?\s*(AC|DOD)[-_ .]?(\d+)([a-zA-Z]?)\b``. That regex tolerates
 # leading bullet/emphasis debris and trailing prose because the criterion side
 # is a free-text markdown bullet.
 #
 # A ``binds_ac`` entry is not a bullet: it is an author writing a label into a
 # machine-read field, so this side is the STRICT half of the same rule --
-# ``AC1``, ``ac-1``, ``DoD 2`` and nothing else. The asymmetry is deliberate and
-# runs in the safe direction: everything this accepts, the closer's regex also
+# ``AC1``, ``ac-1``, ``DoD 2``, ``AC2b`` and nothing else. The asymmetry runs in
+# the safe direction: everything this accepts, the closer's regex also
 # canonicalises to the same value, so a contract that passes here cannot fail to
 # join. What it refuses is an entry like ``"AC1 -- the gate is wired"``, which
 # the closer WOULD read as ``AC1``; refusing it at authoring time turns a
 # silently-truncated binding into a named error instead.
-_AC_LABEL_ENTRY_RE = re.compile(r"^(AC|DOD)[-_ .]?(\d+)$", re.IGNORECASE)
+# OMN-18356: match the binding record and reader's single-letter suffix grammar.
+# The prefix is case-insensitive; suffix case identifies distinct criteria.
+_AC_LABEL_ENTRY_RE = re.compile(r"^(AC|DOD)[-_ .]?(\d+)([a-zA-Z]?)$", re.IGNORECASE)
+
+
+def _canonical_ac_entry(label: str) -> str:
+    """Compare validated labels using the reader's prefix, ordinal and suffix."""
+    match = _AC_LABEL_ENTRY_RE.match(label)
+    if match is None:
+        msg = f"malformed acceptance-criterion label: {label!r}"
+        raise ValueError(msg)
+    prefix, ordinal, suffix = match.groups()
+    return f"{prefix.upper()}{int(ordinal)}{suffix}"
 
 
 class ModelDodCheck(BaseModel):
@@ -278,7 +290,7 @@ class ModelDodEvidenceItem(BaseModel):
             rendered = ", ".join(repr(entry) for entry in malformed)
             msg = (
                 f"binds_ac entries must be acceptance-criterion labels "
-                f"(`AC1`, `ac-1`, `DoD2`); rejected: {rendered}"
+                f"(`AC1`, `ac-1`, `DoD2`, `AC2b`); rejected: {rendered}"
             )
             raise ValueError(msg)
         return value
@@ -299,8 +311,7 @@ class ModelDodEvidenceItem(BaseModel):
         seen: set[str] = set()
         duplicated: list[str] = []
         for binding in value:
-            canonical = binding.label.upper().replace("-", "").replace("_", "")
-            canonical = canonical.replace(" ", "").replace(".", "")
+            canonical = _canonical_ac_entry(binding.label)
             if canonical in seen:
                 duplicated.append(binding.label)
             seen.add(canonical)
@@ -321,17 +332,11 @@ class ModelDodEvidenceItem(BaseModel):
         already reading the claim.
         """
 
-        def _canonical(label: str) -> str:
-            folded = label.upper()
-            for junk in ("-", "_", " ", "."):
-                folded = folded.replace(junk, "")
-            return folded
-
-        claimed = {_canonical(entry) for entry in self.binds_ac}
+        claimed = {_canonical_ac_entry(entry) for entry in self.binds_ac}
         unclaimed = [
             binding.label
             for binding in self.ac_bindings
-            if _canonical(binding.label) not in claimed
+            if _canonical_ac_entry(binding.label) not in claimed
         ]
         if unclaimed:
             rendered = ", ".join(repr(label) for label in unclaimed)

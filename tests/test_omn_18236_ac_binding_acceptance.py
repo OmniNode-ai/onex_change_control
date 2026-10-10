@@ -342,6 +342,45 @@ class TestBindingModel:
 
         assert item.ac_bindings == ()
 
+    def test_suffixed_bindings_keep_suffix_case_distinct(self) -> None:
+        item = ModelDodEvidenceItem.model_validate(
+            {
+                "id": "dod-split",
+                "description": "Case-distinct split criteria remain distinct.",
+                "binds_ac": ["AC2b", "AC2B"],
+                "ac_bindings": [
+                    {"label": "ac-2b", "criterion_hash": "a" * 64},
+                    {"label": "AC2B", "criterion_hash": "b" * 64},
+                ],
+            }
+        )
+        assert [binding.label for binding in item.ac_bindings] == ["ac-2b", "AC2B"]
+
+    def test_suffixed_binding_cannot_claim_a_different_suffix_case(self) -> None:
+        with pytest.raises(ValidationError, match="bound but not claimed"):
+            ModelDodEvidenceItem.model_validate(
+                {
+                    "id": "dod-split",
+                    "description": "AC2b does not claim AC2B.",
+                    "binds_ac": ["AC2b"],
+                    "ac_bindings": [{"label": "AC2B", "criterion_hash": "a" * 64}],
+                }
+            )
+
+    def test_duplicate_suffixed_binding_spellings_are_refused(self) -> None:
+        with pytest.raises(ValidationError, match="more than one record"):
+            ModelDodEvidenceItem.model_validate(
+                {
+                    "id": "dod-split",
+                    "description": "Spelling variants still name one criterion.",
+                    "binds_ac": ["AC2b"],
+                    "ac_bindings": [
+                        {"label": "AC2b", "criterion_hash": "a" * 64},
+                        {"label": "ac-02b", "criterion_hash": "b" * 64},
+                    ],
+                }
+            )
+
 
 # ------------------------------------------- OMN-18356 — the suffixed grammar --
 
