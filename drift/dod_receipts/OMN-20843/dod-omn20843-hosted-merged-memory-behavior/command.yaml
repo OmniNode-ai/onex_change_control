@@ -1,0 +1,68 @@
+---
+schema_version: 1.0.0
+ticket_id: OMN-20843
+evidence_item_id: dod-omn20843-hosted-merged-memory-behavior
+check_type: command
+check_value: |-
+  source_file="$(mktemp)" || exit 2;
+  set -euo pipefail;
+  trap 'rm -f "$source_file"' EXIT;
+  gh api 'repos/OmniNode-ai/omniclaude-internal/contents/plugins/omni/skills/merge-drain/scripts/landing_placement.py?ref=6216e7022ca16d59a0cf8c28ee9c19a37e1fa9a6' --jq .content | base64 -d > "$source_file";
+  python3 - "$source_file" <<'PROBE'
+  import runpy
+  import sys
+  from dataclasses import replace
+  m = runpy.run_path(sys.argv[1])
+  host = m['Host']('probe', 'probe', frozenset(), None, True)
+  reading = m['Reading'](host, mem_avail_gb=44, swap_used_frac=0.96, mem_psi_avg60=0.09, swap_in_kb_s=0, swap_out_kb_s=0)
+  assert reading._memory_refusals() == [], 'stale swap occupancy refused'
+  psi = replace(reading, swap_used_frac=0, mem_psi_avg60=m['ADMIT_MAX_MEM_PSI'] + 1)._memory_refusals()
+  assert len(psi) == 1 and 'memory PSI' in psi[0], psi
+  traffic = replace(reading, swap_used_frac=0, swap_in_kb_s=m['ADMIT_MAX_SWAP_KB_S'] + 1)._memory_refusals()
+  assert len(traffic) == 1 and 'swap traffic' in traffic[0] and 'KB/s' in traffic[0], traffic
+  assert m['_swap_io']('SWAPIO 4 1 2 50000 50000') == (4.0, 8.0)
+  assert m['_swap_io']('SWAPIO 4 50000 50000 1 2') == (4.0, 8.0)
+  assert m['_swap_io']('SWAPIO 4 30000 30000 40000 40000') == (120000.0, 120000.0)
+  parsed = m['parse_probe'](host, 'PROBE 8 0.1 46137344\nSWAPIO 4 1 2 50000 50000', 0)
+  assert (parsed.swap_in_kb_s, parsed.swap_out_kb_s) == (4.0, 8.0)
+  assert m['_PROBE_BASE'].count('sio=') == 2 and 'echo \"SWAPIO $sio\"' in m['_PROBE_BASE']
+  print('stale swap admitted; PSI and sustained swap traffic refused; both sample orders, parsing and probe source checked')
+  PROBE
+status: PASS
+commit_sha: 6216e7022ca16d59a0cf8c28ee9c19a37e1fa9a6
+runner: landing-L5530@h101
+probe_command: |-
+  source_file="$(mktemp)" || exit 2;
+  set -euo pipefail;
+  trap 'rm -f "$source_file"' EXIT;
+  gh api 'repos/OmniNode-ai/omniclaude-internal/contents/plugins/omni/skills/merge-drain/scripts/landing_placement.py?ref=6216e7022ca16d59a0cf8c28ee9c19a37e1fa9a6' --jq .content | base64 -d > "$source_file";
+  python3 - "$source_file" <<'PROBE'
+  import runpy
+  import sys
+  from dataclasses import replace
+  m = runpy.run_path(sys.argv[1])
+  host = m['Host']('probe', 'probe', frozenset(), None, True)
+  reading = m['Reading'](host, mem_avail_gb=44, swap_used_frac=0.96, mem_psi_avg60=0.09, swap_in_kb_s=0, swap_out_kb_s=0)
+  assert reading._memory_refusals() == [], 'stale swap occupancy refused'
+  psi = replace(reading, swap_used_frac=0, mem_psi_avg60=m['ADMIT_MAX_MEM_PSI'] + 1)._memory_refusals()
+  assert len(psi) == 1 and 'memory PSI' in psi[0], psi
+  traffic = replace(reading, swap_used_frac=0, swap_in_kb_s=m['ADMIT_MAX_SWAP_KB_S'] + 1)._memory_refusals()
+  assert len(traffic) == 1 and 'swap traffic' in traffic[0] and 'KB/s' in traffic[0], traffic
+  assert m['_swap_io']('SWAPIO 4 1 2 50000 50000') == (4.0, 8.0)
+  assert m['_swap_io']('SWAPIO 4 50000 50000 1 2') == (4.0, 8.0)
+  assert m['_swap_io']('SWAPIO 4 30000 30000 40000 40000') == (120000.0, 120000.0)
+  parsed = m['parse_probe'](host, 'PROBE 8 0.1 46137344\nSWAPIO 4 1 2 50000 50000', 0)
+  assert (parsed.swap_in_kb_s, parsed.swap_out_kb_s) == (4.0, 8.0)
+  assert m['_PROBE_BASE'].count('sio=') == 2 and 'echo \"SWAPIO $sio\"' in m['_PROBE_BASE']
+  print('stale swap admitted; PSI and sustained swap traffic refused; both sample orders, parsing and probe source checked')
+  PROBE
+pr_number: 13496
+contract_entry_sha256: sha256:f39f8a8574b6d1d914bef21271b0ca63c584d40ec41d967918a1ffc7cd8d8f4d
+probe_stdout: '{"evidence_ref":"6216e7022ca16d59a0cf8c28ee9c19a37e1fa9a6","green_exit":0,"red_exit":1,"red_ref":"b36ed0afd3c03c5bb87b6d8db812f97ae278323b"}'
+exit_code: 0
+run_timestamp: '2026-10-10T04:10:29Z'
+duration_ms: 883
+verifier: occ-probe-capture-v1
+artifact_sha256:
+  - sha256:77f61adf89207ff362649f10710178ee7a8489fdde911e607fbc2911661a4ba3
+  - sha256:f4555f4604982a7d4b5e05fe264b23b8a5ecb7bb6bf397c8749f0aa33145a4de
