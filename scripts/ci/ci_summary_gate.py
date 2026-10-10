@@ -174,6 +174,8 @@ STRICT_GATE_JOBS: tuple[str, ...] = (
     # allowlist or baseline entry, which is one of the shapes it refuses, so
     # it is STRICT and never SKIPPABLE.
     "Canonical File Shape (OMN-20304)",
+    # OMN-18783: a missing predicate must not silently enable a fast lane.
+    "Evidence-Only Diff Predicate",
 )
 
 # ---------------------------------------------------------------------------
@@ -247,6 +249,9 @@ SKIPPABLE_GATE_JOBS: tuple[str, ...] = (
     "Precommit Parity Gate",
     "Evidence Admissibility Predicate Parity",
     "check-bot-authored-authz-guard",
+    # OMN-18783: retain the evidence-only skip, propagate validator failures.
+    "URL Authority Gate (OMN-13563)",
+    "No New os.environ Reads (OMN-13563)",
 )
 
 # Every job the completeness anchor must observe present+good for SUCCESS.
@@ -273,17 +278,6 @@ SOFT_ALLOWLIST: frozenset[str] = frozenset(
         # this job exists to satisfy -- if the mint fails, eligibility stays
         # red and blocks on its own, with the mint's own red job naming why.
         "Mint the owed OCC self-bind",
-        # ci.yml:384-411 -- `continue-on-error: true` on the one substantive
-        # step, with an inline comment: "non-blocking report; pre-commit hook
-        # is the blocking surface." The job can never conclude anything but
-        # `success` once it runs, so gating on it would add nothing; the
-        # pre-commit `url-authority` hook is the real enforcement layer.
-        "URL Authority Gate (OMN-13563)",
-        # ci.yml:413-438 -- same continue-on-error shape and the same inline
-        # rationale ("non-blocking report; pre-commit hook is the blocking
-        # surface"), enforced instead by the `no-new-os-environ` pre-commit
-        # hook.
-        "No New os.environ Reads (OMN-13563)",
         # governance-file-advisory-gate.yml (OMN-16117, second vector) --
         # DELIBERATELY advisory, by explicit design documented at the top of
         # that workflow file: it exists to break the "all checks green"
@@ -299,32 +293,6 @@ SOFT_ALLOWLIST: frozenset[str] = frozenset(
         # is touched) must stay visible on the PR's check list -- it must
         # NOT gate CI Summary, which is exactly what SOFT_ALLOWLIST gives it.
         "Governance File Advisory Gate",
-        # OMN-18327, in the workflow file named for this job -- it is
-        # DELIBERATELY advisory while the writer-App dispatch path proves
-        # itself. It
-        # reports a PR authored by a human account whose diff touches src/,
-        # scripts/ or .github/, because change-control PRs on those surfaces
-        # are meant to be opened AS the onexbot-occ-writer App: every lane
-        # here commits under one shared account, so a human-authored PR on an
-        # owned path is un-approvable by construction, which is what froze the
-        # fleet behind OCC#9362 on 2026-09-13.
-        #
-        # It is here rather than in STRICT_GATE_JOBS for a reason that is a
-        # precondition, not a preference: no PR has yet merged through
-        # .github/workflows/open-pr-as-writer-app.yml, so the sanctioned route
-        # is unproven end to end. A REQUIRED check that refuses the only route
-        # people currently have would wedge this repo exactly the way the
-        # incident it closes did -- and onex_change_control@main carries
-        # enforce_admins:true, so a required failing check blocks
-        # administrators too. Move this string to STRICT_GATE_JOBS once one
-        # App-authored PR has merged through that path, and not before.
-        "check-human-authored-privileged-pr",
-        # public-repo-hygiene.yml (OMN-18016) -- report-mode reusable hygiene
-        # caller. The workflow comments state that the validator records every
-        # finding and exits 0 while pre-existing public-repo residue is cleaned
-        # up. It is an advisory visibility surface for this PR, not a CI Summary
-        # blocker; enforcement happens when the gate flips out of report mode.
-        "public-repo-hygiene",
         # OMN-18426 -- advisory reusable-workflow caller.  The workflow
         # deliberately adds visibility without becoming a required branch
         # protection context, so it must remain outside the gate tiers while
@@ -353,21 +321,6 @@ CLASSIFICATION_ONLY: dict[str, str] = {
         "the SKIPPABLE tier tolerates unconditionally -- a SUCCESS verdict "
         "with zero tests and zero type-checks having run. The sweep catching "
         "the zone-filter failure itself closes that fail-open."
-    ),
-    "Evidence-Only Diff Predicate": (
-        "OMN-16285. ci.yml's `evidence-only-predicate` job -- not a "
-        "validator, so not a STRICT/SKIPPABLE gate. NOT soft-allowlisted, by "
-        "the identical zone-filter mechanism directly above: the 5 "
-        "OMN-16285 evidence-only-predicate-tier SKIPPABLE jobs (No "
-        "Divergent Automation PRs, no-noncanonical-lifecycle-classes, "
-        "Precommit Parity Gate, Evidence Admissibility Predicate Parity, "
-        "check-bot-authored-authz-guard) all `needs:` this job, and a FAILED "
-        "predicate cascades every one of them to `skipped` -- which the "
-        "SKIPPABLE tier tolerates unconditionally in isolation. The sweep "
-        "catching THIS job's own failure is what keeps that cascade "
-        "fail-closed (hard constraint: skipped-by-the-predicate is "
-        "acceptable ONLY when the predicate job itself succeeded and "
-        "asserted evidence-only; any other skip stays fail-closed)."
     ),
 }
 
@@ -450,6 +403,14 @@ EXPECTED_EXTERNAL_CONTEXTS: tuple[str, ...] = (
     # side by tests/test_check_release_staleness.py, whose
     # test_gate_context_is_asserted_by_ci_summary fails if this entry goes.
     "release-staleness",
+    # OMN-18783: the writer-App path has merged privileged PRs (OCC#13509).
+    # These standalone producers run on every dev PR; a missing check is
+    # pending and fails closed at the poll deadline, rather than disappearing.
+    "check-human-authored-privileged-pr",
+    "PEP 604 Type Union Check (UP007)",
+    "public-repo-hygiene / public-repo-hygiene",
+    "Self-companion guard (OMN-15334)",
+    "Self-companion guard / companion-effect",
 )
 
 # Contexts that were CONSIDERED for L4 and deliberately NOT enforced, with the
@@ -457,29 +418,6 @@ EXPECTED_EXTERNAL_CONTEXTS: tuple[str, ...] = (
 # does not have to rediscover why a plausible candidate is missing, per the
 # fleet-wide MEASURED_NOT_ENFORCED / EXEMPT convention.
 EXEMPT_CONTEXTS: dict[str, str] = {
-    "PEP 604 Type Union Check (UP007)": (
-        "omni-standards-compliance.yml's type-union-check job legitimately "
-        "skips on docs_only evidence-only PRs (OMN-14098 fast lane). This "
-        "layer's EXTERNAL_GOOD_CONCLUSIONS is success-only (skip fails "
-        "closed) with no skippable-external tier yet, so asserting this "
-        "context would fail-closed on every evidence-only PR and wedge the "
-        "fast lane. Deferred to a follow-up that either re-derives docs_only "
-        "for external contexts or adds a skippable-external tier."
-    ),
-    "Self-companion guard (OMN-15334)": (
-        "Duplicate producer: the identical job name is emitted by BOTH "
-        "self-companion-guard-autobind and self-companion-guard-companion-"
-        "effect (both now jobs within guards.yml, OMN-16260 -- previously "
-        "call-occ-autobind.yml and call-occ-companion-effect.yml, two "
-        "separate files; the job-id rename that resolved their guards.yml "
-        "collision left the check-run NAME, which is driven by an explicit "
-        "`name:` field on each job, unchanged) on the same PR (confirmed "
-        "live on OCC#6231 -- two same-named check-runs, both success). Same "
-        "ANY-vs-ALL branch-protection ambiguity class as OMN-15112's "
-        "occ-preflight finding; asserting one name would not distinguish "
-        "which producer is being observed. Excluded pending a producer-side "
-        "rename."
-    ),
     "occ-autobind / Publish occ-autobind command": (
         "guards.yml's self-companion-guard-autobind/occ-autobind pair "
         "(OMN-16260; formerly call-occ-autobind.yml) self-declares "
@@ -892,21 +830,6 @@ EXTERNAL_SWEEP_EXCLUSIONS: dict[str, SweepExclusion] = {
         added="2026-09-21",
         expires="2026-12-20",
         declared_by=".github/workflows/product-readiness-shadow.yml",
-    ),
-    "PEP 604 Type Union Check (UP007)": SweepExclusion(
-        reason=(
-            "The check was skipped on 16 of 16 heads, with no success "
-            "conclusion in the measured window. Its producer skips it when a "
-            "docs only change is detected through a job level condition on a "
-            "zone filter output. The measured pull requests are predominantly "
-            "docs shaped evidence companions. If this name is not registered, "
-            "the default deny layer can fail the merge gate from a content "
-            "dependent skip that is deliberately not yet asserted in the "
-            "external context tuple."
-        ),
-        ticket="OMN-18972",
-        added="2026-09-21",
-        expires="2026-12-20",
     ),
     "occ-autobind": SweepExclusion(
         reason=(

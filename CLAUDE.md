@@ -59,7 +59,9 @@ merge on the branch indefinitely.
 ## Privileged paths: open the PR as the writer App, never `gh pr create`
 
 A change here touching **`src/`, `scripts/` or `.github/`** is a privileged change, and a
-human-authored PR for one is refused by `check-human-authored-privileged-pr`. Every lane in
+human-authored PR for one is refused by `check-human-authored-privileged-pr`, enforced
+through `EXPECTED_EXTERNAL_CONTEXTS` in `scripts/ci/ci_summary_gate.py` (OMN-18783).
+The required `CI Summary` check blocks on its failure or missing result. Every lane in
 this fleet commits under one shared account, so such a PR is un-approvable by construction —
 GitHub blocks self-approval — which is what froze the fleet behind OCC#9362 on 2026-09-13.
 
