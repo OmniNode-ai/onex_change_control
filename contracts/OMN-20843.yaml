@@ -178,3 +178,36 @@ dod_evidence:
       - label: AC4
         criterion_hash: 494b9df4e0d79c68fc0764ad1984f8b3e6c927632674c58a5631369ad152ba89
         proposed_by: lane=contracts-merged-5d21
+  - id: dod-omn20843-hosted-merged-memory-behavior
+    description: 'Hosted behavior check of the merged OMN-20843 placement source from omniclaude-internal#511:
+      stale swap occupancy is admitted, live PSI and swap traffic are refused, and two-sample swap traffic
+      parses.'
+    source: manual
+    execution_scope: hosted_and_local
+    checks:
+      - check_type: command
+        check_value: |-
+          source_file="$(mktemp)" || exit 2;
+          set -euo pipefail;
+          trap 'rm -f "$source_file"' EXIT;
+          gh api 'repos/OmniNode-ai/omniclaude-internal/contents/plugins/omni/skills/merge-drain/scripts/landing_placement.py?ref=6216e7022ca16d59a0cf8c28ee9c19a37e1fa9a6' --jq .content | base64 -d > "$source_file";
+          python3 - "$source_file" <<'PROBE'
+          import runpy
+          import sys
+          from dataclasses import replace
+          m = runpy.run_path(sys.argv[1])
+          host = m['Host']('probe', 'probe', frozenset(), None, True)
+          reading = m['Reading'](host, mem_avail_gb=44, swap_used_frac=0.96, mem_psi_avg60=0.09, swap_in_kb_s=0, swap_out_kb_s=0)
+          assert reading._memory_refusals() == [], 'stale swap occupancy refused'
+          psi = replace(reading, swap_used_frac=0, mem_psi_avg60=m['ADMIT_MAX_MEM_PSI'] + 1)._memory_refusals()
+          assert len(psi) == 1 and 'memory PSI' in psi[0], psi
+          traffic = replace(reading, swap_used_frac=0, swap_in_kb_s=m['ADMIT_MAX_SWAP_KB_S'] + 1)._memory_refusals()
+          assert len(traffic) == 1 and 'swap traffic' in traffic[0] and 'KB/s' in traffic[0], traffic
+          assert m['_swap_io']('SWAPIO 4 1 2 50000 50000') == (4.0, 8.0)
+          assert m['_swap_io']('SWAPIO 4 50000 50000 1 2') == (4.0, 8.0)
+          assert m['_swap_io']('SWAPIO 4 30000 30000 40000 40000') == (120000.0, 120000.0)
+          parsed = m['parse_probe'](host, 'PROBE 8 0.1 46137344\nSWAPIO 4 1 2 50000 50000', 0)
+          assert (parsed.swap_in_kb_s, parsed.swap_out_kb_s) == (4.0, 8.0)
+          assert m['_PROBE_BASE'].count('sio=') == 2 and 'echo \"SWAPIO $sio\"' in m['_PROBE_BASE']
+          print('stale swap admitted; PSI and sustained swap traffic refused; both sample orders, parsing and probe source checked')
+          PROBE
