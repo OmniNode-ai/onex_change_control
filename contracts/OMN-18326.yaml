@@ -6,6 +6,20 @@ summary: "OCC Evidence-Source autobind companion (OMN-13317 F1) for PR #2523."
 is_seam_ticket: false
 interface_change: false
 interfaces_touched: []
+requirements:
+  - id: "req-transcribed-acceptance-criteria"
+    statement: |-
+      The acceptance criteria this ticket's author declared, transcribed from the ticket body. The ticket body is the source and this block is the copy; each criterion's id is the label the sibling binds_ac entry claims.
+    acceptance:
+      - id: "AC1"
+        statement: |-
+          **AC1** — the lab's topology principals gain LOGIN through a committed, re-runnable step the sanctioned applier already runs, not hand DDL and not a database reset. The step is idempotent and converges rather than rotating.
+      - id: "AC3"
+        statement: |-
+          **AC3** — the runtime kernel seam injects an authoritative envelope event time and the delegation projection consumes it; RED test first, on both sides of the seam.
+      - id: "AC4"
+        statement: |-
+          **AC4** — one delegation as the dogfood tenant on the lab produces a `delegation_events` row and a `projection_delegation_summary` row for its correlation id in `omnidash_analytics`, read back with a positive control.
 evidence_requirements:
   - kind: "ci"
     description: "PR #2523 product diff scope present"
@@ -161,3 +175,68 @@ dod_evidence:
         check_value: "uv run pytest tests/unit/runtime/auto_wiring/test_handler_wiring_db_injection.py
           -q"
         cwd: "${OMNI_HOME}/omnibase_infra"
+  - id: "dod-omn18326-ac1-lab-topology-logins-readback"
+    description: >-
+      AC1: read-only readback on the onex-lab lane (k3s namespace onex-dev on 192.168.86.201). The committed
+      converge Job (omnibase_infra k8s/onex-lab/converge-topology-logins-job.yaml, run by apply_lab_lane.sh)
+      logs a converged, attributes-unchanged verdict for omninode_runtime and tenant_projection_writer,
+      and pg_roles shows rolcanlogin=true for both.
+    source: "manual"
+    execution_scope: "local_done_gate"
+    checks:
+      - check_type: "command"
+        check_value: |-
+          ssh -o BatchMode=yes -o ConnectTimeout=15 jonah@192.168.86.201 bash -s <<'LAB'
+          sudo -n k3s kubectl -n onex-dev logs job/onex-lab-converge-topology-logins | tail -5; sudo -n k3s kubectl -n onex-dev exec deploy/onex-lab-postgres -- psql -U postgres -d omnidash_analytics -At -c "SELECT rolname||'|rolcanlogin='||rolcanlogin FROM pg_roles WHERE rolname IN ('omninode_runtime','tenant_projection_writer') ORDER BY 1"
+          LAB
+    binds_ac: ["AC1"]
+    ac_bindings:
+      - label: "AC1"
+        criterion_hash: "b15bd5287f2e77a56c067328c0e178780f659ddc77a1b739f908ef4aa72b8281"
+        proposed_by: "lane=dod-closeout-bind-2026-10-10T1845Z-c2"
+        accepted_by: "lane=dod-closeout-accept-2026-10-10T1845Z-c2"
+        accepted_at: "2026-10-10T19:20:31Z"
+  - id: "dod-omn18326-ac3-kernel-seam-envelope-time-tests"
+    description: >-
+      AC3: both sides of the kernel seam at merged dev. omnibase_infra's projection callback injects _envelope_timestamp
+      from the typed envelope, omits it when absent and drops an untrustworthy one; omnimarket's delegation
+      projection reads the kernel-seam timestamp and its injected-key allowlists admit it.
+    source: "manual"
+    execution_scope: "local_done_gate"
+    checks:
+      - check_type: "command"
+        check_value: "(cd omnibase_infra && env -u PYTHONPATH uv run pytest tests/unit/runtime/auto_wiring/test_handler_wiring_db_injection.py::test_projection_callback_preserves_envelope_timestamp
+          tests/unit/runtime/auto_wiring/test_handler_wiring_db_injection.py::test_projection_callback_omits_envelope_timestamp_when_absent
+          tests/unit/runtime/auto_wiring/test_handler_wiring_db_injection.py::test_projection_callback_injects_no_event_time_it_cannot_trust
+          -q -p no:cacheprovider) && (cd omnimarket && env -u PYTHONPATH uv run pytest tests/test_omn15583_quality_gate_result_timestamp.py::test_kernel_seam_envelope_timestamp_is_read
+          tests/test_omn15583_quality_gate_result_timestamp.py::test_kernel_seam_envelope_timestamp_accepts_an_iso_string
+          tests/test_omn16249_projection_injected_key_seam.py -q -p no:cacheprovider)"
+        cwd: "${OMNI_HOME}"
+    binds_ac: ["AC3"]
+    ac_bindings:
+      - label: "AC3"
+        criterion_hash: "d223f5abaf017a467cedba790c15f092bc2f7e6f09ecf2367cef1ef0d1b0556c"
+        proposed_by: "lane=dod-closeout-bind-2026-10-10T1845Z-c2"
+        accepted_by: "lane=dod-closeout-accept-2026-10-10T1845Z-c2"
+        accepted_at: "2026-10-10T19:20:31Z"
+  - id: "dod-omn18326-ac4-dogfood-delegation-readback"
+    description: >-
+      AC4: read-only readback on the onex-lab lane. The newest post-fix dogfood-tenant (cacacbb1-0e64-4521-9712-ed02ee799907,
+      slug onex-lab-dogfood) delegation_events row, written by tenant_projection_writer, joined to that
+      tenant's projection_delegation_summary row whose latestEventAt equals the event timestamp; positive
+      control is the tenant_registry_mirror count.
+    source: "manual"
+    execution_scope: "local_done_gate"
+    checks:
+      - check_type: "command"
+        check_value: |-
+          ssh -o BatchMode=yes -o ConnectTimeout=15 jonah@192.168.86.201 bash -s <<'LAB'
+          sudo -n k3s kubectl -n onex-dev exec deploy/onex-lab-postgres -- psql -U postgres -d omnidash_analytics -At -F'|' -c "SELECT e.correlation_id::text, e.\"timestamp\"::text, e.tenant_id::text, e.writer_identity, to_timestamp(s.\"latestEventAt\")::text, s.\"totalDelegations\" FROM delegation_events e JOIN projection_delegation_summary s ON s.tenant_id = e.tenant_id WHERE e.tenant_id = 'cacacbb1-0e64-4521-9712-ed02ee799907' AND e.\"timestamp\" > '2026-09-14' ORDER BY e.\"timestamp\" DESC LIMIT 1" -c "SELECT 'positive-control tenant_registry_mirror', count(*) FROM tenant_registry_mirror"
+          LAB
+    binds_ac: ["AC4"]
+    ac_bindings:
+      - label: "AC4"
+        criterion_hash: "2db5f806b191013da7320c1fd79e2dee29fb750c2cc6617272a9a2f4b70b7144"
+        proposed_by: "lane=dod-closeout-bind-2026-10-10T1845Z-c2"
+        accepted_by: "lane=dod-closeout-accept-2026-10-10T1845Z-c2"
+        accepted_at: "2026-10-10T19:20:31Z"
