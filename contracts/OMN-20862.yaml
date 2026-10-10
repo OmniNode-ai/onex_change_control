@@ -1,0 +1,56 @@
+---
+schema_version: 1.0.0
+ticket_id: OMN-20862
+title: Dispatch-venv drift is a typed VENV_DRIFT placement result, never a run of no-host refusals (AC-M4)
+summary: Evidence companion for OmniNode-ai/omnimarket#3703 at 529e859d6f28016d0e3dbe722693458053492a39.
+  Placement and RuntimeLocal contract tests ran on lab h101; source readback distinguishes the drift handler
+  from its absence. No production deployment is claimed.
+is_seam_ticket: false
+interface_change: false
+interfaces_touched: []
+requirements:
+  - id: req-drift-is-a-typed-placement-result
+    statement: Dispatch-venv drift is a typed placement result with one reconcile intent, and equal hashes
+      admit.
+    acceptance:
+      - id: AC4
+        statement: 'AC4 (AC-M4): given a launching host whose dispatch venv lock hash differs from the
+          lab host''s declared hash, the placement admission returns a typed VENV_DRIFT result naming
+          both hashes and runs the reconcile (or emits a reconcile command) once, rather than rejecting
+          each lane as no-host; given equal hashes it admits. A lane that finds no host because of drift
+          fails the test unless a VENV_DRIFT event was emitted -- falsifier: test_venv_drift_placement.py
+          failing when a fixture whose every host is refused for drift returns anything but VENV_DRIFT
+          with both hashes and exactly one reconcile intent, or when equal hashes do not admit'
+evidence_requirements:
+  - kind: tests
+    description: 'AC-M4: drift returns VENV_DRIFT with both hashes and one reconcile intent, equal hashes
+      admit, and the decision completes over the node''s contract.'
+    command: uv run pytest tests/nodes/node_remote_lane_compute/test_venv_drift_placement.py tests/nodes/node_remote_lane_compute/test_runtime_local_remote_lane.py
+      -q -p no:randomly
+emergency_bypass:
+  enabled: false
+  justification: ''
+  follow_up_ticket_id: ''
+dod_evidence:
+  - id: dod-omn20862-pr-3703-placement-runtime-tests
+    description: 'PR #3703: placement drift, equal-hash admission and unknown-hash behavior pass, including
+      VENV_DRIFT terminal payload and one reconcile intent through RuntimeLocal on lab h101.'
+    source: manual
+    checks:
+      - check_type: test_passes
+        check_value: uv run pytest tests/nodes/node_remote_lane_compute/test_venv_drift_placement.py tests/nodes/node_remote_lane_compute/test_runtime_local_remote_lane.py
+          -q -p no:randomly
+        cwd: ${OMNI_HOME}/omnimarket
+    binds_ac:
+      - AC4
+  - id: dod-omn20862-pr-3703-deploy-source-readback
+    description: 'PR #3703: live source readback at 529e859d6f28016d0e3dbe722693458053492a39 finds _drift_judged;
+      it is absent at eddc7cb1cb6b2ba2d945fbd5e30210bf9039d842. This is a compute-only source readback,
+      not a production deployment claim.'
+    source: manual
+    checks:
+      - check_type: command
+        check_value: 'gh api -H ''Accept: application/vnd.github.raw'' ''repos/OmniNode-ai/omnimarket/contents/src/omnimarket/nodes/node_remote_lane_compute/handlers/handler_remote_lane_placement.py?ref=529e859d6f28016d0e3dbe722693458053492a39''
+          | grep -c ''^def _drift_judged('''
+    binds_ac:
+      - AC4
