@@ -25,8 +25,8 @@ concurrency:
 
 jobs:
   # OMN-14098 OCC evidence-only fast-lane: classify the PR diff and skip the
-  # src/-only PEP-604 lint on pure evidence PRs (docs_only=true). type-union-check
-  # is NOT a required context on dev or main, so skipping it cannot wedge merge.
+  # src/-only PEP-604 lint on pure evidence PRs (docs_only=true).
+  # OMN-18783: skip steps instead of the required check-run on that path.
   zone-filter:
     # OMN-20001: pinned to an omnibase_core sha, not @dev; bump with ci.yml's zone-filter pin.
     uses: OmniNode-ai/omnibase_core/.github/workflows/zone-filter.yml@9e81894525ddbfe928b854656e8e0ac9c775232e  # OMN-17427: squash-merge sha reachable from omnibase_core dev
@@ -39,16 +39,8 @@ jobs:
   type-union-check:
     name: PEP 604 Type Union Check (UP007)
     needs: [zone-filter]
-    # OMN-15768-class fix (enforce-everything wave, 2026-08-13): this `if:`
-    # used to carry an extra `(github.base_ref != 'dev' && github.event.
-    # pull_request.base.ref != 'dev')` clause, which made the JOB ITSELF
-    # (unlike doctrine-coverage.yml's step-level equivalent) skip on every
-    # dev-targeting PR regardless of content. docs_only is now the only skip
-    # precondition. Not yet asserted in ci_summary_gate.py's L4 external
-    # contexts -- see EXEMPT_CONTEXTS there for why (no skippable-external
-    # tier exists yet for this layer, and this job's docs_only skip is
-    # legitimate).
-    if: needs.zone-filter.outputs.docs_only != 'true'
+    # OMN-18783: a failed zone filter skips this job and blocks CI Summary;
+    # a successful evidence-only classification yields a successful empty job.
     runs-on: >-
       ${{
         (github.event_name == 'pull_request' &&
@@ -58,19 +50,23 @@ jobs:
       }}
     steps:
       - name: Checkout code
+        if: needs.zone-filter.outputs.docs_only != 'true'
         uses: actions/checkout@v7
 
       - name: Set up Python
+        if: needs.zone-filter.outputs.docs_only != 'true'
         uses: actions/setup-python@v7
         with:
           python-version: ${{ env.PYTHON_VERSION }}
 
       - name: Install uv
+        if: needs.zone-filter.outputs.docs_only != 'true'
         uses: astral-sh/setup-uv@v10.2.0
         with:
           version: ${{ env.UV_VERSION }}
 
       - name: Install dependencies
+        if: needs.zone-filter.outputs.docs_only != 'true'
         env:
           UV_HTTP_TIMEOUT: "600"
           UV_SYNC_ATTEMPTS: "3"
@@ -93,6 +89,7 @@ jobs:
           done
 
       - name: Check for Optional/Union usage (PEP 604)
+        if: needs.zone-filter.outputs.docs_only != 'true'
         run: uv run ruff check src/ --select UP007,UP006
 
   ci-naming-convention:

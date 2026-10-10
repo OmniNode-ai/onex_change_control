@@ -77,13 +77,10 @@ that mentions the annotation while arguing it is absent must not satisfy it.
 
 HONEST LIMITS
 -------------
-- **This is advisory when it lands**, by deliberate choice and in its own
-  workflow file, never in `ci.yml` and never in the `CI Summary` rollup. A
-  gate that goes required the same hour it is written, on a repo whose `main`
-  carries `enforce_admins: true`, is how a repository wedges itself — which
-  is the failure this whole ticket exists to undo. It becomes required only
-  after at least one App-authored PR has merged through the dispatch path,
-  proving the sanctioned route works end to end.
+- **Enforcement is through CI Summary** (OMN-18783). This began as an
+  advisory check while the writer-App dispatch path was unproven. App-authored
+  code PRs have since merged through that path, so its exact check-run name is
+  now in the poller's EXPECTED_EXTERNAL_CONTEXTS success-only tuple.
 - **It cannot prove authorship intent.** `user.type` is what GitHub reports;
   it says who opened the PR, not who wrote the diff. A lane that opens a PR
   through the App path is still a lane. What this removes is the SILENT case

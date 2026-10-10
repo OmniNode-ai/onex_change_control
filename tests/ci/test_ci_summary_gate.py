@@ -121,6 +121,10 @@ COMPOSED_NAME_OVERRIDES: dict[tuple[str, str], str] = {
     ("guards.yml", "pr-title"): "pr-title / check-title",
     ("docs-validate.yml", "call"): "call / validate-docs",
     ("kb-doc-gate.yml", "kb-doc-gate"): "kb-doc-gate / kb-doc-gate",
+    (
+        "public-repo-hygiene.yml",
+        "public-repo-hygiene",
+    ): "public-repo-hygiene / public-repo-hygiene",
     # OMN-18796: the advisory-job gate's caller job carries no local `name:`,
     # so the default resolution would look for the bare job id and report the
     # registered composed check-run name as an unclassified job.
@@ -360,6 +364,143 @@ def _all_green_check_runs() -> list[dict[str, object]]:
     ]
 
 
+class TestOccGateEnforcementOmn18783:
+    """The eight reported gates must block through the required umbrella."""
+
+    IN_RUN = (
+        "Evidence-Only Diff Predicate",
+        "Expiring DoD Check Gate (OMN-18641)",
+        "No New os.environ Reads (OMN-13563)",
+        "URL Authority Gate (OMN-13563)",
+    )
+    EXTERNAL = (
+        "check-human-authored-privileged-pr",
+        "PEP 604 Type Union Check (UP007)",
+        "public-repo-hygiene / public-repo-hygiene",
+        "Self-companion guard (OMN-15334)",
+        "Self-companion guard / companion-effect",
+    )
+
+    @pytest.mark.parametrize("name", IN_RUN + EXTERNAL)
+    @pytest.mark.parametrize("conclusion", ["failure", "cancelled", "missing"])
+    def test_gate_cannot_disappear_or_refuse_silently(
+        self, name: str, conclusion: str
+    ) -> None:
+        jobs = [j for j in _all_green_jobs() if j["name"] != name]
+        checks = [r for r in _all_green_check_runs() if r["name"] != name]
+        if conclusion != "missing":
+            row = _job(name, conclusion)
+            (jobs if name in self.IN_RUN else checks).append(row)
+        code, report = evaluate(
+            jobs,
+            check_runs=checks,
+            external_contexts=EXPECTED_EXTERNAL_CONTEXTS,
+            sweep_external=True,
+        )
+        assert code == (EXIT_PENDING if conclusion == "missing" else EXIT_FAILURE), (
+            report
+        )
+        assert name in report
+
+    @pytest.mark.parametrize("name", EXTERNAL + IN_RUN[:2])
+    def test_unconditional_gate_skip_is_refused(self, name: str) -> None:
+        jobs = [j for j in _all_green_jobs() if j["name"] != name]
+        checks = [r for r in _all_green_check_runs() if r["name"] != name]
+        (jobs if name in self.IN_RUN else checks).append(_job(name, "skipped"))
+        code, report = evaluate(
+            jobs,
+            check_runs=checks,
+            external_contexts=EXPECTED_EXTERNAL_CONTEXTS,
+            sweep_external=True,
+        )
+        assert code == EXIT_FAILURE, report
+
+    def test_writer_app_control_and_human_refusal_reach_the_umbrella(
+        self, tmp_path: Path
+    ) -> None:
+        from onex_change_control.scripts.check_human_authored_privileged_pr import main
+
+        paths = tmp_path / "paths.txt"
+        paths.write_text("src/validator.py\n", encoding="utf-8")
+        for author, expected in (("Bot", EXIT_SUCCESS), ("User", EXIT_FAILURE)):
+            result = main(
+                ["--pr-author-type", author, "--changed-files-from", str(paths)]
+            )
+            assert result == expected
+            checks = [
+                r
+                for r in _all_green_check_runs()
+                if r["name"] != "check-human-authored-privileged-pr"
+            ]
+            checks.append(
+                _job(
+                    "check-human-authored-privileged-pr",
+                    "success" if result == 0 else "failure",
+                )
+            )
+            code, report = evaluate(
+                _all_green_jobs(),
+                check_runs=checks,
+                external_contexts=EXPECTED_EXTERNAL_CONTEXTS,
+                sweep_external=True,
+            )
+            assert code == expected, report
+
+    def test_ci_validators_propagate_their_exit_status(self) -> None:
+        jobs = yaml.safe_load((WORKFLOWS_DIR / "ci.yml").read_text())["jobs"]
+        for job_id in ("url-authority-gate", "no-new-os-environ"):
+            assert jobs[job_id]["name"] in SKIPPABLE_GATE_JOBS
+            assert all(
+                not step.get("continue-on-error") for step in jobs[job_id]["steps"]
+            )
+        assert "Evidence-Only Diff Predicate" in STRICT_GATE_JOBS
+
+    def test_external_producers_run_without_ambiguous_names(self) -> None:
+        guards = yaml.safe_load((WORKFLOWS_DIR / "guards.yml").read_text())["jobs"]
+        names = []
+        for job_id in (
+            "self-companion-guard-autobind",
+            "self-companion-guard-companion-effect",
+        ):
+            job = guards[job_id]
+            names.append(job["name"])
+            assert job["if"].strip() == "github.event_name == 'pull_request'"
+            assert job["name"] in EXPECTED_EXTERNAL_CONTEXTS
+        assert len(set(names)) == 2
+        standards = yaml.safe_load(
+            (WORKFLOWS_DIR / "omni-standards-compliance.yml").read_text()
+        )
+        pep = standards["jobs"]["type-union-check"]
+        assert "if" not in pep
+        assert all(
+            step.get("if") == "needs.zone-filter.outputs.docs_only != 'true'"
+            for step in pep["steps"]
+        )
+
+    def test_hygiene_enforces_added_lines_with_the_existing_validator(self) -> None:
+        config = yaml.safe_load((REPO_ROOT / ".public-repo-hygiene.yaml").read_text())
+        assert config["mode"] == "enforce"
+        assert config["enforce_scope"] == "added-lines"
+        workflow = yaml.safe_load(
+            (WORKFLOWS_DIR / "public-repo-hygiene.yml").read_text()
+        )
+        assert workflow["jobs"]["public-repo-hygiene"]["with"]["mode"] == "enforce"
+        hooks = yaml.safe_load((REPO_ROOT / ".pre-commit-config.yaml").read_text())
+        hygiene = [
+            (repo, hook)
+            for repo in hooks["repos"]
+            for hook in repo["hooks"]
+            if hook["id"] == "public-repo-hygiene"
+        ]
+        assert len(hygiene) == 1
+        repo, hook = hygiene[0]
+        assert workflow["jobs"]["public-repo-hygiene"]["uses"].endswith(
+            "@" + repo["rev"]
+        )
+        assert "--diff-base origin/dev" in hook["entry"]
+        assert hook["stages"] == ["pre-push"]
+
+
 class TestRunningRowsHoldTheVerdictOmn20066:
     """In-run rows without a verdict must hold CI Summary at PENDING."""
 
@@ -413,8 +554,8 @@ class TestRunningRowsHoldTheVerdictOmn20066:
     @pytest.mark.parametrize(
         "name",
         [
-            "URL Authority Gate (OMN-13563)",
-            "public-repo-hygiene / report",
+            "Governance File Advisory Gate",
+            "no-ai-coauthor-trailer / check-trailers",
             SELF_JOB_NAME,
         ],
     )
@@ -981,18 +1122,14 @@ def test_evidence_predicate_tier_is_a_subset_of_skippable_not_strict() -> None:
     assert EVIDENCE_PREDICATE_TIER.isdisjoint(STRICT_GATE_JOBS)
 
 
-def test_evidence_only_predicate_job_is_classification_only_not_a_gate() -> None:
-    """The predicate job itself is a structural classifier, not a validator
-    -- it must never appear in STRICT/SKIPPABLE (a `skipped` predicate run
-    that gated ITSELF would be a self-referential vacuous pass), and must be
-    registered CLASSIFICATION_ONLY so the default-deny sweep, not a gate
-    tier, is what catches its own failure."""
+def test_evidence_only_predicate_job_is_a_strict_gate() -> None:
+    """OMN-18783: absent/skipped classifiers must block their fast lanes."""
 
     name = "Evidence-Only Diff Predicate"
-    assert name not in STRICT_GATE_JOBS
+    assert name in STRICT_GATE_JOBS
     assert name not in SKIPPABLE_GATE_JOBS
     assert name not in SOFT_ALLOWLIST
-    assert name in CLASSIFICATION_ONLY
+    assert name not in CLASSIFICATION_ONLY
 
 
 def test_evidence_predicate_tier_all_skipped_with_predicate_success_is_success() -> (
@@ -1023,8 +1160,7 @@ def test_failed_evidence_only_predicate_cascade_is_not_a_vacuous_success() -> No
     (PR #6435). A FAILED evidence-only-predicate job cascades every job
     that `needs:` it to `skipped` (the 5-job EVIDENCE_PREDICATE_TIER, all
     SKIPPABLE, which tolerates `skipped` unconditionally in isolation) --
-    the predicate job's OWN failure, caught by the default-deny sweep
-    because it is CLASSIFICATION_ONLY and not soft-allowlisted, is what
+    the predicate job's OWN failure, caught by the strict tier, is what
     keeps this fail-closed instead of a vacuous SUCCESS."""
 
     jobs = [
@@ -1946,7 +2082,7 @@ class TestDeclaredAdvisoryEntries:
 class TestSweepExclusions:
     """AC-2 — the dated registry is closed-ended or it is an allowlist."""
 
-    def test_the_registry_holds_exactly_the_four_measured_names(self) -> None:
+    def test_the_registry_holds_only_the_remaining_exempt_names(self) -> None:
         """Under the strict bar, every by-design non-green name needs an entry.
 
         That is the point of the ruling: the tolerance is written down with a
@@ -1955,7 +2091,6 @@ class TestSweepExclusions:
         """
         assert set(EXTERNAL_SWEEP_EXCLUSIONS) == {
             SHADOW_CONTEXT,
-            "PEP 604 Type Union Check (UP007)",
             "occ-autobind",
             "occ-companion-effect",
             # Absent from the measured window and observed live on this
@@ -2080,7 +2215,13 @@ class TestSweepAgainstRealHeads:
         head = _sweep_head(pr)
         failures, _in_flight, swept, _excluded = _sweep_real_head(head, _at_merge(head))
         assert failures == [], failures
-        assert len(swept) >= 8, (pr, len(swept))
+        # OMN-18783 moved three historical sweep names into explicit L4
+        # contexts. The sweep must still examine the unpromoted producers.
+        assert {
+            "Governance File Advisory Gate",
+            "lint (shadow)",
+            "typecheck (shadow)",
+        } <= set(swept), (pr, swept)
 
     def test_flipping_one_real_row_flips_the_verdict(self) -> None:
         """A synthetic red on an otherwise-clean REAL payload, and back again."""
