@@ -1,26 +1,19 @@
-## Summary
-Ticket OMN-20157 has every acceptance criterion proven (falsifiers pass, a fresh lab receipt exists, independent acceptance merged in onex_change_control#13195 and #13316) but cannot pass dod_verify, because four old draft bindings stay unaccepted and dod_verify counts every unaccepted binding, including those on superseded items, with no way to retire one. Accepting bindings that prove nothing would weaken the gate, so they are retired instead, with the typed retirement that omnimarket#3570 teaches node_dod_verify to read.
+OMN-18783
 
-## Changes
-- `ModelAcBindingRetirement` (the `supersedes_ac_binding` entry) gains four optional fields: `reason_kind` (`superseded_by` or `no_longer_applicable`), `superseded_by`, `retired_by`, `retired_at`. They are optional so retirements already merged still parse; a half-written typed retirement is refused. New tests: `tests/test_omn_20157_typed_binding_retirement.py` (12 passed), beside `tests/test_omn_18577_static_evidence_on_live_criterion.py`.
-- `contracts/OMN-20157.yaml` gains one `dod_evidence` item, `dod-omn20157-retire-unproven-draft-bindings`, with four retirements (`retired_by` dod-retire-binding-1620, `retired_at` 2026-10-08T16:48:51Z). It binds no criterion and accepts nothing; the retired items stay in the contract and keep running their own checks.
+Quoted cause: "Eight onex_change_control checks appear in none of `required_status_checks`, `EXPECTED_EXTERNAL_CONTEXTS`, `STRICT_GATE_JOBS` or `SKIPPABLE_GATE_JOBS`:"
 
-## Retirements
-- AC5 from dod-omn20157-ac5-gemini-delegation-receipt (superseded_by dod-omn20157-accept-ac5-gemini-receipt-fec634b0: its check greps ledger text about lab run 39465f89, whose run directory is gone)
-- AC5 from dod-omn20157-fill-ac5-gemini-run-f8a0b10d (superseded_by the same item: greps ledger text about lab run f8a0b10d, not re-read)
-- AC5 from dod-omn20157-fill-ac5-plan-refusal-run-02b68882 (no_longer_applicable: a refusal run, BYOK_CODING_PLAN_NOT_PERMITTED, not a Gemini delegation; the GLM coding-plan leg was left out of the beta by ruling 2026-09-30T23:01:09Z)
-- AC6 from dod-OmniNode-ai-omnimarket-pr-3310 (superseded_by dod-omn20157-accept-fill-ac6-typed-refusals: greps the class name ByokPinNotPermittedError)
+Readback partly falsified that premise: the expiry gate was already strict. The remaining gates were advisory, exempt, absent from the enforcing tuples, or observed only when present. This branch integrates the prior implementation and wires all eight named gates into CI Summary, which is required on dev.
 
-Each reason is written out in the contract. The AC1 to AC5 bindings on pr-3310 are accepted and are not touched.
+The existing producers now propagate URL/environment validator failures, distinguish both self-companion checks, and report hygiene on every governed PR base. PEP 604 evidence-only changes skip steps inside a successful check. The pinned hygiene validator enforces added lines; allowed roots, suppressions and baselines do not grow. Regression controls run in existing CI Summary and pre-commit. Existing CI producers and `scripts/ci/ci_summary_gate.py` handle the change; no new capability or script was added.
 
-## Evidence
-- Receipt: drift/dod_receipts/OMN-20157/dod-omn20157-retire-unproven-draft-bindings/test_passes.yaml, captured with check_receipt_hardening.py --capture-probe on lab host h202: the retirement tests from omnimarket#3570 at omnimarket 65d5e9ad1539, 51 passed.
-- Verdict before: dod_verify for OMN-20157 reported AC_BINDING_SELF_ACCEPTED naming exactly the four bindings (acceptance_self_accepted_bindings 4).
-- Verdict with omnimarket#3570 code and this contract: acceptance_self_accepted_bindings 0, acceptance_retired_bindings 4, acceptance_refused_retirements 0; the only failing check was this item's own test, because tests/unit/nodes/node_dod_verify/test_ac_binding_retirement.py is not yet on the canonical omnimarket clone.
+Validation:
+- Focused RED before wiring: 16 failed, 22 passed. Final GREEN: 40 passed.
+- Privileged-author fixtures use the CI command's API adapter: Bot succeeds; User changing source is refused; each result reaches the umbrella.
+- Changed-file pre-commit and focused Ruff checks passed.
+- The pinned hygiene validator refused a temporary private-network literal (exit 1) and accepted the restored diff (exit 0). Its stale private-repository visibility snapshot was refreshed in scratch from the live organization API; canonical vocabulary was unchanged.
 
-## Order of landing
-omnimarket#3570 first, then this PR. Landing this first leaves the old verifier ignoring the retirements and this item's check failing until #3570 is on the canonical omnimarket clone.
-## Lab
-Lab: h202, lane dod-retire-binding-1620, check_receipt_hardening.py --capture-probe of the omnimarket#3570 retirement tests at omnimarket 65d5e9ad1539: 51 passed.
+Lab: host=h201 lane=lab-fill-omn18783-10100910 command=uv run --frozen pytest tests/ci/test_ci_summary_gate.py -q -k OccGateEnforcementOmn18783 observed=40 passed.
 
-Reopened as the onexbot-occ-writer App; replaces onex_change_control#13323, closed because check-human-authored-privileged-pr refuses a human-authored PR on src/.
+Live default-branch sources and required contexts were reconciled read-only for the requested sibling repositories. Their unclassified producers remain review candidates needing individual adjudication; no sibling repository was changed. Post-merge live umbrella readback and this PR's CI remain pending. Grouped B19 scope and wave exits remain gated; the ticket state is unchanged.
+
+Controls use the existing CI Summary job. Additional runner time and PR wall time have not been measured.

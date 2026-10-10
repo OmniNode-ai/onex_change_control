@@ -126,12 +126,8 @@ jobs:
     # expression -- do not spell that label out in prose here.)
     #
     # UNCONDITIONAL (no needs/if) so it always runs and can never
-    # legitimately be skipped itself. Registered CLASSIFICATION_ONLY (not
-    # soft-allowlisted) in ci_summary_gate.py, mirroring zone-filter: every
-    # job gated on this predicate's output cascades to `skipped` if THIS job
-    # fails, and that cascade is caught by the default-deny sweep rather
-    # than tolerated as a pass (see ci_summary_gate.py's CLASSIFICATION_ONLY
-    # comment for the mechanism, already proven for zone-filter / docs_only).
+    # legitimately be skipped itself. OMN-18783 registers it STRICT in
+    # ci_summary_gate.py: failure, skip and absence all block the umbrella.
     #
     # ONLY heavy jobs that validate CODE unaffected by an evidence-only diff
     # are gated on this predicate's output (no-noncanonical-lifecycle-
@@ -705,9 +701,8 @@ jobs:
         run: uv run pytest tests/ci/test_precommit_ci_backstops_omn19612.py -q -p no:cacheprovider
 
   url-authority-gate:
-    # OMN-13563 Wave 4: URL authority ratchet (non-blocking report; pre-commit hook is the
-    # blocking surface). Fails only on NEW URL literals outside contracts — baseline is
-    # burn-down only. Suppress with: # url-authority-ok: <reason>
+    # OMN-18783: URL authority ratchet enforced by CI Summary and pre-commit.
+    # Fails on new URL literals outside contracts; baseline is burn-down only.
     name: URL Authority Gate (OMN-13563)
     needs: [zone-filter]
     if: needs.zone-filter.outputs.docs_only != 'true'
@@ -728,15 +723,13 @@ jobs:
         with:
           python-version: "3.12"
       - name: Run URL authority ratchet
-        continue-on-error: true
         run: >
           uv run python -m omnibase_core.validation.validator_url_authority
           --repo onex_change_control --repo-root . --all src/
 
   no-new-os-environ:
-    # OMN-13563 Wave 4: AST os.environ read gate (non-blocking report; pre-commit hook is
-    # the blocking surface). Exempts tests/, scripts/, examples/. Suppress with:
-    # # env-read-ok: <reason>
+    # OMN-18783: the existing AST gate blocks in CI as well as pre-commit.
+    # Its evidence-only skip still follows the independently checked zone filter.
     name: No New os.environ Reads (OMN-13563)
     needs: [zone-filter]
     if: needs.zone-filter.outputs.docs_only != 'true'
@@ -757,7 +750,6 @@ jobs:
         with:
           python-version: "3.12"
       - name: Run no-new-os-environ validator
-        continue-on-error: true
         run: uv run pre-commit run no-new-os-environ --all-files
 
   imperative-contract-guard:
@@ -3369,6 +3361,8 @@ jobs:
       - uses: ./.github/actions/setup-uv
         with:
           python-version: "3.12"
+      - name: OCC gate enforcement RED/GREEN controls (OMN-18783)
+        run: uv run pytest tests/ci/test_ci_summary_gate.py -q -k OccGateEnforcementOmn18783
       - name: Poll job list + PR-head check-runs until a terminal verdict
         env:
           GH_TOKEN: ${{ github.token }}
