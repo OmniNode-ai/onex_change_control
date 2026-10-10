@@ -1,0 +1,213 @@
+---
+schema_version: 1.0.0
+ticket_id: OMN-20843
+title: Lab lane admission judges live memory measures, not swap occupancy
+summary: Hand-authored evidence for OmniNode-ai/omniclaude-internal#511 (squash 6216e7022ca1). Each acceptance
+  criterion is bound to its own test selection, run at the merge commit and, as a must-fail control, at
+  the merge parent with the merged tests overlaid.
+is_seam_ticket: false
+interface_change: false
+interfaces_touched: []
+requirements:
+  - id: req-transcribed-acceptance-criteria
+    statement: The acceptance criteria this ticket's author declared, transcribed verbatim from the ticket
+      body. The ticket body is the source and this block is the copy; each criterion's id is the label
+      the sibling binds_ac entry claims.
+    acceptance:
+      - id: AC1
+        statement: 'AC1: a Linux host with high swap in use, memory PSI under the bar and swap traffic
+          under the bar is admitted -- falsifier: uv run pytest tests/test_landing_placement.py -k live_memory_admits_stale_swap'
+      - id: AC2
+        statement: 'AC2: a host with memory PSI over the bar, or with swap traffic over the bar in both
+          samples, is refused with that reason whatever its swap occupancy -- falsifier: uv run pytest
+          tests/test_landing_placement.py -k live_memory_refuses'
+      - id: AC3
+        statement: 'AC3: the refusal text names the live measure (memory PSI or swap traffic in KB/s)
+          and never swap occupancy -- falsifier: uv run pytest tests/test_landing_placement.py -k live_memory_refusal_text'
+      - id: AC4
+        statement: 'AC4: the Linux and macOS probes print the swap traffic line and parse_probe reads
+          it -- falsifier: uv run pytest tests/test_landing_placement.py -k swapio'
+evidence_requirements:
+  - kind: tests
+    description: The live-memory admission tests of tests/test_landing_placement.py pass at the merge
+      commit.
+    command: uv run --no-project --python 3.13 --with-requirements tests/skill_suites_requirements.txt
+      python -m pytest -q tests/test_landing_placement.py -k 'live_memory or swapio'
+emergency_bypass:
+  enabled: false
+  justification: ''
+  follow_up_ticket_id: ''
+dod_evidence:
+  - id: dod-omn20843-ac1-live-memory-admits-stale-swap
+    description: 'AC1: tests/test_landing_placement.py -k live_memory_admits_stale_swap passes at merge
+      commit 6216e7022ca1 of omniclaude-internal#511 (1 test) and fails on its parent b36ed0afd3c0 with
+      the merged tests overlaid.'
+    source: manual
+    execution_scope: local_done_gate
+    checks:
+      - check_type: test_passes
+        check_value: |-
+          M=6216e7022ca16d59a0cf8c28ee9c19a37e1fa9a6
+          P=b36ed0afd3c03c5bb87b6d8db812f97ae278323b
+          gh api repos/OmniNode-ai/omniclaude-internal/commits/$M --jq .sha || exit 2
+          git cat-file -e $M^{commit} || exit 2
+          git cat-file -e $P^{commit} || exit 2
+          fix="$(mktemp -d)" || exit 2
+          base="$(mktemp -d)" || exit 2
+          trap 'rm -rf "$fix" "$base"' EXIT
+          git archive $M | tar -x -C "$fix" || exit 2
+          git archive $P | tar -x -C "$base" || exit 2
+          git show $M:tests/test_landing_placement.py > "$base/tests/test_landing_placement.py" || exit 2
+          run() { d="$1"; shift; (cd "$d" && env -u PYTHONPATH uv run --no-project --python 3.13 --with-requirements tests/skill_suites_requirements.txt python -m pytest -q -p no:cacheprovider -p no:randomly "$@" 2>&1 | tail -n 1); }
+          merged="$(run "$fix" tests/test_landing_placement.py -k live_memory_admits_stale_swap)"
+          echo "merged $M: $merged"
+          case "$merged" in *passed*) ;; *) exit 1;; esac
+          case "$merged" in *failed*|*error*) exit 1;; esac
+          parent="$(run "$base" tests/test_landing_placement.py -k live_memory_admits_stale_swap)"
+          echo "merge parent $P with the merged tests: $parent"
+          case "$parent" in *failed*) ;; *) exit 1;; esac
+        cwd: ${OMNI_HOME}/omniclaude-internal
+    binds_ac:
+      - AC1
+    ac_bindings:
+      - label: AC1
+        criterion_hash: aa6abbc0a4d68ad9b0be0093a5435936794e4db47285e8fe8ac7c8287b77fe65
+        proposed_by: lane=contracts-merged-5d21
+  - id: dod-omn20843-ac2-live-memory-refuses
+    description: 'AC2: tests/test_landing_placement.py -k live_memory_refuses passes at merge commit 6216e7022ca1
+      (2 tests: PSI alone, and swap traffic in both samples, each whatever the swap occupancy) and fails
+      on the merge parent with the merged tests overlaid.'
+    source: manual
+    execution_scope: local_done_gate
+    checks:
+      - check_type: test_passes
+        check_value: |-
+          M=6216e7022ca16d59a0cf8c28ee9c19a37e1fa9a6
+          P=b36ed0afd3c03c5bb87b6d8db812f97ae278323b
+          gh api repos/OmniNode-ai/omniclaude-internal/commits/$M --jq .sha || exit 2
+          git cat-file -e $M^{commit} || exit 2
+          git cat-file -e $P^{commit} || exit 2
+          fix="$(mktemp -d)" || exit 2
+          base="$(mktemp -d)" || exit 2
+          trap 'rm -rf "$fix" "$base"' EXIT
+          git archive $M | tar -x -C "$fix" || exit 2
+          git archive $P | tar -x -C "$base" || exit 2
+          git show $M:tests/test_landing_placement.py > "$base/tests/test_landing_placement.py" || exit 2
+          run() { d="$1"; shift; (cd "$d" && env -u PYTHONPATH uv run --no-project --python 3.13 --with-requirements tests/skill_suites_requirements.txt python -m pytest -q -p no:cacheprovider -p no:randomly "$@" 2>&1 | tail -n 1); }
+          merged="$(run "$fix" tests/test_landing_placement.py -k live_memory_refuses)"
+          echo "merged $M: $merged"
+          case "$merged" in *passed*) ;; *) exit 1;; esac
+          case "$merged" in *failed*|*error*) exit 1;; esac
+          parent="$(run "$base" tests/test_landing_placement.py -k live_memory_refuses)"
+          echo "merge parent $P with the merged tests: $parent"
+          case "$parent" in *failed*) ;; *) exit 1;; esac
+        cwd: ${OMNI_HOME}/omniclaude-internal
+    binds_ac:
+      - AC2
+    ac_bindings:
+      - label: AC2
+        criterion_hash: be66a1bb1a04006598d3af870aedb415e67a03fce7b63a2952b05d49c5af6242
+        proposed_by: lane=contracts-merged-5d21
+  - id: dod-omn20843-ac3-live-memory-refusal-text
+    description: 'AC3: tests/test_landing_placement.py -k live_memory_refusal_text passes at merge commit
+      6216e7022ca1 (the refusal text names memory PSI or swap traffic in KB/s and never swap occupancy)
+      and fails on the merge parent with the merged tests overlaid.'
+    source: manual
+    execution_scope: local_done_gate
+    checks:
+      - check_type: test_passes
+        check_value: |-
+          M=6216e7022ca16d59a0cf8c28ee9c19a37e1fa9a6
+          P=b36ed0afd3c03c5bb87b6d8db812f97ae278323b
+          gh api repos/OmniNode-ai/omniclaude-internal/commits/$M --jq .sha || exit 2
+          git cat-file -e $M^{commit} || exit 2
+          git cat-file -e $P^{commit} || exit 2
+          fix="$(mktemp -d)" || exit 2
+          base="$(mktemp -d)" || exit 2
+          trap 'rm -rf "$fix" "$base"' EXIT
+          git archive $M | tar -x -C "$fix" || exit 2
+          git archive $P | tar -x -C "$base" || exit 2
+          git show $M:tests/test_landing_placement.py > "$base/tests/test_landing_placement.py" || exit 2
+          run() { d="$1"; shift; (cd "$d" && env -u PYTHONPATH uv run --no-project --python 3.13 --with-requirements tests/skill_suites_requirements.txt python -m pytest -q -p no:cacheprovider -p no:randomly "$@" 2>&1 | tail -n 1); }
+          merged="$(run "$fix" tests/test_landing_placement.py -k live_memory_refusal_text)"
+          echo "merged $M: $merged"
+          case "$merged" in *passed*) ;; *) exit 1;; esac
+          case "$merged" in *failed*|*error*) exit 1;; esac
+          parent="$(run "$base" tests/test_landing_placement.py -k live_memory_refusal_text)"
+          echo "merge parent $P with the merged tests: $parent"
+          case "$parent" in *failed*) ;; *) exit 1;; esac
+        cwd: ${OMNI_HOME}/omniclaude-internal
+    binds_ac:
+      - AC3
+    ac_bindings:
+      - label: AC3
+        criterion_hash: 129c056298032ee7ae1ab8db7f8ecadd62719531c48db2b7c74c74977e980e19
+        proposed_by: lane=contracts-merged-5d21
+  - id: dod-omn20843-ac4-swapio-probe-lines
+    description: 'AC4: tests/test_landing_placement.py -k swapio passes at merge commit 6216e7022ca1 (4
+      tests: both probes print the swap traffic line over two one-second samples and parse_probe reads
+      it) and fails on the merge parent with the merged tests overlaid.'
+    source: manual
+    execution_scope: local_done_gate
+    checks:
+      - check_type: test_passes
+        check_value: |-
+          M=6216e7022ca16d59a0cf8c28ee9c19a37e1fa9a6
+          P=b36ed0afd3c03c5bb87b6d8db812f97ae278323b
+          gh api repos/OmniNode-ai/omniclaude-internal/commits/$M --jq .sha || exit 2
+          git cat-file -e $M^{commit} || exit 2
+          git cat-file -e $P^{commit} || exit 2
+          fix="$(mktemp -d)" || exit 2
+          base="$(mktemp -d)" || exit 2
+          trap 'rm -rf "$fix" "$base"' EXIT
+          git archive $M | tar -x -C "$fix" || exit 2
+          git archive $P | tar -x -C "$base" || exit 2
+          git show $M:tests/test_landing_placement.py > "$base/tests/test_landing_placement.py" || exit 2
+          run() { d="$1"; shift; (cd "$d" && env -u PYTHONPATH uv run --no-project --python 3.13 --with-requirements tests/skill_suites_requirements.txt python -m pytest -q -p no:cacheprovider -p no:randomly "$@" 2>&1 | tail -n 1); }
+          merged="$(run "$fix" tests/test_landing_placement.py -k swapio)"
+          echo "merged $M: $merged"
+          case "$merged" in *passed*) ;; *) exit 1;; esac
+          case "$merged" in *failed*|*error*) exit 1;; esac
+          parent="$(run "$base" tests/test_landing_placement.py -k swapio)"
+          echo "merge parent $P with the merged tests: $parent"
+          case "$parent" in *failed*) ;; *) exit 1;; esac
+        cwd: ${OMNI_HOME}/omniclaude-internal
+    binds_ac:
+      - AC4
+    ac_bindings:
+      - label: AC4
+        criterion_hash: 494b9df4e0d79c68fc0764ad1984f8b3e6c927632674c58a5631369ad152ba89
+        proposed_by: lane=contracts-merged-5d21
+  - id: dod-omn20843-hosted-merged-memory-behavior
+    description: 'Hosted behavior check of the merged OMN-20843 placement source from omniclaude-internal#511:
+      stale swap occupancy is admitted, live PSI and swap traffic are refused, and two-sample swap traffic
+      parses.'
+    source: manual
+    execution_scope: hosted_and_local
+    checks:
+      - check_type: command
+        check_value: |-
+          source_file="$(mktemp)" || exit 2;
+          set -euo pipefail;
+          trap 'rm -f "$source_file"' EXIT;
+          gh api 'repos/OmniNode-ai/omniclaude-internal/contents/plugins/omni/skills/merge-drain/scripts/landing_placement.py?ref=6216e7022ca16d59a0cf8c28ee9c19a37e1fa9a6' --jq .content | base64 -d > "$source_file";
+          python3 - "$source_file" <<'PROBE'
+          import runpy
+          import sys
+          from dataclasses import replace
+          m = runpy.run_path(sys.argv[1])
+          host = m['Host']('probe', 'probe', frozenset(), None, True)
+          reading = m['Reading'](host, mem_avail_gb=44, swap_used_frac=0.96, mem_psi_avg60=0.09, swap_in_kb_s=0, swap_out_kb_s=0)
+          assert reading._memory_refusals() == [], 'stale swap occupancy refused'
+          psi = replace(reading, swap_used_frac=0, mem_psi_avg60=m['ADMIT_MAX_MEM_PSI'] + 1)._memory_refusals()
+          assert len(psi) == 1 and 'memory PSI' in psi[0], psi
+          traffic = replace(reading, swap_used_frac=0, swap_in_kb_s=m['ADMIT_MAX_SWAP_KB_S'] + 1)._memory_refusals()
+          assert len(traffic) == 1 and 'swap traffic' in traffic[0] and 'KB/s' in traffic[0], traffic
+          assert m['_swap_io']('SWAPIO 4 1 2 50000 50000') == (4.0, 8.0)
+          assert m['_swap_io']('SWAPIO 4 50000 50000 1 2') == (4.0, 8.0)
+          assert m['_swap_io']('SWAPIO 4 30000 30000 40000 40000') == (120000.0, 120000.0)
+          parsed = m['parse_probe'](host, 'PROBE 8 0.1 46137344\nSWAPIO 4 1 2 50000 50000', 0)
+          assert (parsed.swap_in_kb_s, parsed.swap_out_kb_s) == (4.0, 8.0)
+          assert m['_PROBE_BASE'].count('sio=') == 2 and 'echo \"SWAPIO $sio\"' in m['_PROBE_BASE']
+          print('stale swap admitted; PSI and sustained swap traffic refused; both sample orders, parsing and probe source checked')
+          PROBE
