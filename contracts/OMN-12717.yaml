@@ -146,3 +146,92 @@ dod_evidence:
         check_value: |-
           uv run pytest tests/unit/delegation/test_pytest_attribute_resolves_omn12717.py -q
         cwd: "${OMNI_HOME}/omnimarket"
+  - id: "dod-accept-0445z-12717-dod1-empty-reasoning-only"
+    description: |-
+      DoD1 binding proposed by lane dod-closeout-bind-2026-10-10T0445Z-c0 and accepted by a different lane, dod-closeout-accept-2026-10-10T0445Z-c0, after an independent re-run at omnimarket origin/dev 4c91a561d (2 passed; content='' error='API returned empty message content'; REASONING_ONLY_REFUSED; exit 0). The committed quality-gate test refuses empty final content for the test and code_generation routes, and the inline handler probe shows HandlerInferenceIntent refuses a response whose content is empty and whose reasoning_content carries code, without promoting the reasoning. Residual: the reasoning-only half is proven by this check's inline probe, not by a committed test. The behavior predates OMN-12717 #2918 (the quality-gate test passes at its parent a97e81e4c); the call-effect refusal came from #1055.
+    source: "manual"
+    execution_scope: "local_done_gate"
+    checks:
+      - check_type: "command"
+        check_value: |-
+          env -u PYTHONPATH uv run pytest "tests/unit/delegation/test_quality_gate_code_artifact_omn12717.py::test_empty_final_content_is_refused_for_artifact_routes" -q -p no:cacheprovider && env -u PYTHONPATH uv run python -c '
+          from unittest.mock import MagicMock, patch
+          from uuid import uuid4
+          from omnibase_core.models.delegation.wire import ModelInferenceIntent
+          from omnimarket.inference import provider_quota_state as q
+          q.resolve_provider_quota_reader = lambda **_: q.StaticProviderQuotaReader(())
+          from omnimarket.nodes.node_llm_delegation_call_effect.handlers.handler_inference_intent import HandlerInferenceIntent
+          intent = ModelInferenceIntent(base_url="http://localhost:8000/v1/chat/completions", model="m", system_prompt="s", prompt="Write pytest unit tests for normalize_unit_state.", max_tokens=512, temperature=0.3, timeout_seconds=30.0, correlation_id=uuid4())
+          resp = MagicMock(); resp.raise_for_status.return_value = None
+          resp.json.return_value = {"id": "x", "choices": [{"finish_reason": "stop", "message": {"content": "", "reasoning_content": "Okay, I need to write tests. def test_x(): assert True"}}], "usage": {"prompt_tokens": 10, "completion_tokens": 900, "total_tokens": 910}}
+          with patch("httpx.Client") as cls:
+              c = MagicMock(); c.__enter__ = MagicMock(return_value=c); c.__exit__ = MagicMock(return_value=False); c.post.return_value = resp; cls.return_value = c
+              r = HandlerInferenceIntent().handle(intent)
+          print("content=%r error=%r" % (r.content, r.error_message))
+          assert r.content == "" and "empty message content" in (r.error_message or "")
+          print("REASONING_ONLY_REFUSED")
+          '
+        cwd: "${OMNI_HOME}/omnimarket"
+    binds_ac:
+      - "DoD1"
+    ac_bindings:
+      - label: "DoD1"
+        criterion_hash: "819c80b8081a7303f5371312a26baa17fbda4706b3b72509af3494e95a82abdd"
+        proposed_by: "lane=dod-closeout-bind-2026-10-10T0445Z-c0"
+        accepted_by: "lane=dod-closeout-accept-2026-10-10T0445Z-c0"
+        accepted_at: "2026-10-10T05:24:43Z"
+  - id: "dod-accept-0445z-12717-dod2-length-veto"
+    description: |-
+      DoD2 binding proposed by lane dod-closeout-bind-2026-10-10T0445Z-c0 and accepted by a different lane, dod-closeout-accept-2026-10-10T0445Z-c0, after an independent re-run at omnimarket origin/dev 4c91a561d (2 passed). A syntactically complete test or code_generation artifact with finish_reason=LENGTH is refused by the quality gate with a reason naming finish_reason=length. Disabling the is_truncated_by_output_budget veto in a scratch copy makes both params fail on assert not result.passed, so the test is not vacuous. The gate veto predates the test (OMN-18278 #2580); the test came with OMN-12717 #2918.
+    source: "manual"
+    execution_scope: "local_done_gate"
+    checks:
+      - check_type: "command"
+        check_value: |-
+          env -u PYTHONPATH uv run pytest "tests/unit/delegation/test_quality_gate_code_artifact_omn12717.py::test_length_vetoes_even_syntactically_complete_artifacts" -q -p no:cacheprovider
+        cwd: "${OMNI_HOME}/omnimarket"
+    binds_ac:
+      - "DoD2"
+    ac_bindings:
+      - label: "DoD2"
+        criterion_hash: "a65446a88c11125d5ba12b5fe969ea01537fa747afafbdc6a60262dfbfe342d6"
+        proposed_by: "lane=dod-closeout-bind-2026-10-10T0445Z-c0"
+        accepted_by: "lane=dod-closeout-accept-2026-10-10T0445Z-c0"
+        accepted_at: "2026-10-10T05:24:43Z"
+  - id: "dod-accept-0445z-12717-dod3-golden-chain"
+    description: |-
+      DoD3 binding proposed by lane dod-closeout-bind-2026-10-10T0445Z-c0 and accepted by a different lane, dod-closeout-accept-2026-10-10T0445Z-c0, after an independent re-run at omnimarket origin/dev 4c91a561d (2 passed: [test] and [code_generation]). Each param routes a recorded live final artifact through the delegation workflow and routing handlers, and the quality gate passes it. The golden-chain test was added by OMN-12717 #1055 and does not collect at that merge's parent 658098544.
+    source: "manual"
+    execution_scope: "local_done_gate"
+    checks:
+      - check_type: "command"
+        check_value: |-
+          env -u PYTHONPATH uv run pytest "tests/integration/golden_chain/test_golden_chain_delegation_useful_artifact_chain.py::test_live_final_artifacts_pass_routing_and_quality_gate_di" -v -p no:cacheprovider
+        cwd: "${OMNI_HOME}/omnimarket"
+    binds_ac:
+      - "DoD3"
+    ac_bindings:
+      - label: "DoD3"
+        criterion_hash: "a83ac0a1ee5c2ce17eb2b149763b2c147f2405b454223d0ad409eddb0ca6c2a5"
+        proposed_by: "lane=dod-closeout-bind-2026-10-10T0445Z-c0"
+        accepted_by: "lane=dod-closeout-accept-2026-10-10T0445Z-c0"
+        accepted_at: "2026-10-10T05:24:43Z"
+  - id: "dod-accept-0445z-12717-dod4-live-final-content"
+    description: |-
+      DoD4 binding proposed by lane dod-closeout-bind-2026-10-10T0445Z-c0 and accepted by a different lane, dod-closeout-accept-2026-10-10T0445Z-c0, after an independent read-only re-run on the .201 dev lane postgres (omnidash_analytics.delegation_events). Two rows, both Qwen3.8-27B with quality_gate_passed, terminal_ok, content_verdict=usable, data_source=real, a closed code fence and unit tests present. A second read shows both rows are ticket_id OMN-12717, is_shadow=f, truncated=f, written 2026-10-06T07:44Z; the test row's prompt is an OmniNode infra unit-test prompt and the code_generation row's prompt is a generic non-OmniNode normalize_status prompt.
+    source: "manual"
+    execution_scope: "local_done_gate"
+    checks:
+      - check_type: "command"
+        check_value: |-
+          ssh -o ConnectTimeout=10 -o BatchMode=yes jonah@192.168.86.201 bash -s <<'LAB'
+          docker exec omnibase-infra-postgres psql -U postgres -d omnidash_analytics -At -c "select correlation_id, task_type, model_name, quality_gate_passed, terminal_ok, content_verdict, data_source, right(rtrim(response_text), 3) = repeat(chr(96), 3) as fence_closed, (strpos(response_text, '@pytest.mark.unit') > 0 and strpos(response_text, 'def test_') > 0) as has_unit_tests from delegation_events where correlation_id in ('358d77c1-df52-47e1-8b9a-3896d77f1777', '1e7af29f-a965-4ead-9fe2-90cb55a54694') order by task_type"
+          LAB
+    binds_ac:
+      - "DoD4"
+    ac_bindings:
+      - label: "DoD4"
+        criterion_hash: "cbd6676f535a7518880fcd72b30e2169db81ded29e5a5335d184d545a9789cd5"
+        proposed_by: "lane=dod-closeout-bind-2026-10-10T0445Z-c0"
+        accepted_by: "lane=dod-closeout-accept-2026-10-10T0445Z-c0"
+        accepted_at: "2026-10-10T05:24:43Z"
