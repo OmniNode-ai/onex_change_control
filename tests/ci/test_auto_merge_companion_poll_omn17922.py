@@ -23,11 +23,11 @@ What this module pins is that the remedy is a BOUNDED POLL and not a relaxed
 gate:
 
 1. ``Resolve PR and author`` emits a ``companion`` output that is strictly
-   narrower than ``arm`` -- true only for the OCC writer App with an
-   ``evidence(`` title, false for ``jonahgabriel`` and for every other author.
-2. The poll budget is non-zero for exactly that shape on the ``pull_request``
-   event, and zero everywhere else, so human PRs and the check_suite path cost
-   what they cost today.
+   narrower than ``arm`` -- true only for the OCC writer App or
+   ``jonahgabriel`` with an ``evidence(`` title (OMN-17427), false otherwise.
+2. The poll budget is non-zero for companions on the ``pull_request`` and
+   ``workflow_dispatch`` events (OMN-18797), and zero elsewhere, so ordinary
+   human PRs and the check_suite path retain the single-reading behaviour.
 3. Executing the step's own bash against a scripted Checks API: a pending
    reading is re-taken until it concludes; a concluded SUCCESS arms; a concluded
    FAILURE exits 1; an exhausted budget defers; and an API that errors or
@@ -108,21 +108,23 @@ def _run_resolve(tmp_path: Path, actor: str, title: str) -> dict[str, str]:
 @pytest.mark.parametrize(
     ("actor", "title", "expected_arm", "expected_companion"),
     [
-        # The one shape that polls.
+        # The OCC writer App's evidence-shaped title polls.
         (
             "onexbot-occ-writer[bot]",
             "evidence(OMN-18669): OCC companion for OmniNode-ai/omnimemory#517",
             "true",
             "true",
         ),
-        # Arms, never polls: no human PR pays for the wait.
+        # Always arms; only evidence-shaped human titles poll (OMN-17427).
         ("jonahgabriel", "fix(OMN-17922): anything", "true", "false"),
         (
             "jonahgabriel",
             "evidence(OMN-17922): evidence-shaped human title",
             "true",
-            "false",
+            "true",
         ),
+        ("jonahgabriel", " evidence(OMN-1): leading space", "true", "false"),
+        ("jonahgabriel", "Evidence(OMN-1): wrong case", "true", "false"),
         # The App with a non-evidence title neither arms nor polls.
         (
             "onexbot-occ-writer[bot]",

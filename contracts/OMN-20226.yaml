@@ -12,6 +12,8 @@ requirements:
   - id: "req-transcribed-acceptance-criteria"
     statement: |-
       The acceptance criteria this ticket's author declared, transcribed from the ticket body. The ticket body is the source and this block is the copy; each criterion's id is the label the sibling binds_ac entry claims.
+    rationale: |-
+      2026-10-10: AC3 and AC4 were transferred to OMN-20716, as its AC1 and AC2, by Jonah Gray's ruling of 2026-10-07T14:08Z (OMN-20226 comment 1373d902): a typed not-measured state is the accepted end state for this ticket, and the producer and both formulas move to their own ticket. The AC3 and AC4 statements below are re-transcribed from the live ticket body, which records that move, with its two tracker links written as their ids. Until this revision they read, verbatim: "AC3: Compression equals raw input tokens over compressed input tokens for the same window as the headline -- falsifier: the two disagree in the lab readback for one window" and "AC4: Cache hit rate equals calls answered from the semantic cache over total calls for the window -- falsifier: the two disagree in the lab readback for one window". AC1 and AC2 are unchanged and match the live body byte for byte; they are the only criteria the body still declares with a falsifier, and both are bound below.
     acceptance:
       - id: "AC1"
         statement: |-
@@ -21,20 +23,50 @@ requirements:
           AC2: A figure with no measurement behind it renders its typed not-measured state, never 0 and never a blank -- falsifier: a fresh store showing 0 or a blank for either figure
       - id: "AC3"
         statement: |-
-          AC3: Compression equals raw input tokens over compressed input tokens for the same window as the headline -- falsifier: the two disagree in the lab readback for one window
+          AC3 (moved): Compression equals raw input tokens over compressed input tokens for the same window as the headline. Moved to OMN-20716 AC1 by Jonah's ruling of 2026-10-07T14:08Z (comment 1373d902).
       - id: "AC4"
         statement: |-
-          AC4: Cache hit rate equals calls answered from the semantic cache over total calls for the window -- falsifier: the two disagree in the lab readback for one window
+          AC4 (moved): Cache hit rate equals calls answered from the semantic cache over total calls for the window. Moved to OMN-20716 AC2 by the same ruling.
 evidence_requirements:
   - kind: "tests"
     description: |-
       Behavior proof for PR #368 on OmniNode-ai/omnidash: the Overview page test and the page contract test it adds, executed at cwd `${OMNI_HOME}/omnidash`.
     command: "npm test -- --run src/pages/LocalDashboardPage.omn20226.test.tsx src/pages/local/omn20226.contracts.test.ts"
+  - kind: "tests"
+    description: |-
+      Behavior proof for PR #3508 on OmniNode-ai/omnimarket: the compression and cache-hit test it adds, the metering-summary node tests and the served-row render test, executed at cwd `${OMNI_HOME}/omnimarket`. None of them start a database.
+    command: "uv run pytest tests/nodes/node_projection_metering_summary/test_omn20226_compression_and_cache_hit.py
+      tests/nodes/node_projection_metering_summary/test_projection.py tests/nodes/node_projection_metering_summary/test_golden_chain_projection_metering_summary.py
+      tests/nodes/node_projection_metering_summary/test_omn20007_day_rows_sum_to_all_window.py tests/test_omn19977_metering_renders_the_row.py
+      -q -p no:randomly"
 emergency_bypass:
   enabled: false
   justification: ""
   follow_up_ticket_id: ""
 dod_evidence:
+  - id: "dod-OmniNode-ai-omnibase_infra-pr-4657-ci"
+    description: "PR #4657 on OmniNode-ai/omnibase_infra — product diff scope check (OMN-14425)."
+    source: "generated"
+    checks:
+      - check_type: "command"
+        check_value: "gh pr view 4657 --repo OmniNode-ai/omnibase_infra --json files"
+  - id: "occ-self-bind-pr-13243"
+    description: "OCC companion PR #13243 — self-bind for OMN-20226 (OMN-14650)."
+    source: "generated"
+    checks:
+      - check_type: "command"
+        check_value: "gh pr view 13243 --repo OmniNode-ai/onex_change_control --json number,state"
+  - id: "dod-occ-diff-derived-behavior-proof-pr-4657"
+    description: |-
+      PR #4657 on OmniNode-ai/omnibase_infra — diff-derived behavior proof (OMN-16434).
+      Database requirement: explicitly provisioned by tests; ambient
+      POSTGRES_* and DSN settings are unavailable.
+    source: "generated"
+    checks:
+      - check_type: "test_passes"
+        check_value: |-
+          uv run pytest tests/unit/migrations/test_omn20226_metering_compression_cache_hit_vendor.py -q
+        cwd: "${OMNI_HOME}/omnibase_infra"
   - id: "dod-OmniNode-ai-omnidash-pr-368"
     description: >-
       PR #368 on OmniNode-ai/omnidash, hand-authored companion (OMN-15247); occ-autobind mints none for
@@ -83,3 +115,104 @@ dod_evidence:
       - check_type: "command"
         check_value: |-
           deploy_probe=1; body=$(gh api 'repos/OmniNode-ai/omnibase_infra/contents/docker/migrations/forward/nodes/node_projection_metering_summary/0003_metering_summary_compression_and_cache_hit.sql?ref=dea192aafd28deba04b17aede915839668d62ed7' --jq '.content' | base64 -d) && grep -qF 'compression_ratio' <<< "$body" && grep -cF 'cache_hit_rate' <<< "$body"
+  - id: "dod-deploy-probe-omnidash-pr-368-posix"
+    description: >-
+      POSIX successor of dod-deploy-probe-omnidash-pr-368, whose bash-only here-strings (<<<) are a syntax
+      error under the /bin/sh (dash) that a pinned compliance runner executes check values with ("sh:
+      1: Syntax error: redirection unexpected", omnibase_infra Contract Compliance Check job 112844557099).
+      Same assertion, piped through printf into grep -c, which reads its whole input, so neither dash
+      nor bash -o pipefail can fail it on SIGPIPE: the omnidash#368 head 697098742722 binds both Overview
+      cards to their served metering-summary.v1 columns. With the ref swapped to omnidash dev 8db004873e30
+      the count is 0 and the probe exits 1 under dash.
+    source: "manual"
+    evidence_artifact: "supersedes_dod_evidence:dod-deploy-probe-omnidash-pr-368"
+    checks:
+      - check_type: "command"
+        check_value: |-
+          deploy_probe=1; body=$(gh api 'repos/OmniNode-ai/omnidash/contents/src/pages/local/overview.contracts.yaml?ref=697098742722597a344912c57914cc1e6e703d3a' --jq '.content' | base64 -d) && printf '%s\n' "$body" | grep -cF '"compression_ratio"' >/dev/null && printf '%s\n' "$body" | grep -cF '"cache_hit_rate"'
+  - id: "dod-deploy-probe-omnibase-infra-pr-4657-posix"
+    description: >-
+      POSIX successor of dod-deploy-probe-omnibase-infra-pr-4657, whose bash-only here-strings (<<<) made
+      omnibase_infra's Contract Compliance Check BLOCK with "sh: 1: Syntax error: redirection unexpected"
+      (job 112844557099). Same assertion, piped through printf into grep -c so it runs under dash and
+      under bash -o pipefail alike: the omnibase_infra#4657 head 3b2056f051c8 vendors migration 0003 with
+      both columns. With the ref swapped to omnibase_infra dev ed01b6ddb3d0 the file is absent (404) and
+      the probe exits 1 under dash.
+    source: "manual"
+    evidence_artifact: "supersedes_dod_evidence:dod-deploy-probe-omnibase-infra-pr-4657"
+    checks:
+      - check_type: "command"
+        check_value: |-
+          deploy_probe=1; body=$(gh api 'repos/OmniNode-ai/omnibase_infra/contents/docker/migrations/forward/nodes/node_projection_metering_summary/0003_metering_summary_compression_and_cache_hit.sql?ref=3b2056f051c8e71357a597e7ea2ce33d475df0da' --jq '.content' | base64 -d) && printf '%s\n' "$body" | grep -cF 'compression_ratio' >/dev/null && printf '%s\n' "$body" | grep -cF 'cache_hit_rate'
+  - id: "dod-OmniNode-ai-omnimarket-pr-3508"
+    description: >-
+      PR #3508 on OmniNode-ai/omnimarket, hand-authored companion (OMN-15247). #3508 makes metering-summary.v1
+      serve compression_ratio, cache_hit_rate and runs_cache_answered, which the fold writes as null because
+      no metering record carries a raw or compressed input-token count or a semantic-cache answer. The
+      check reads the node contract at the PR head 0fa7f85eff3b and counts the three served columns of
+      the exposure: 3 there, 0 at dev 0b950290f878, where the probe exits 1.
+    source: "manual"
+    checks:
+      - check_type: "command"
+        check_value: |-
+          gh api 'repos/OmniNode-ai/omnimarket/contents/src/omnimarket/nodes/node_projection_metering_summary/contract.yaml?ref=0fa7f85eff3b8c06c7ac2cc69a8c9ed5c1d4e5a3' --jq '.content' | base64 -d | grep -cE '^ +- (compression_ratio|cache_hit_rate|runs_cache_answered)$'
+  - id: "dod-OmniNode-ai-omnimarket-pr-3508-tests"
+    description: >-
+      Behavior proof for PR #3508 on OmniNode-ai/omnimarket: the compression and cache-hit test it adds
+      (failure modes C1-C8: measured runs still null, no column default, every window, replay, stored
+      and served as null keys, exposure columns, migration shape), the metering-summary node tests and
+      the served-row render test, none of which start a database. 38 passed at the PR head 0fa7f85eff3b;
+      the same five files against dev 0b950290f878's code failed 7 of 38, so the check can go red. It
+      is evidence for the served half of AC1 (each figure reads a served exposure field) and of AC2 (no
+      measurement serves null, never 0 or a blank), with the omnidash#368 item proving the rendered half,
+      but it binds no criterion: AC3 and AC4 stay on OMN-20226 with no producer yet (Lakshman, 2026-10-07),
+      and a contract binding some criteria but not all is refused.
+    source: "manual"
+    checks:
+      - check_type: "test_passes"
+        check_value: |-
+          uv run pytest tests/nodes/node_projection_metering_summary/test_omn20226_compression_and_cache_hit.py tests/nodes/node_projection_metering_summary/test_projection.py tests/nodes/node_projection_metering_summary/test_golden_chain_projection_metering_summary.py tests/nodes/node_projection_metering_summary/test_omn20007_day_rows_sum_to_all_window.py tests/test_omn19977_metering_renders_the_row.py -q -p no:randomly
+        cwd: "${OMNI_HOME}/omnimarket"
+  - id: "dod-omn20226-ac1-contract-vitest-merged"
+    description: >-
+      omnidash#368 merged as c2957521b50391f4e5dbf4708c7c33978177f048, whose tree is byte-identical to
+      the reviewed head 04de32d526230f0995467a8147df89262138d493; hand-authored (OMN-15247). This item
+      runs AC1's declared falsifier, the page contract vitest src/pages/local/omn20226.contracts.test.ts:
+      the Compression and Cache hit rate cards each name their own served metering-summary.v1 column (compression_ratio,
+      cache_hit_rate) as the metric and bind that exposure once it serves the column, never a ratio the
+      browser would divide. 4 passed at the merged commit. Its receipt's red leg runs the same test file
+      over the code of the merge's first parent c71acc7b1feefd75b058216e205156535d161e5b, where all 4
+      fail. It binds AC1 by the hash of the ticket's live criterion text; AC3 and AC4 moved to OMN-20716
+      (ruling 1373d902) and are no longer declared here.
+    source: "manual"
+    execution_scope: "local_done_gate"
+    checks:
+      - check_type: "command"
+        check_value: "npx vitest run src/pages/local/omn20226.contracts.test.ts"
+        cwd: "${OMNI_HOME}/omnidash"
+    binds_ac:
+      - "AC1"
+    ac_bindings:
+      - label: "AC1"
+        criterion_hash: "02631234e9b97ca3626d3b1e63d652fad29a0d7ab3b811eb09753caddc937645"
+  - id: "dod-omn20226-ac2-render-vitest-merged"
+    description: >-
+      omnidash#368 merged as c2957521b50391f4e5dbf4708c7c33978177f048, whose tree is byte-identical to
+      the reviewed head 04de32d526230f0995467a8147df89262138d493; hand-authored (OMN-15247). This item
+      runs AC2's declared falsifier, src/pages/LocalDashboardPage.omn20226.test.tsx: with a served all-time
+      row whose two fields are null, with no served row, and on the page over a fresh store, each figure
+      renders Not measured, never 0, 0%, 0.00x or a blank, while a served value is shown as served. 12
+      passed at the merged commit. Its receipt's red leg runs the same test file over the code of the
+      merge's first parent c71acc7b1feefd75b058216e205156535d161e5b, where all 12 fail. It binds AC2 by
+      the hash of the ticket's live criterion text.
+    source: "manual"
+    execution_scope: "local_done_gate"
+    checks:
+      - check_type: "command"
+        check_value: "npx vitest run src/pages/LocalDashboardPage.omn20226.test.tsx"
+        cwd: "${OMNI_HOME}/omnidash"
+    binds_ac:
+      - "AC2"
+    ac_bindings:
+      - label: "AC2"
+        criterion_hash: "e60174bae4499c4a9a5b74a9381ce9c598e6f69f703697d0fd4ef47c7cd45118"

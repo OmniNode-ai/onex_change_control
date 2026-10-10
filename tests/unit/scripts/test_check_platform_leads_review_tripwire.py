@@ -883,10 +883,16 @@ class TestAuthoringTimeRefusalPresentOnMainOMN18945:
         return "jobs:\n" + "".join(jobs)
 
     def _call(self, module_src: str, workflow_src: str) -> tuple[bool, str]:
-        with mock.patch(
-            f"{MODULE}._read_repo_file_at_ref",
-            side_effect=lambda path, _ref, **_kw: (
-                module_src if path == MAIN_SELF_APPROVAL_MODULE else workflow_src
+        with (
+            mock.patch(
+                f"{MODULE}._read_repo_file_at_ref",
+                side_effect=lambda path, _ref, **_kw: (
+                    module_src if path == MAIN_SELF_APPROVAL_MODULE else workflow_src
+                ),
+            ),
+            mock.patch(
+                f"{MODULE}.enforcement_placement_present",
+                return_value=(True, "live protection verified"),
             ),
         ):
             return authoring_time_refusal_present_on_main(repo=self.REPO)
@@ -991,7 +997,13 @@ class TestAuthoringTimeRefusalPresentOnMainOMN18945:
                 else self._workflow()
             )
 
-        with mock.patch(f"{MODULE}._read_repo_file_at_ref", side_effect=_record):
+        with (
+            mock.patch(f"{MODULE}._read_repo_file_at_ref", side_effect=_record),
+            mock.patch(
+                f"{MODULE}.enforcement_placement_present",
+                return_value=(True, "live protection verified"),
+            ),
+        ):
             authoring_time_refusal_present_on_main(repo="someone/fork")
         assert {ref for _, ref, _ in seen} == {"main"}
         assert {repo for _, _, repo in seen} == {"someone/fork"}
@@ -1102,6 +1114,8 @@ class TestAbsentIsNotUnreadableOMN18945:
             """
             if MAIN_SELF_APPROVAL_MODULE in args[1]:
                 raise TripwireInconclusiveError(not_found)
+            if "required_status_checks" in args[1]:
+                return _completed(returncode=0, stdout='{"contexts": ["CI Summary"]}')
             return _completed(returncode=0, stdout=workflow_src)
 
         with mock.patch(f"{MODULE}._run_gh_checked", side_effect=_gh):
