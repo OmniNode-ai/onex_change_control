@@ -249,3 +249,38 @@ dod_evidence:
     ac_bindings:
       - label: "AC2"
         criterion_hash: "f10cf3e314d2ee59f8df12a4094034ae73b106c5b39714a8a1c1d9fb8746cc47"
+  - id: "dod-omn19984-ac3-scheduled-run-history"
+    description: >-
+      AC3's scheduled-run history, read from the GitHub Actions API for six pinned omninode_infra runs.
+      local_dashboard_parity (C31): three scheduled dev runs, each concluded success, each printing its
+      own C31_VERDICT=PASS line, on three distinct dev commits (1bd733e4, 95823b37, 109a0421). claude_code_plugin_delegate
+      (C30): three scheduled dev runs, each concluded success with C30_VERDICT=PASS, and consecutive (no
+      other scheduled C30 dev run between the earliest and the latest). local_auth_boundary (C32) stays
+      out of AC3 by the ticket's own text until OMN-19916. The check exits 1 on a non-scheduled, non-dev,
+      non-success or non-PASS run, on two C31 runs sharing a commit, and on a gap in the C30 sequence.
+    source: "manual"
+    checks:
+      - check_type: "command"
+        check_value: |-
+          A=repos/OmniNode-ai/omninode_infra/actions
+          C31="38101832991 38077661532 38053883247"
+          C30="38101058830 38076213076 38052646845"
+          one() {
+            read -r p e b c s t <<<"$(gh api "$A/runs/$1" --jq '[.path,.event,.head_branch,.conclusion,.head_sha,.created_at]|join(" ")')"
+            if [ "$p" != ".github/workflows/$2" ] || [ "$e" != schedule ] || [ "$b" != dev ] || [ "$c" != success ]; then echo "FAIL run $1: $p $e $b $c" >&2; return 1; fi
+            if ! gh run view "$1" -R OmniNode-ai/omninode_infra --log | grep "$3_VERDICT=PASS" >/dev/null; then echo "FAIL run $1: no $3_VERDICT=PASS line" >&2; return 1; fi
+            echo "$s $t"
+          }
+          shas=""; for r in $C31; do x=$(one "$r" c31-local-dashboard-parity.yml C31) || exit 1; echo "C31 run $r PASS on ${x%% *}"; shas="$shas ${x%% *}"; done
+          n=$(echo $shas | tr ' ' '\n' | sort -u | wc -l | tr -d ' ')
+          if [ "$n" != 3 ]; then echo "FAIL C31: $n distinct dev commits, need 3" >&2; exit 1; fi
+          ts=""; for r in $C30; do x=$(one "$r" c30-claude-code-plugin-delegate.yml C30) || exit 1; echo "C30 run $r PASS at ${x##* }"; ts="$ts ${x##* }"; done
+          lo=$(echo $ts | tr ' ' '\n' | sort | head -1); hi=$(echo $ts | tr ' ' '\n' | sort | tail -1)
+          k=$(gh api "$A/workflows/c30-claude-code-plugin-delegate.yml/runs?event=schedule&branch=dev&created=$lo..$hi&per_page=100" --jq .total_count)
+          if [ "$k" != 3 ]; then echo "FAIL C30: $k scheduled runs between $lo and $hi, need exactly these 3 consecutive" >&2; exit 1; fi
+          echo "AC3 PASS: C31 green on 3 distinct dev commits; C30 green on 3 consecutive scheduled dev runs"
+    binds_ac:
+      - "AC3"
+    ac_bindings:
+      - label: "AC3"
+        criterion_hash: "3def127f3b6d2fea6ba1de20ab499fe73c91be8f3baa45cffe41db9e1e0c6a8e"
