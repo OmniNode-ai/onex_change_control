@@ -16,7 +16,10 @@ requirements:
           AC1: Each check fails on its planted negative (a missing row, a LAN bind, a plugin with no skill) -- falsifier: each handler's negative-control test run with uv run pytest passes the negative
       - id: "AC2"
         statement: |-
-          AC2: A missing, skipped or unrelated result fails, and each check has run green on three real merge-group commits before this is called done -- falsifier: the check-run history
+          AC2: `local_dashboard_parity` and `local_auth_boundary` each fail their required check when the result is missing, skipped or for another commit -- falsifier: a named negative test per check
+      - id: "AC3"
+        statement: |-
+          AC3: `local_dashboard_parity` and `local_auth_boundary` each concluded success on three green scheduled runs, each on a distinct dev commit, and `claude_code_plugin_delegate` concluded success on three consecutive scheduled dev runs -- falsifier: the check-runs API listing for each. (No repo uses a merge queue, so merge_group commits would never fire. C32 stays out of AC3 until [OMN-19916](<https://linear.app/omninode/issue/OMN-19916>) lands.)
 evidence_requirements:
   - kind: "ci"
     description: "PR #1759 product diff scope present"
@@ -225,3 +228,59 @@ dod_evidence:
       - check_type: "command"
         check_value: |-
           gh api repos/OmniNode-ai/omnimarket/contents/src/omnimarket/nodes/node_pr_lifecycle_fix_effect/handlers/occ_companion_emitter.py?ref=33d85f589d91c06ab5dea532d3cb279a38a623e8 --jq .content | base64 -d | grep -c 'class NothingToBindError'
+  - id: "dod-omn19984-pr1848-ac2a-required-check-negatives"
+    description: >-
+      PR #1848 on OmniNode-ai/omninode_infra, hand-authored companion (OMN-15247); occ-autobind skips
+      draft PRs. #1848 adds tests/scripts/test_local_mvp_required_check_omn19984.py, six named negatives:
+      a result that is missing, skipped, or for another commit, once for local_dashboard_parity (C31)
+      and once for local_auth_boundary (C32). Each goes through omnimarket's satisfies_verdict_request
+      (OMN-19937), which Jonah confirmed is AC2's required check (AC2 was labelled AC2a until his 2026-10-11
+      ruling e02ca0e2). The check runs that file at the PR head. It proves only AC2's named negatives
+      at that head. It does not claim AC3: three green scheduled runs per probe, each on a distinct dev
+      commit, are still owed.
+    source: "manual"
+    execution_scope: "local_done_gate"
+    checks:
+      - check_type: "command"
+        check_value: "uv run pytest tests/scripts/test_local_mvp_required_check_omn19984.py -q"
+        cwd: "${OMNI_HOME}/omninode_infra"
+    binds_ac:
+      - "AC2"
+    ac_bindings:
+      - label: "AC2"
+        criterion_hash: "f10cf3e314d2ee59f8df12a4094034ae73b106c5b39714a8a1c1d9fb8746cc47"
+  - id: "dod-omn19984-ac3-scheduled-run-history"
+    description: >-
+      AC3's scheduled-run history, read from the GitHub Actions API for six pinned omninode_infra runs.
+      local_dashboard_parity (C31): three scheduled dev runs, each concluded success, each printing its
+      own C31_VERDICT=PASS line, on three distinct dev commits (1bd733e4, 95823b37, 109a0421). claude_code_plugin_delegate
+      (C30): three scheduled dev runs, each concluded success with C30_VERDICT=PASS, and consecutive (no
+      other scheduled C30 dev run between the earliest and the latest). local_auth_boundary (C32) stays
+      out of AC3 by the ticket's own text until OMN-19916. The check exits 1 on a non-scheduled, non-dev,
+      non-success or non-PASS run, on two C31 runs sharing a commit, and on a gap in the C30 sequence.
+    source: "manual"
+    checks:
+      - check_type: "command"
+        check_value: |-
+          A=repos/OmniNode-ai/omninode_infra/actions
+          C31="38101832991 38077661532 38053883247"
+          C30="38101058830 38076213076 38052646845"
+          one() {
+            read -r p e b c s t <<<"$(gh api "$A/runs/$1" --jq '[.path,.event,.head_branch,.conclusion,.head_sha,.created_at]|join(" ")')"
+            if [ "$p" != ".github/workflows/$2" ] || [ "$e" != schedule ] || [ "$b" != dev ] || [ "$c" != success ]; then echo "FAIL run $1: $p $e $b $c" >&2; return 1; fi
+            if ! gh run view "$1" -R OmniNode-ai/omninode_infra --log | grep "$3_VERDICT=PASS" >/dev/null; then echo "FAIL run $1: no $3_VERDICT=PASS line" >&2; return 1; fi
+            echo "$s $t"
+          }
+          shas=""; for r in $C31; do x=$(one "$r" c31-local-dashboard-parity.yml C31) || exit 1; echo "C31 run $r PASS on ${x%% *}"; shas="$shas ${x%% *}"; done
+          n=$(echo $shas | tr ' ' '\n' | sort -u | wc -l | tr -d ' ')
+          if [ "$n" != 3 ]; then echo "FAIL C31: $n distinct dev commits, need 3" >&2; exit 1; fi
+          ts=""; for r in $C30; do x=$(one "$r" c30-claude-code-plugin-delegate.yml C30) || exit 1; echo "C30 run $r PASS at ${x##* }"; ts="$ts ${x##* }"; done
+          lo=$(echo $ts | tr ' ' '\n' | sort | head -1); hi=$(echo $ts | tr ' ' '\n' | sort | tail -1)
+          k=$(gh api "$A/workflows/c30-claude-code-plugin-delegate.yml/runs?event=schedule&branch=dev&created=$lo..$hi&per_page=100" --jq .total_count)
+          if [ "$k" != 3 ]; then echo "FAIL C30: $k scheduled runs between $lo and $hi, need exactly these 3 consecutive" >&2; exit 1; fi
+          echo "AC3 PASS: C31 green on 3 distinct dev commits; C30 green on 3 consecutive scheduled dev runs"
+    binds_ac:
+      - "AC3"
+    ac_bindings:
+      - label: "AC3"
+        criterion_hash: "3def127f3b6d2fea6ba1de20ab499fe73c91be8f3baa45cffe41db9e1e0c6a8e"
