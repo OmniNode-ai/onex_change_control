@@ -13,6 +13,9 @@ from pathlib import Path
 
 import pytest
 import yaml
+from omnibase_core.validators.no_unguarded_git_subprocess import (
+    scrub_git_location_env,
+)
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 HOOK = REPO_ROOT / ".pre-commit-hooks" / "reject-deploy-gate-skip-token.sh"
@@ -71,7 +74,12 @@ def _run_normal_hook(
 
 def _git(path: Path, *arguments: str) -> None:
     """Run a checked Git command in an isolated test repository."""
-    subprocess.run(["git", *arguments], check=True, cwd=path)
+    subprocess.run(
+        ["git", *arguments],
+        check=True,
+        cwd=path,
+        env=scrub_git_location_env(os.environ),
+    )
 
 
 def _init_git_repository(
@@ -82,7 +90,11 @@ def _init_git_repository(
 ) -> None:
     """Initialize a feature branch tracking origin/dev in an isolated repository."""
     remote = path / "origin.git"
-    subprocess.run(["git", "init", "--bare", "-q", str(remote)], check=True)
+    subprocess.run(
+        ["git", "init", "--bare", "-q", str(remote)],
+        check=True,
+        env=scrub_git_location_env(os.environ),
+    )
     _git(path, "init", "-q")
     _git(path, "config", "user.email", "test@example.invalid")
     _git(path, "config", "user.name", "OMN-17496 test")
@@ -171,12 +183,14 @@ def test_hook_configuration_passes_the_legacy_exclusions_explicitly() -> None:
 
 
 @pytest.mark.unit
-def test_manual_mode_preserves_blocking_and_allowlist_behavior(tmp_path: Path) -> None:
-    """Explicit manual paths remain fail-closed and honor approval receipts."""
+def test_manual_mode_rejects_a_token_with_or_without_a_receipt_comment(
+    tmp_path: Path,
+) -> None:
+    """Manual paths fail closed; a receipt-id comment rescues nothing (OMN-20074)."""
     blocked = tmp_path / "blocked.md"
     blocked.write_text("[skip-receipt-gate: no evidence]\n")
-    allowed = tmp_path / "allowed.yaml"
-    allowed.write_text(
+    commented = tmp_path / "commented.yaml"
+    commented.write_text(
         "[skip-receipt-gate: approved]\n# skip-token-allowed: USER-APPROVAL-1\n"
     )
     clean = tmp_path / "clean.txt"
@@ -188,9 +202,13 @@ def test_manual_mode_preserves_blocking_and_allowlist_behavior(tmp_path: Path) -
         f"ERROR: {blocked} contains a [skip-*] bypass token." in blocked_result.stderr
     )
 
-    allowed_result = _run_hook(tmp_path, allowed)
-    assert allowed_result.returncode == 0
-    assert "explicit approval receipt present" in allowed_result.stderr
+    commented_result = _run_hook(tmp_path, commented)
+    assert commented_result.returncode == 1
+    assert (
+        f"ERROR: {commented} contains a [skip-*] bypass token."
+        in commented_result.stderr
+    )
+    assert "approval receipt present" not in commented_result.stderr
 
     clean_result = _run_hook(tmp_path, clean)
     assert clean_result.returncode == 0
@@ -258,10 +276,10 @@ def test_normal_mode_preserves_special_and_nul_delimited_paths(
 
 
 @pytest.mark.unit
-def test_normal_mode_preserves_allowlist_and_configured_exemptions(
+def test_normal_mode_keeps_configured_exemptions_and_honours_no_receipt_comment(
     tmp_path: Path,
 ) -> None:
-    """The single index scan keeps receipt allowlists and old exclusions exact."""
+    """The index scan keeps the old exclusions exact and rescues nothing (OMN-20074)."""
     _init_git_repository(tmp_path)
     _stage_file(
         tmp_path,
@@ -274,13 +292,15 @@ def test_normal_mode_preserves_allowlist_and_configured_exemptions(
         "[skip-receipt-gate: approved]\n# skip-token-allowed: APPROVAL-1\n",
     )
 
-    exempt_result = _run_normal_hook(
+    commented_result = _run_normal_hook(
         tmp_path,
         environment={"GITHUB_BASE_REF": "dev"},
     )
 
-    assert exempt_result.returncode == 0
-    assert "approved.md but explicit approval receipt present" in exempt_result.stderr
+    assert commented_result.returncode == 1
+    assert "approved.md contains a [skip-*] bypass token." in commented_result.stderr
+    assert "approval receipt present" not in commented_result.stderr
+    assert "OMN-10414.yaml contains" not in commented_result.stderr
 
     _stage_file(tmp_path, "enforced.md", "[skip-anything: enforce this]\n")
     enforced_result = _run_normal_hook(
