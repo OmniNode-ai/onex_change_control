@@ -284,3 +284,42 @@ dod_evidence:
     ac_bindings:
       - label: "AC3"
         criterion_hash: "3def127f3b6d2fea6ba1de20ab499fe73c91be8f3baa45cffe41db9e1e0c6a8e"
+  - id: "dod-omn19984-ac3-scheduled-run-history-v2"
+    description: >-
+      Supersedes dod-omn19984-ac3-scheduled-run-history. That item's check defines a shell function, which
+      dod_verify refuses as not a command, and it accepted an echoed verdict and a failed log read. This
+      item reads the same six pinned omninode_infra runs through the GitHub Actions API, in one loop with
+      no function. It exits 1 on a non-scheduled, non-dev or non-success run, on the wrong workflow, on
+      a run whose metadata or log cannot be read, on a log that does not print exactly one verdict line
+      for that probe reading PASS (an echoed command, a second verdict line, another probe's verdict or
+      a FAIL does not count), on two C31 runs sharing a commit, and on a gap in the C30 sequence. local_auth_boundary
+      (C32) stays out of AC3 by the ticket's own text until OMN-19916.
+    source: "manual"
+    execution_scope: "local_done_gate"
+    evidence_artifact: "supersedes_dod_evidence:dod-omn19984-ac3-scheduled-run-history"
+    checks:
+      - check_type: "command"
+        check_value: |-
+          A=repos/OmniNode-ai/omninode_infra/actions
+          shas=""; ts=""
+          for spec in "C31 c31-local-dashboard-parity.yml 38101832991" "C31 c31-local-dashboard-parity.yml 38077661532" "C31 c31-local-dashboard-parity.yml 38053883247" "C30 c30-claude-code-plugin-delegate.yml 38101058830" "C30 c30-claude-code-plugin-delegate.yml 38076213076" "C30 c30-claude-code-plugin-delegate.yml 38052646845"; do
+            read -r probe wf run <<<"$spec"
+            m=$(gh api "$A/runs/$run" --jq '[.path,.event,.head_branch,.conclusion,.head_sha,.created_at]|join(" ")') || { echo "FAIL run $run: run metadata could not be read" >&2; exit 1; }
+            read -r p e b c s t <<<"$m"
+            if [ "$p" != ".github/workflows/$wf" ] || [ "$e" != schedule ] || [ "$b" != dev ] || [ "$c" != success ]; then echo "FAIL run $run: $p $e $b $c" >&2; exit 1; fi
+            l=$(gh run view "$run" -R OmniNode-ai/omninode_infra --log) || { echo "FAIL run $run: run log could not be read" >&2; exit 1; }
+            v=$(printf '%s\n' "$l" | awk '{ n=index($0,"\t"); if (!n) next; r=substr($0,n+1); n=index(r,"\t"); if (!n) next; r=substr(r,n+1); n=index(r," "); if (!n) next; r=substr(r,n+1); sub(/\r$/,"",r); if (r ~ /^C3[0-9]_VERDICT=/) print r }')
+            if [ "$v" != "${probe}_VERDICT=PASS" ]; then echo "FAIL run $run: verdict lines [$(echo $v)], need exactly one, ${probe}_VERDICT=PASS" >&2; exit 1; fi
+            if [ "$probe" = C31 ]; then echo "C31 run $run PASS on $s"; shas="$shas $s"; else echo "C30 run $run PASS at $t"; ts="$ts $t"; fi
+          done
+          n=$(echo $shas | tr ' ' '\n' | sort -u | wc -l | tr -d ' ')
+          if [ "$n" != 3 ]; then echo "FAIL C31: $n distinct dev commits, need 3" >&2; exit 1; fi
+          lo=$(echo $ts | tr ' ' '\n' | sort | head -1); hi=$(echo $ts | tr ' ' '\n' | sort | tail -1)
+          k=$(gh api "$A/workflows/c30-claude-code-plugin-delegate.yml/runs?event=schedule&branch=dev&created=$lo..$hi&per_page=100" --jq .total_count) || { echo "FAIL C30: the scheduled-run listing could not be read" >&2; exit 1; }
+          if [ "$k" != 3 ]; then echo "FAIL C30: $k scheduled runs between $lo and $hi, need exactly these 3 consecutive" >&2; exit 1; fi
+          echo "AC3 PASS: C31 green on 3 distinct dev commits; C30 green on 3 consecutive scheduled dev runs"
+    binds_ac:
+      - "AC3"
+    ac_bindings:
+      - label: "AC3"
+        criterion_hash: "3def127f3b6d2fea6ba1de20ab499fe73c91be8f3baa45cffe41db9e1e0c6a8e"
