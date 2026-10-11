@@ -33,7 +33,7 @@ standards in `~/.claude/CLAUDE.md`. Neither is repeated here.
 ## The receipt surface (why this repo is load-bearing)
 
 Canonical DoD receipt location — the only shape the gates accept (see
-[DoD Receipt Locations](https://github.com/OmniNode-ai/knowledge-base/blob/main/reference/dod-receipt-locations.md) in the knowledge base):
+[DoD Receipt Locations](https://github.com/OmniNode-ai/knowledge_base/blob/main/reference/dod-receipt-locations.md) in the knowledge base):
 
 ```text
 drift/dod_receipts/<TICKET>/<ITEM_ID>/<run_timestamp>.yaml   # omnibase_core.ModelDodReceipt
@@ -116,7 +116,7 @@ pre-commit run --all-files
 
 Naming follows `omnibase_core` conventions (`Model<Name>` in `model_<name>.py`,
 `Enum<Name>` in `enum_<name>.py`). Package and schema version are 1:1 — current version in
-`pyproject.toml`, break rules in [Versioning Policy](https://github.com/OmniNode-ai/knowledge-base/blob/main/reference/onex-change-control-versioning-policy.md).
+`pyproject.toml`, break rules in [Versioning Policy](https://github.com/OmniNode-ai/knowledge_base/blob/main/reference/onex-change-control-versioning-policy.md).
 
 SPDX MIT headers are required in `src/`, `tests/`, `scripts/` (there is no `examples/`
 dir). Stamp: `uv run onex spdx fix src tests scripts`; spec:
@@ -124,5 +124,5 @@ dir). Stamp: `uv run onex spdx fix src tests scripts`; spec:
 
 ## Key docs
 
-- Full docs live in the [knowledge base](https://github.com/OmniNode-ai/knowledge-base) — [Drift Control System](https://github.com/OmniNode-ai/knowledge-base/blob/main/architecture/drift-control-system.md), [OCC Decision Log](https://github.com/OmniNode-ai/knowledge-base/blob/main/reference/onex-change-control-decision-log.md)
-- [DoD Receipt Locations](https://github.com/OmniNode-ai/knowledge-base/blob/main/reference/dod-receipt-locations.md), [Versioning Policy](https://github.com/OmniNode-ai/knowledge-base/blob/main/reference/onex-change-control-versioning-policy.md), [Authoring Governance YAML Artifacts](https://github.com/OmniNode-ai/knowledge-base/blob/main/guides/authoring-governance-yaml-artifacts.md)
+- Full docs live in the [knowledge base](https://github.com/OmniNode-ai/knowledge_base) — [Drift Control System](https://github.com/OmniNode-ai/knowledge_base/blob/main/architecture/drift-control-system.md), [OCC Decision Log](https://github.com/OmniNode-ai/knowledge_base/blob/main/reference/onex-change-control-decision-log.md)
+- [DoD Receipt Locations](https://github.com/OmniNode-ai/knowledge_base/blob/main/reference/dod-receipt-locations.md), [Versioning Policy](https://github.com/OmniNode-ai/knowledge_base/blob/main/reference/onex-change-control-versioning-policy.md), [Authoring Governance YAML Artifacts](https://github.com/OmniNode-ai/knowledge_base/blob/main/guides/authoring-governance-yaml-artifacts.md)

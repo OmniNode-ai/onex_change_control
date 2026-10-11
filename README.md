@@ -131,7 +131,7 @@ uv run check-schema-purity --warn-only
 3. Wire it in `.github/workflows/ci.yml` as a CI gate.
 4. Add a pre-commit hook entry if it should run locally on commit.
 
-See [Drift Control System](https://github.com/OmniNode-ai/knowledge-base/blob/main/architecture/drift-control-system.md) in the knowledge base for the full governance workflow index.
+See [Drift Control System](https://github.com/OmniNode-ai/knowledge_base/blob/main/architecture/drift-control-system.md) in the knowledge base for the full governance workflow index.
 
 ### Generated Ticket Review: Validate Existing Contracts
 
@@ -186,7 +186,7 @@ onex_change_control/
 
 **Key design principle**: Schema modules are **pure** (no I/O, no env reads, no time calls). `check-schema-purity` enforces this in CI.
 
-See [Drift Control System](https://github.com/OmniNode-ai/knowledge-base/blob/main/architecture/drift-control-system.md) in the knowledge base for the full enforcement model.
+See [Drift Control System](https://github.com/OmniNode-ai/knowledge_base/blob/main/architecture/drift-control-system.md) in the knowledge base for the full enforcement model.
 
 ---
 
@@ -231,7 +231,7 @@ uv run onex spdx fix --check src tests scripts
 **The knowledge base is the single home for this repo's documentation.** Design, policy,
 reference, runbooks and decision records all live there, not here:
 
-- [OmniNode knowledge base](https://github.com/OmniNode-ai/knowledge-base) — public
+- [OmniNode knowledge base](https://github.com/OmniNode-ai/knowledge_base) — public
 
 This repo keeps only its README, agent configuration, changelog, licence, security policy
 and `.github/` templates; a doc that is not one of those belongs in the knowledge base, and
@@ -240,12 +240,12 @@ frequently-used starting points:
 
 | Document | Purpose |
 |----------|---------|
-| [Drift Control System](https://github.com/OmniNode-ai/knowledge-base/blob/main/architecture/drift-control-system.md) | Enforcement model, phases, invariants |
-| [OCC Decision Log](https://github.com/OmniNode-ai/knowledge-base/blob/main/reference/onex-change-control-decision-log.md) | Architectural decisions and rationale (D-001 through D-008+) |
-| [Versioning Policy](https://github.com/OmniNode-ai/knowledge-base/blob/main/reference/onex-change-control-versioning-policy.md) | Schema immutability and SemVer rules |
-| [Authoring Governance YAML Artifacts](https://github.com/OmniNode-ai/knowledge-base/blob/main/guides/authoring-governance-yaml-artifacts.md) | How to author YAML artifacts from templates |
-| [ONEX Baseline Evaluation Framework](https://github.com/OmniNode-ai/knowledge-base/blob/main/architecture/onex-baseline-evaluation-framework.md) | A/B evaluation framework architecture |
-| [DoD Receipt Locations](https://github.com/OmniNode-ai/knowledge-base/blob/main/reference/dod-receipt-locations.md) | DoD receipt location (canonical: `drift/dod_receipts/`) |
+| [Drift Control System](https://github.com/OmniNode-ai/knowledge_base/blob/main/architecture/drift-control-system.md) | Enforcement model, phases, invariants |
+| [OCC Decision Log](https://github.com/OmniNode-ai/knowledge_base/blob/main/reference/onex-change-control-decision-log.md) | Architectural decisions and rationale (D-001 through D-008+) |
+| [Versioning Policy](https://github.com/OmniNode-ai/knowledge_base/blob/main/reference/onex-change-control-versioning-policy.md) | Schema immutability and SemVer rules |
+| [Authoring Governance YAML Artifacts](https://github.com/OmniNode-ai/knowledge_base/blob/main/guides/authoring-governance-yaml-artifacts.md) | How to author YAML artifacts from templates |
+| [ONEX Baseline Evaluation Framework](https://github.com/OmniNode-ai/knowledge_base/blob/main/architecture/onex-baseline-evaluation-framework.md) | A/B evaluation framework architecture |
+| [DoD Receipt Locations](https://github.com/OmniNode-ai/knowledge_base/blob/main/reference/dod-receipt-locations.md) | DoD receipt location (canonical: `drift/dod_receipts/`) |
 | [CLAUDE.md](CLAUDE.md) | Developer context and conventions |
 | [.github/CONTRIBUTING.md](.github/CONTRIBUTING.md) | Contribution guide |
 | [SECURITY.md](SECURITY.md) | Security policy |

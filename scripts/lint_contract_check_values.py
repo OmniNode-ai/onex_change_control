@@ -453,7 +453,7 @@ def _fail_open_zero_count_violation(value: str) -> str | None:
        -qF` exits at the first match and closes its stdin, `printf`'s blocked
        `write()` is then killed by SIGPIPE, and the compliance runner's `bash
        -o pipefail -c` (see the knowledge base's `dod-check-types.md`:
-       https://github.com/OmniNode-ai/knowledge-base/blob/main/reference/dod-check-types.md)
+       https://github.com/OmniNode-ai/knowledge_base/blob/main/reference/dod-check-types.md)
        surfaces that as exit 141 for a chain in which every assertion actually
        passed. A here-string
        has no pipe stage at all, so it cannot be killed this way regardless
