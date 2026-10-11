@@ -1,0 +1,123 @@
+---
+schema_version: 1.0.0
+ticket_id: OMN-20925
+evidence_item_id: dod-OmniNode-ai-omnibase_spi-pr-364-scan
+check_type: command
+check_value: |-
+  python3 - <<'PROBE'
+  import json
+  import os
+  from pathlib import Path
+  import re
+  import subprocess
+  import tempfile
+  import yaml
+
+  caller = subprocess.check_output([
+      "git", "show", "0c82123aacc3d1e3db39f5d9277fecf60e931536:.github/workflows/call-reject-skip.yml"
+  ], text=True)
+  uses = yaml.safe_load(caller)["jobs"]["call-reject-skip-token"]["uses"]
+  pin = uses.rsplit("@", 1)[1]
+  assert pin == "cb11e382966e354126cba07441e8f2b05faedee4", uses
+  reusable = subprocess.check_output([
+      "git", "-C", str(Path(os.environ["OMNI_HOME"]) / "omniclaude"),
+      "show", pin + ":.github/workflows/reject-deploy-gate-skip.yml"
+  ], text=True)
+  assert not re.search(r"occ-preflight\.yml@", reusable)
+  steps = yaml.safe_load(reusable)["jobs"]["scan-skip-tokens"]["steps"]
+  scan = next(step["run"] for step in steps if "check_surface()" in step.get("run", ""))
+  assert "${{" not in scan
+  with tempfile.TemporaryDirectory() as scratch:
+      root = Path(scratch)
+      body = root / "body.txt"
+      body.write_text("Routine change")
+      fake_gh = root / "gh"
+      fake_gh.write_text("#!/bin/bash\ncase \"$1 $2\" in\n"
+                         "  'pr diff') printf '%s\\n' \"$PROBE_DIFF\" ;;\n"
+                         "  'pr view') printf '%s\\n' 'Routine change' ;;\n"
+                         "  *) exit 64 ;;\nesac\n")
+      fake_gh.chmod(0o755)
+      env = {**os.environ, "PATH": str(root) + os.pathsep + os.environ["PATH"],
+             "RUNNER_TEMP": str(root), "RESOLVED_BODY_PATH": str(body),
+             "RESOLVED_PR_NUMBER": "364", "RESOLVED_PR_AUTHOR": "probe-author",
+             "PR_TITLE": "Routine change", "EVENT_NAME": "pull_request",
+             "REPO": "OmniNode-ai/omnibase_spi"}
+      prefix = "diff --git a/probe.md b/probe.md\n--- a/probe.md\n+++ b/probe.md\n@@ -0,0 +1 @@\n+"
+      results = {}
+      for case, line, expected in (("clean", "Routine change", 0),
+                                   ("planted", "[" + "skip-" + "deploy-gate:probe]", 1)):
+          env["PROBE_DIFF"] = prefix + line + "\n"
+          run = subprocess.run(["bash", "-c", scan], env=env, capture_output=True, text=True)
+          print(run.stdout, end="")
+          assert run.returncode == expected, (case, run.returncode, run.stdout, run.stderr)
+          if case == "planted":
+              assert "changed file diff contains" in run.stdout, run.stdout
+          results[case] = run.returncode
+      print(json.dumps({"pin": pin, "nested_preflight": False, "scan_exit_codes": results}, sort_keys=True))
+  PROBE
+status: PASS
+commit_sha: 0c82123aacc3d1e3db39f5d9277fecf60e931536
+runner: landing-L6068-h201
+probe_command: |-
+  python3 - <<'PROBE'
+  import json
+  import os
+  from pathlib import Path
+  import re
+  import subprocess
+  import tempfile
+  import yaml
+
+  caller = subprocess.check_output([
+      "git", "show", "0c82123aacc3d1e3db39f5d9277fecf60e931536:.github/workflows/call-reject-skip.yml"
+  ], text=True)
+  uses = yaml.safe_load(caller)["jobs"]["call-reject-skip-token"]["uses"]
+  pin = uses.rsplit("@", 1)[1]
+  assert pin == "cb11e382966e354126cba07441e8f2b05faedee4", uses
+  reusable = subprocess.check_output([
+      "git", "-C", str(Path(os.environ["OMNI_HOME"]) / "omniclaude"),
+      "show", pin + ":.github/workflows/reject-deploy-gate-skip.yml"
+  ], text=True)
+  assert not re.search(r"occ-preflight\.yml@", reusable)
+  steps = yaml.safe_load(reusable)["jobs"]["scan-skip-tokens"]["steps"]
+  scan = next(step["run"] for step in steps if "check_surface()" in step.get("run", ""))
+  assert "${{" not in scan
+  with tempfile.TemporaryDirectory() as scratch:
+      root = Path(scratch)
+      body = root / "body.txt"
+      body.write_text("Routine change")
+      fake_gh = root / "gh"
+      fake_gh.write_text("#!/bin/bash\ncase \"$1 $2\" in\n"
+                         "  'pr diff') printf '%s\\n' \"$PROBE_DIFF\" ;;\n"
+                         "  'pr view') printf '%s\\n' 'Routine change' ;;\n"
+                         "  *) exit 64 ;;\nesac\n")
+      fake_gh.chmod(0o755)
+      env = {**os.environ, "PATH": str(root) + os.pathsep + os.environ["PATH"],
+             "RUNNER_TEMP": str(root), "RESOLVED_BODY_PATH": str(body),
+             "RESOLVED_PR_NUMBER": "364", "RESOLVED_PR_AUTHOR": "probe-author",
+             "PR_TITLE": "Routine change", "EVENT_NAME": "pull_request",
+             "REPO": "OmniNode-ai/omnibase_spi"}
+      prefix = "diff --git a/probe.md b/probe.md\n--- a/probe.md\n+++ b/probe.md\n@@ -0,0 +1 @@\n+"
+      results = {}
+      for case, line, expected in (("clean", "Routine change", 0),
+                                   ("planted", "[" + "skip-" + "deploy-gate:probe]", 1)):
+          env["PROBE_DIFF"] = prefix + line + "\n"
+          run = subprocess.run(["bash", "-c", scan], env=env, capture_output=True, text=True)
+          print(run.stdout, end="")
+          assert run.returncode == expected, (case, run.returncode, run.stdout, run.stderr)
+          if case == "planted":
+              assert "changed file diff contains" in run.stdout, run.stdout
+          results[case] = run.returncode
+      print(json.dumps({"pin": pin, "nested_preflight": False, "scan_exit_codes": results}, sort_keys=True))
+  PROBE
+pr_number: 364
+branch: jonah/omn-20925-skip-reusable-repin
+contract_entry_sha256: sha256:d93b4c70e74099f401707f8528408aac6d5b3c26be004e88e8d1eca3b7988541
+probe_stdout: '{"evidence_ref":"0c82123aacc3d1e3db39f5d9277fecf60e931536","green_exit":0,"red_exit":1,"red_ref":"0f595a3a19e62a7e48c23196c4a4c22ea8699278"}'
+exit_code: 0
+run_timestamp: '2026-10-11T04:30:55Z'
+duration_ms: 158
+verifier: occ-probe-capture-v1
+artifact_sha256:
+  - sha256:7b3ff58f5af80d3e5320be6ff433be41faecd04650fffc8478868525fb263445
+  - sha256:78c0325fde34a661a12cce85fa66e91928158583d62c38a4e383abe7ac67f835
