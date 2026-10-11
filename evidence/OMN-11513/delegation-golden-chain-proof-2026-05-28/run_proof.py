@@ -29,13 +29,31 @@ from aiokafka import AIOKafkaConsumer, AIOKafkaProducer
 # ---------------------------------------------------------------------------
 
 EVIDENCE_DIR = Path(__file__).parent
-KAFKA_BOOTSTRAP = "192.168.86.201:39092"
-PG_HOST = "192.168.86.201"
-PG_PORT = 15436
+
+
+def _required_env(name: str) -> str:
+    """Read a deployment fact that the operator running the proof supplies.
+
+    The proof targets a lab runtime. Its addresses are deployment facts held in
+    the operator's private overlay, never in this repository, so an unset
+    variable stops the run instead of falling back to a default.
+    """
+    value = os.environ.get(name, "").strip()
+    if not value:
+        raise SystemExit(
+            f"{name} is not configured: export it from your deployment overlay "
+            "before running this proof (see the lane's runtime host list)"
+        )
+    return value
+
+
+KAFKA_BOOTSTRAP = _required_env("ONEX_PROOF_KAFKA_BOOTSTRAP")
+PG_HOST = _required_env("ONEX_PROOF_PG_HOST")
+PG_PORT = int(_required_env("ONEX_PROOF_PG_PORT"))
+RUNTIME_BASE_URL = _required_env("ONEX_PROOF_RUNTIME_BASE_URL").rstrip("/")
+LANE_LABEL = _required_env("ONEX_PROOF_LANE_LABEL")
 PG_USER = "postgres"
-PG_PASSWORD = os.environ.get(
-    "POSTGRES_PASSWORD", "REDACTED-POSTGRES_PASSWORD-Piyr"
-)
+PG_PASSWORD = os.environ.get("POSTGRES_PASSWORD", "REDACTED-POSTGRES_PASSWORD-Piyr")
 PG_DB = "omnidash_analytics"
 
 TOPIC_CMD = "onex.cmd.omnibase-infra.delegation-request.v1"
@@ -535,12 +553,12 @@ async def run_proof() -> dict[str, Any]:
         import urllib.request
 
         resp = urllib.request.urlopen(
-            "http://192.168.86.201:18085/v1/introspection/manifest", timeout=10
+            f"{RUNTIME_BASE_URL}/v1/introspection/manifest", timeout=10
         )
         manifest = json.loads(resp.read())
         runtime_artifact = {
             "captured_at": now_iso(),
-            "source_surface": "http://192.168.86.201:18085/v1/introspection/manifest",
+            "source_surface": f"{RUNTIME_BASE_URL}/v1/introspection/manifest",
             "sha256": sha256_hex(json.dumps(manifest, sort_keys=True, default=str)),
             "correlation_id": cid_str,
             "manifest": manifest,
@@ -634,7 +652,7 @@ async def main() -> None:
         "# W1-1B FINAL RUN: Delegation Golden Chain Proof Summary",
         "",
         "**Date:** 2026-05-28",
-        "**Lane:** stability-test (192.168.86.201)",
+        f"**Lane:** stability-test ({LANE_LABEL})",
         f"**correlation_id:** `{cid}`",
         f"**Overall Result:** {results['overall_result']}",
         "",

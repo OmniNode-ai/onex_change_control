@@ -1,26 +1,15 @@
 ## Summary
-Ticket OMN-20157 has every acceptance criterion proven (falsifiers pass, a fresh lab receipt exists, independent acceptance merged in onex_change_control#13195 and #13316) but cannot pass dod_verify, because four old draft bindings stay unaccepted and dod_verify counts every unaccepted binding, including those on superseded items, with no way to retire one. Accepting bindings that prove nothing would weaken the gate, so they are retired instead, with the typed retirement that omnimarket#3570 teaches node_dod_verify to read.
+Ticket OMN-20939; operator ruling 2026-10-10: lab configuration does not ship in public repositories. This PR only removes lab values.
 
 ## Changes
-- `ModelAcBindingRetirement` (the `supersedes_ac_binding` entry) gains four optional fields: `reason_kind` (`superseded_by` or `no_longer_applicable`), `superseded_by`, `retired_by`, `retired_at`. They are optional so retirements already merged still parse; a half-written typed retirement is refused. New tests: `tests/test_omn_20157_typed_binding_retirement.py` (12 passed), beside `tests/test_omn_18577_static_evidence_on_live_criterion.py`.
-- `contracts/OMN-20157.yaml` gains one `dod_evidence` item, `dod-omn20157-retire-unproven-draft-bindings`, with four retirements (`retired_by` dod-retire-binding-1620, `retired_at` 2026-10-08T16:48:51Z). It binds no criterion and accepts nothing; the retired items stay in the contract and keep running their own checks.
+- check_runner_routing.py: TAILNET_SUFFIX constant replaced by tailnet_suffix(), default ".ts.net" (shape rule), narrowed by ONEX_TAILNET_SUFFIX; the repo's own workflows still pass the check.
+- run_proof.py: Kafka bootstrap, Postgres host and port, runtime base URL and lane label come from ONEX_PROOF_KAFKA_BOOTSTRAP, ONEX_PROOF_PG_HOST, ONEX_PROOF_PG_PORT, ONEX_PROOF_RUNTIME_BASE_URL, ONEX_PROOF_LANE_LABEL; a missing one stops the run naming the variable. The manifest digest recorded for this file already differed from the file before this change.
+- dod_report.json (OMN-12491, OMN-8336) and enum_compliance_violation.py docstring: lab address replaced by 192.0.2.10.
+- New tests: tests/test_check_runner_routing_tailnet_suffix.py, 4 passed. contracts/OMN-20939.yaml validates with validate-yaml.
+- This PR touches src/ and scripts/, so it is opened as the writer App through open-pr-as-writer-app.yml; the branch's PR_BODY.md carries this body.
+- Not in this PR: the public knowledge_base runbooks named in the ticket (that clone is not on the lab host this lane ran on).
 
-## Retirements
-- AC5 from dod-omn20157-ac5-gemini-delegation-receipt (superseded_by dod-omn20157-accept-ac5-gemini-receipt-fec634b0: its check greps ledger text about lab run 39465f89, whose run directory is gone)
-- AC5 from dod-omn20157-fill-ac5-gemini-run-f8a0b10d (superseded_by the same item: greps ledger text about lab run f8a0b10d, not re-read)
-- AC5 from dod-omn20157-fill-ac5-plan-refusal-run-02b68882 (no_longer_applicable: a refusal run, BYOK_CODING_PLAN_NOT_PERMITTED, not a Gemini delegation; the GLM coding-plan leg was left out of the beta by ruling 2026-09-30T23:01:09Z)
-- AC6 from dod-OmniNode-ai-omnimarket-pr-3310 (superseded_by dod-omn20157-accept-fill-ac6-typed-refusals: greps the class name ByokPinNotPermittedError)
+## Verification
+check_runner_routing.py exercised with a probe tailnet index host with ONEX_TAILNET_SUFFIX unset and set, plus run_proof.py with ONEX_PROOF_KAFKA_BOOTSTRAP unset, observed: unset gives suffix ".ts.net" and 1 violation for the probe host; set to a different tailnet gives 0 violations; the repo's workflows pass; run_proof.py stops with "ONEX_PROOF_KAFKA_BOOTSTRAP is not configured".
 
-Each reason is written out in the contract. The AC1 to AC5 bindings on pr-3310 are accepted and are not touched.
-
-## Evidence
-- Receipt: drift/dod_receipts/OMN-20157/dod-omn20157-retire-unproven-draft-bindings/test_passes.yaml, captured with check_receipt_hardening.py --capture-probe on lab host h202: the retirement tests from omnimarket#3570 at omnimarket 65d5e9ad1539, 51 passed.
-- Verdict before: dod_verify for OMN-20157 reported AC_BINDING_SELF_ACCEPTED naming exactly the four bindings (acceptance_self_accepted_bindings 4).
-- Verdict with omnimarket#3570 code and this contract: acceptance_self_accepted_bindings 0, acceptance_retired_bindings 4, acceptance_refused_retirements 0; the only failing check was this item's own test, because tests/unit/nodes/node_dod_verify/test_ac_binding_retirement.py is not yet on the canonical omnimarket clone.
-
-## Order of landing
-omnimarket#3570 first, then this PR. Landing this first leaves the old verifier ignoring the retirements and this item's check failing until #3570 is on the canonical omnimarket clone.
-## Lab
-Lab: h202, lane dod-retire-binding-1620, check_receipt_hardening.py --capture-probe of the omnimarket#3570 retirement tests at omnimarket 65d5e9ad1539: 51 passed.
-
-Reopened as the onexbot-occ-writer App; replaces onex_change_control#13323, closed because check-human-authored-privileged-pr refuses a human-authored PR on src/.
+Lab: host=h201, lane=config-out-7-9f8a, command=check_runner_routing.py exercised with a probe tailnet index host with ONEX_TAILNET_SUFFIX unset and set, plus run_proof.py with ONEX_PROOF_KAFKA_BOOTSTRAP unset, observed: unset gives suffix ".ts.net" and 1 violation for the probe host; set to a different tailnet gives 0 violations; the repo's workflows pass; run_proof.py stops with "ONEX_PROOF_KAFKA_BOOTSTRAP is not configured".

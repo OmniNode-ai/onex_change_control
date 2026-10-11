@@ -54,7 +54,7 @@ class EnumComplianceViolation(str, Enum):
     resolving it from a contract or model registry.
 
     Illustrative-only examples, not real endpoints: ``max_tokens=2048``,
-    ``temperature=0.7``, ``192.168.86.201``  # onex-allow-internal-ip
+    ``temperature=0.7``, ``192.0.2.10``
     """
 
     RAW_HTTP_INFERENCE = "raw_http_inference"
