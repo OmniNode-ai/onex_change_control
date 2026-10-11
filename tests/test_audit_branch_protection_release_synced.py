@@ -99,7 +99,7 @@ _PROTECTION_CI_SUMMARY = {
     },
     "enforce_admins": {"enabled": True},
 }
-_REPO_SETTINGS = {"delete_branch_on_merge": True}
+_REPO_SETTINGS = {"delete_branch_on_merge": True, "default_branch": "dev"}
 _GQL_RULES = {
     "data": {
         "repository": {
@@ -173,7 +173,10 @@ def _write_gh_stub(tmp_path: Path, fixtures: dict[str, object]) -> Path:
 
     Keys are the API paths the script requests (or the literal ``graphql``).
     An unknown path exits non-zero, exactly as the real ``gh`` does, so a test
-    can never pass by accident on a route the script did not expect.
+    can never pass by accident on a route the script did not expect. The one
+    exception is the open-pull-requests-on-main list (check 8, OMN-16289),
+    which answers an empty list unless a fixture names it: the suites that
+    predate that check are about other invariants and have no PR on main.
     """
     bindir = tmp_path / "bin"
     bindir.mkdir(parents=True, exist_ok=True)
@@ -191,6 +194,9 @@ def _write_gh_stub(tmp_path: Path, fixtures: dict[str, object]) -> Path:
         "import json, sys\n"
         "key, path = sys.argv[1], sys.argv[2]\n"
         "data = json.load(open(path))\n"
+        "if key not in data and '/pulls?state=open&base=main' in key:\n"
+        "    print('[]')\n"
+        "    raise SystemExit(0)\n"
         "if key not in data:\n"
         "    sys.stderr.write('stub gh: no fixture for %s\\n' % key)\n"
         "    raise SystemExit(1)\n"
