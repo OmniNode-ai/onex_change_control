@@ -514,7 +514,9 @@ from onex_change_control.validation.commit_sha_resolver import (
     CommitShaResolver,
     EnumCommitShaOutcome,
     EnumCommitShaUnavailableCategory,
+    canonical_clone_root_from_env,
     is_full_commit_sha,
+    pr_watcher_state_from_env,
 )
 
 if TYPE_CHECKING:
@@ -4209,7 +4211,11 @@ def main(  # noqa: C901, PLR0912, PLR0915
         derived_verifier_baseline_path
     )
     try:
-        commit_sha_resolver = CommitShaResolver(rest_budget=args.commit_sha_rest_budget)
+        commit_sha_resolver = CommitShaResolver(
+            rest_budget=args.commit_sha_rest_budget,
+            canonical_clone_root=canonical_clone_root_from_env(),
+            pr_watcher_state=pr_watcher_state_from_env(),
+        )
     except ValueError as exc:
         parser.error(str(exc))
     if args.staged:

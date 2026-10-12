@@ -16,10 +16,13 @@ from onex_change_control.validation.commit_sha_resolver import (
     CommitShaResolver,
     EnumCommitShaOutcome,
     EnumCommitShaUnavailableCategory,
+    canonical_clone_root_from_env,
+    pr_watcher_state_from_env,
 )
 
 if TYPE_CHECKING:
     from collections.abc import Callable
+    from pathlib import Path
 
 FULL_SHA = "a" * 40
 OTHER_SHA = "b" * 40
@@ -586,3 +589,236 @@ def test_positive_control_a_resolvable_sha_has_no_unavailable_category() -> None
     assert resolution.halted_by_repo is None
     assert resolution.rate_limit_remaining == "4999"
     assert len(runner.calls) == 1
+
+
+# --- OMN-20911: a lane proves a claim from local sources, not from GitHub ---------
+
+_CLONE_REPO = "OmniNode-ai/omniclaude"
+
+
+def _clone_root(tmp_path: Path) -> Path:
+    (tmp_path / "omniclaude" / ".git").mkdir(parents=True)
+    return tmp_path
+
+
+def _is_clone_probe(command: list[str]) -> bool:
+    return command[:2] == ["git", "-C"] and "for-each-ref" in command
+
+
+def test_canonical_clone_origin_ref_proves_a_claim_with_no_github_read(
+    tmp_path: Path,
+) -> None:
+    root = _clone_root(tmp_path)
+
+    def handler(command: list[str]) -> subprocess.CompletedProcess[str]:
+        if _is_clone_probe(command):
+            return _completed(command, stdout=f"{FULL_SHA}\n")
+        if command[0] == "git":
+            return _completed(command, stdout="")
+        unexpected = f"no GitHub read is expected: {command}"
+        raise AssertionError(unexpected)
+
+    runner = FakeRunner(handler)
+    resolver = CommitShaResolver(runner=runner, canonical_clone_root=root)
+
+    result = resolver.resolve(FULL_SHA, (_CLONE_REPO,))
+
+    assert result.outcome is EnumCommitShaOutcome.REACHABLE_REMOTE
+    assert result.repo == _CLONE_REPO
+    assert resolver.remote_calls == 0
+    probe = next(c for c in runner.calls if _is_clone_probe(c))
+    assert probe[:3] == ["git", "-C", str(root / "omniclaude")]
+    assert probe[-3:] == ["--contains", FULL_SHA, "refs/remotes/origin"]
+
+
+def test_sha_absent_from_the_canonical_clone_falls_back_to_rest(
+    tmp_path: Path,
+) -> None:
+    """A stale clone is never read as MISSING: REST stays the authority for a miss."""
+    root = _clone_root(tmp_path)
+
+    def handler(command: list[str]) -> subprocess.CompletedProcess[str]:
+        if _is_clone_probe(command):
+            return _completed(command, status=129, stderr="error: malformed object")
+        if command[0] == "git":
+            return _completed(command, stdout="")
+        return _completed(command, stdout=_http(200))
+
+    runner = FakeRunner(handler)
+    resolver = CommitShaResolver(runner=runner, canonical_clone_root=root)
+
+    result = resolver.resolve(FULL_SHA, (_CLONE_REPO,))
+
+    assert result.outcome is EnumCommitShaOutcome.REACHABLE_REMOTE
+    assert resolver.remote_calls == 1
+    assert runner.calls[-1][:3] == ["gh", "api", "--include"]
+
+
+def test_canonical_clone_never_answers_missing(tmp_path: Path) -> None:
+    root = _clone_root(tmp_path)
+
+    def handler(command: list[str]) -> subprocess.CompletedProcess[str]:
+        if _is_clone_probe(command):
+            return _completed(command, stdout="")
+        if command[0] == "git":
+            return _completed(command, stdout="")
+        return _completed(command, status=1, stdout=_http(404))
+
+    resolver = CommitShaResolver(runner=FakeRunner(handler), canonical_clone_root=root)
+
+    result = resolver.resolve(FULL_SHA, (_CLONE_REPO,))
+
+    assert result.outcome is EnumCommitShaOutcome.MISSING
+    assert resolver.remote_calls == 1
+
+
+def test_no_canonical_root_reads_no_clone(tmp_path: Path) -> None:
+    """Positive control: CI has no workspace root, so REST stays the only path."""
+    _clone_root(tmp_path)
+
+    def handler(command: list[str]) -> subprocess.CompletedProcess[str]:
+        if command[0] == "git":
+            return _completed(command, stdout="")
+        return _completed(command, stdout=_http(200))
+
+    runner = FakeRunner(handler)
+    resolver = CommitShaResolver(runner=runner)
+
+    assert (
+        resolver.resolve(FULL_SHA, (_CLONE_REPO,)).outcome
+        is EnumCommitShaOutcome.REACHABLE_REMOTE
+    )
+    assert not any(_is_clone_probe(c) for c in runner.calls)
+    assert resolver.remote_calls == 1
+
+
+@pytest.mark.parametrize(
+    "repo", ["someone-else/omniclaude", "OmniNode-ai/absent", "OmniNode-ai/../x"]
+)
+def test_only_an_existing_omninode_clone_is_read(tmp_path: Path, repo: str) -> None:
+    root = _clone_root(tmp_path)
+
+    def handler(command: list[str]) -> subprocess.CompletedProcess[str]:
+        if command[0] == "git":
+            return _completed(command, stdout=f"{FULL_SHA}\n")
+        return _completed(command, stdout=_http(200))
+
+    runner = FakeRunner(handler)
+    CommitShaResolver(runner=runner, canonical_clone_root=root).resolve(
+        FULL_SHA, (repo,)
+    )
+
+    assert not any(_is_clone_probe(c) for c in runner.calls)
+
+
+def test_a_clone_answers_after_a_rest_halt(tmp_path: Path) -> None:
+    """A spent or refused REST session does not stop a claim the clone can prove."""
+    root = _clone_root(tmp_path)
+
+    def handler(command: list[str]) -> subprocess.CompletedProcess[str]:
+        if _is_clone_probe(command):
+            if command[2].endswith("omniclaude"):
+                return _completed(command, stdout=f"{OTHER_SHA}\n")
+            return _completed(command, stdout="")
+        if command[0] == "git":
+            return _completed(command, stdout="")
+        return _completed(command, status=1, stdout="REFUSED (OMN-20911): ...")
+
+    (tmp_path / "omnimarket" / ".git").mkdir(parents=True)
+    resolver = CommitShaResolver(runner=FakeRunner(handler), canonical_clone_root=root)
+
+    halted = resolver.resolve(FULL_SHA, ("OmniNode-ai/omnimarket",))
+    proved = resolver.resolve(OTHER_SHA, (_CLONE_REPO,))
+
+    assert halted.outcome is EnumCommitShaOutcome.UNAVAILABLE
+    assert proved.outcome is EnumCommitShaOutcome.REACHABLE_REMOTE
+
+
+def test_canonical_clone_root_comes_from_omni_home(tmp_path: Path) -> None:
+    assert canonical_clone_root_from_env({"OMNI_HOME": str(tmp_path)}) == tmp_path
+    assert canonical_clone_root_from_env({}) is None
+    assert canonical_clone_root_from_env({"OMNI_HOME": ""}) is None
+
+
+def _watcher_state(
+    tmp_path: Path, merges: dict[str, object], prs: dict[str, object]
+) -> Path:
+    path = tmp_path / "state.json"
+    path.write_text(json.dumps({"merges": merges, "prs": prs}))
+    return path
+
+
+def test_pr_watcher_record_proves_a_squash_merged_head_with_no_github_read(
+    tmp_path: Path,
+) -> None:
+    """A receipt names a PR head that a squash merge leaves on no origin ref."""
+    state = _watcher_state(
+        tmp_path,
+        {"omniclaude#1": {"repo": "omniclaude", "head_sha": FULL_SHA}},
+        {"omnimarket#2": {"facts": {"repo": "omnimarket", "head_sha": OTHER_SHA}}},
+    )
+
+    def handler(command: list[str]) -> subprocess.CompletedProcess[str]:
+        if command[0] == "git":
+            return _completed(command, stdout="")
+        unexpected = f"no GitHub read is expected: {command}"
+        raise AssertionError(unexpected)
+
+    resolver = CommitShaResolver(runner=FakeRunner(handler), pr_watcher_state=state)
+
+    merged = resolver.resolve(UPPER_SHA, ("OmniNode-ai/omniclaude",))
+    open_head = resolver.resolve(OTHER_SHA, ("OmniNode-ai/omnimarket",))
+
+    assert merged.outcome is EnumCommitShaOutcome.REACHABLE_REMOTE
+    assert open_head.outcome is EnumCommitShaOutcome.REACHABLE_REMOTE
+    assert resolver.remote_calls == 0
+
+
+def test_pr_watcher_record_is_bound_to_its_repository(tmp_path: Path) -> None:
+    state = _watcher_state(
+        tmp_path, {"omniclaude#1": {"repo": "omniclaude", "head_sha": FULL_SHA}}, {}
+    )
+
+    def handler(command: list[str]) -> subprocess.CompletedProcess[str]:
+        if command[0] == "git":
+            return _completed(command, stdout="")
+        return _completed(command, status=1, stdout=_http(404))
+
+    resolver = CommitShaResolver(runner=FakeRunner(handler), pr_watcher_state=state)
+
+    result = resolver.resolve(FULL_SHA, ("OmniNode-ai/omnimarket",))
+
+    assert result.outcome is EnumCommitShaOutcome.MISSING
+    assert resolver.remote_calls == 1
+
+
+@pytest.mark.parametrize("content", ["", "not json", "[]", '{"merges": []}'])
+def test_unreadable_watcher_state_falls_back_to_rest(
+    tmp_path: Path, content: str
+) -> None:
+    state = tmp_path / "state.json"
+    state.write_text(content)
+
+    def handler(command: list[str]) -> subprocess.CompletedProcess[str]:
+        if command[0] == "git":
+            return _completed(command, stdout="")
+        return _completed(command, stdout=_http(200))
+
+    resolver = CommitShaResolver(runner=FakeRunner(handler), pr_watcher_state=state)
+
+    assert (
+        resolver.resolve(FULL_SHA, ("OmniNode-ai/omniclaude",)).outcome
+        is EnumCommitShaOutcome.REACHABLE_REMOTE
+    )
+    assert resolver.remote_calls == 1
+
+
+def test_pr_watcher_state_path_comes_from_the_environment(tmp_path: Path) -> None:
+    explicit = tmp_path / "x.json"
+    assert pr_watcher_state_from_env({"ONEX_PR_WATCHER_STATE": str(explicit)}) == (
+        explicit
+    )
+    assert pr_watcher_state_from_env({"OMNI_HOME": str(tmp_path)}) == (
+        tmp_path / ".claude_scratch" / "pr-watcher" / "state.json"
+    )
+    assert pr_watcher_state_from_env({}) is None
