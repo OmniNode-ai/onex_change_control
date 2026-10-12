@@ -3,37 +3,154 @@ schema_version: 1.0.0
 ticket_id: OMN-20871
 evidence_item_id: dod-omn20871-ac1-lab-repro-restarts-gh-token
 check_type: command
-check_value: 'd=/data/omninode/lakshman/omn20871-readbacks/OMN-20871-lab-repro-confirm-claudeb548-20261010;
-  v="$( { cat "$d/repro.log" "$d/effects-fatal-lines.txt" 2>/dev/null || ssh -o BatchMode=yes -o ConnectTimeout=15
-  "${ONEX_RUNTIME_SSH_HOST:-jonah@192.168.86.201}" "cat $d/repro.log $d/effects-fatal-lines.txt"; } |
-  awk ''/ 5\. rebuild on the omnimarket release v0\.4\.309 and recreate both kernels together$/ { step++
-  } / done: effects RestartCount=[0-9]+ main RestartCount=[0-9]+$/ { fin++; r = $0; sub(/^.* effects RestartCount=/,
-  "", r); sub(/ .*$/, "", r); restarts = r + 0 } /ONEX runtime failed with unexpected error/ { failed++
-  } /Auto-wiring failed for .*SecretResolutionError: Secret reference .GH_TOKEN. / { named++ } END { if
-  (step == 1 && fin == 1 && restarts > 0 && failed > 0 && named == failed) printf "AC1-OK effects_restart_count=%d
-  runtime_failures=%d naming_gh_token=%d\n", restarts, failed, named; else printf "AC1-FAIL step=%d done=%d
-  effects_restart_count=%d runtime_failures=%d naming_gh_token=%d\n", step, fin, restarts, failed, named
-  }'' )"; printf ''%s\n'' "$v"; printf ''%s\n'' "$v" | grep -Eq ''^AC1-OK effects_restart_count=[1-9][0-9]*
-  runtime_failures=[1-9][0-9]* naming_gh_token=[1-9][0-9]*$'''
-contract_sha256: sha256:9bba53a44857c87458692bcbe1472dee77ca70fa767160c8250f6a238e01b0ae
-contract_entry_sha256: sha256:d6095b2045e967262b9cd863f42b5aa6e023680b56dea204a54cb6706de8496d
+check_value: |-
+  if test -d /data/omninode/lakshman/omn20871-readbacks/OMN-20871-lab-repro-confirm-claudeb548-20261010; then lab_py="/usr/bin/python3 -"; else lab_py="ssh -o BatchMode=yes -o ConnectTimeout=15 jonah@192.168.86.201 /usr/bin/python3 -"; fi
+  $lab_py <<'PROBE_20871_AC1' | grep -E '^AC1-OK effects_restart_count=[1-9][0-9]* runtime_failures=[1-9][0-9]* naming_gh_token=[1-9][0-9]*$'
+  """OMN-20871 AC1 check over the recorded lab reproduction of 2026-10-10. Read-only.
+
+  It reads two files of that lab run, kept as a copy in the lakshman data area on the lab host:
+    repro.log                the replayed dev-lane class steps and their final RestartCount line
+    effects-fatal-lines.txt  the fatal lines of every runtime-effects exit in that run
+  Both are read whole before anything is graded. It prints one verdict line, AC1-OK or AC1-FAIL, and is
+  red when either file is missing, unreadable or not the recorded one (sha256), when the rebuild step or
+  the final line is not there exactly once, when runtime-effects did not restart, when no runtime failure
+  was recorded, or when any recorded failure does not name GH_TOKEN. It reads a record: the lab run is
+  not repeated.
+
+  Run on the lab host: python3 - [folder] < this   (the folder defaults to the kept copy).
+  """
+
+  import hashlib
+  import os
+  import re
+  import sys
+
+  RECORDED = {
+      "repro.log": "95833d9376c66467a8daebf83d28157be83fdfe761eab068c59dc8f39856889d",
+      "effects-fatal-lines.txt": "041097315460e23b11cf5f764bd03abadc7b4d5e3a8e47d6212e8b5efcd07e29",
+  }
+  STEP = re.compile(r" 5\. rebuild on the omnimarket release v0\.4\.309 and recreate both kernels together$")
+  DONE = re.compile(r" done: effects RestartCount=([0-9]+) main RestartCount=[0-9]+$")
+  NAMED = re.compile(r"Auto-wiring failed for .*SecretResolutionError: Secret reference .GH_TOKEN. ")
+
+
+  class Fail(Exception):
+      pass
+
+
+  def recorded(root, name):
+      raw = open(os.path.join(root, name), "rb").read()
+      if hashlib.sha256(raw).hexdigest() != RECORDED[name]:
+          raise Fail(name + " is not the recorded file (sha256)")
+      return raw.decode("utf-8").splitlines()
+
+
+  def verdict(root):
+      lines = recorded(root, "repro.log") + recorded(root, "effects-fatal-lines.txt")
+      step = sum(1 for line in lines if STEP.search(line))
+      done = [m.group(1) for m in (DONE.search(line) for line in lines) if m]
+      restarts = int(done[-1]) if done else 0
+      failed = sum(1 for line in lines if "ONEX runtime failed with unexpected error" in line)
+      named = sum(1 for line in lines if NAMED.search(line))
+      facts = "effects_restart_count=%d runtime_failures=%d naming_gh_token=%d" % (restarts, failed, named)
+      if step == 1 and len(done) == 1 and restarts > 0 and failed > 0 and named == failed:
+          return "AC1-OK " + facts
+      raise Fail("step=%d done=%d " % (step, len(done)) + facts)
+
+
+  if __name__ == "__main__":
+      default = "/data/omninode/lakshman/omn20871-readbacks/OMN-20871-lab-repro-confirm-claudeb548-20261010"
+      folder = sys.argv[1] if len(sys.argv) > 1 else default
+      try:
+          print(verdict(folder))
+      except Exception as error:
+          print("AC1-FAIL " + type(error).__name__ + ": " + str(error))
+          sys.exit(1)
+  PROBE_20871_AC1
+contract_sha256: sha256:0992c4a4b6228b0977d507c0f0ad936c9d3fd1dd7783c1e3b40747d34b7b1531
+contract_entry_sha256: sha256:8862865d63e03434ddacdf91f32e88f3821dae3a978be827f533e83841d5f255
 status: PASS
 commit_sha: fdd3daa0384a0fe5e375994e03907fb7ac43203d
 runner: claude-d05a107a@onex-201
 probe_command: |-
   gh api repos/OmniNode-ai/omnibase_infra/commits/fdd3daa0384a0fe5e375994e03907fb7ac43203d --jq .sha || exit 2
-  d=/data/omninode/lakshman/omn20871-readbacks/OMN-20871-lab-repro-confirm-claudeb548-20261010; v="$( { cat "$d/repro.log" "$d/effects-fatal-lines.txt" 2>/dev/null || ssh -o BatchMode=yes -o ConnectTimeout=15 "${ONEX_RUNTIME_SSH_HOST:-jonah@192.168.86.201}" "cat $d/repro.log $d/effects-fatal-lines.txt"; } | awk '/ 5\. rebuild on the omnimarket release v0\.4\.309 and recreate both kernels together$/ { step++ } / done: effects RestartCount=[0-9]+ main RestartCount=[0-9]+$/ { fin++; r = $0; sub(/^.* effects RestartCount=/, "", r); sub(/ .*$/, "", r); restarts = r + 0 } /ONEX runtime failed with unexpected error/ { failed++ } /Auto-wiring failed for .*SecretResolutionError: Secret reference .GH_TOKEN. / { named++ } END { if (step == 1 && fin == 1 && restarts > 0 && failed > 0 && named == failed) printf "AC1-OK effects_restart_count=%d runtime_failures=%d naming_gh_token=%d\n", restarts, failed, named; else printf "AC1-FAIL step=%d done=%d effects_restart_count=%d runtime_failures=%d naming_gh_token=%d\n", step, fin, restarts, failed, named }' )"; printf '%s\n' "$v"; printf '%s\n' "$v" | grep -Eq '^AC1-OK effects_restart_count=[1-9][0-9]* runtime_failures=[1-9][0-9]* naming_gh_token=[1-9][0-9]*$'
+  if test -d /data/omninode/lakshman/omn20871-readbacks/OMN-20871-lab-repro-confirm-claudeb548-20261010; then lab_py="/usr/bin/python3 -"; else lab_py="ssh -o BatchMode=yes -o ConnectTimeout=15 jonah@192.168.86.201 /usr/bin/python3 -"; fi
+  $lab_py <<'PROBE_20871_AC1' | grep -E '^AC1-OK effects_restart_count=[1-9][0-9]* runtime_failures=[1-9][0-9]* naming_gh_token=[1-9][0-9]*$'
+  """OMN-20871 AC1 check over the recorded lab reproduction of 2026-10-10. Read-only.
+
+  It reads two files of that lab run, kept as a copy in the lakshman data area on the lab host:
+    repro.log                the replayed dev-lane class steps and their final RestartCount line
+    effects-fatal-lines.txt  the fatal lines of every runtime-effects exit in that run
+  Both are read whole before anything is graded. It prints one verdict line, AC1-OK or AC1-FAIL, and is
+  red when either file is missing, unreadable or not the recorded one (sha256), when the rebuild step or
+  the final line is not there exactly once, when runtime-effects did not restart, when no runtime failure
+  was recorded, or when any recorded failure does not name GH_TOKEN. It reads a record: the lab run is
+  not repeated.
+
+  Run on the lab host: python3 - [folder] < this   (the folder defaults to the kept copy).
+  """
+
+  import hashlib
+  import os
+  import re
+  import sys
+
+  RECORDED = {
+      "repro.log": "95833d9376c66467a8daebf83d28157be83fdfe761eab068c59dc8f39856889d",
+      "effects-fatal-lines.txt": "041097315460e23b11cf5f764bd03abadc7b4d5e3a8e47d6212e8b5efcd07e29",
+  }
+  STEP = re.compile(r" 5\. rebuild on the omnimarket release v0\.4\.309 and recreate both kernels together$")
+  DONE = re.compile(r" done: effects RestartCount=([0-9]+) main RestartCount=[0-9]+$")
+  NAMED = re.compile(r"Auto-wiring failed for .*SecretResolutionError: Secret reference .GH_TOKEN. ")
+
+
+  class Fail(Exception):
+      pass
+
+
+  def recorded(root, name):
+      raw = open(os.path.join(root, name), "rb").read()
+      if hashlib.sha256(raw).hexdigest() != RECORDED[name]:
+          raise Fail(name + " is not the recorded file (sha256)")
+      return raw.decode("utf-8").splitlines()
+
+
+  def verdict(root):
+      lines = recorded(root, "repro.log") + recorded(root, "effects-fatal-lines.txt")
+      step = sum(1 for line in lines if STEP.search(line))
+      done = [m.group(1) for m in (DONE.search(line) for line in lines) if m]
+      restarts = int(done[-1]) if done else 0
+      failed = sum(1 for line in lines if "ONEX runtime failed with unexpected error" in line)
+      named = sum(1 for line in lines if NAMED.search(line))
+      facts = "effects_restart_count=%d runtime_failures=%d naming_gh_token=%d" % (restarts, failed, named)
+      if step == 1 and len(done) == 1 and restarts > 0 and failed > 0 and named == failed:
+          return "AC1-OK " + facts
+      raise Fail("step=%d done=%d " % (step, len(done)) + facts)
+
+
+  if __name__ == "__main__":
+      default = "/data/omninode/lakshman/omn20871-readbacks/OMN-20871-lab-repro-confirm-claudeb548-20261010"
+      folder = sys.argv[1] if len(sys.argv) > 1 else default
+      try:
+          print(verdict(folder))
+      except Exception as error:
+          print("AC1-FAIL " + type(error).__name__ + ": " + str(error))
+          sys.exit(1)
+  PROBE_20871_AC1
 actual_output: 'PASS: the recorded 2026-10-10 lab reproduction reads runtime-effects RestartCount 6 with
-  five runtime failures, each naming GH_TOKEN. Read from the recorded files on the lab host; the lab step
-  was not re-run for this receipt. The binding it backs is a draft until another lane accepts it.'
+  five runtime failures, each naming GH_TOKEN. Both files are read whole and checked against their recorded
+  sha256 before grading. On the lab host a missing second file, a missing first file, altered bytes, a
+  truncated file and an absent folder each print AC1-FAIL and exit 1, and a copy recording RestartCount
+  0, with the pin moved to it, is refused by the grading. The lab step was not re-run for this receipt.
+  The binding it backs is a draft until another lane accepts it.'
 branch: lakshman/OMN-20871-four-criteria-evidence
 probe_stdout: |-
   fdd3daa0384a0fe5e375994e03907fb7ac43203d
   AC1-OK effects_restart_count=6 runtime_failures=5 naming_gh_token=5
 exit_code: 0
-run_timestamp: '2026-10-12T05:31:22Z'
-duration_ms: 415
+run_timestamp: '2026-10-12T06:29:25Z'
+duration_ms: 434
 verifier: occ-probe-capture-v1
 artifact_sha256:
   - sha256:fc1d2e4804c9aa93bec2a01766fe10be9a1b4321250c6fcf1004c38a728e1d6d
-  - sha256:1ab8833b569d6a744d33d338c22035625567353a6047507b4e5d78154d517407
+  - sha256:e3c8535a770ed96e7212e3fafe8cf8172f0a30c59e8a8c5c2603cbf9b0f2b89d
