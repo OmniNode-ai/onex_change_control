@@ -47,7 +47,7 @@ def _no_ambient_suffix(monkeypatch: pytest.MonkeyPatch) -> None:
 def test_default_shape_flags_any_tailnet_host() -> None:
     found = _violations(TAILNET_INDEX)
     assert len(found) == 1
-    assert ".ts.net" in found[0]
+    assert routing.DEFAULT_TAILNET_SUFFIX in found[0]
 
 
 def test_default_shape_leaves_a_public_index_alone() -> None:
