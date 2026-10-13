@@ -78,3 +78,82 @@ dod_evidence:
       - check_type: "test_passes"
         check_value: "uv run pytest docker/onex-api/tests/test_omn_20158_intake_key_refusals.py -q"
         cwd: "${OMNI_HOME}/omninode_infra"
+  - id: omn20158-behavior-proof-onex-api-env-pr-1891
+    description: 'PR #1891 on OmniNode-ai/omninode_infra, behavior proof run the way ci.yml runs onex-api
+      tests: from docker/onex-api with its requirements installed. Supersedes the generated dod-occ-diff-derived-behavior-proof-pr-1891,
+      whose command runs from the repository root, where docker/onex-api/tests/conftest.py cannot import
+      psycopg (the same supersession OMN-19890 made). The three tests return 503 on origin/dev before
+      #1891 and pass after it.'
+    source: manual
+    evidence_artifact: supersedes_dod_evidence:dod-occ-diff-derived-behavior-proof-pr-1891
+    checks:
+      - check_type: test_passes
+        check_value: uv run --no-project --python 3.12 --with-requirements requirements.txt --with-requirements
+          requirements-test.txt python -m pytest tests/test_omn_20158_intake_key_refusals.py -q 2>&1 |
+          tail -n 1 | grep -E '^[0-9]+ passed in '
+        cwd: ${OMNI_HOME}/omninode_infra/docker/onex-api
+    binds_ac:
+      - AC1
+    ac_bindings:
+      - label: AC1
+        criterion_hash: 04dd37cb6e9a40c5f522ac76561d549bdeb6837fa255417b777facef5b6b64a3
+        proposed_by: omn20158-close
+  - id: omn20158-ac2-lab-onex-api-catalogue
+    description: 'AC2 readback on lab host h201, 2026-10-13: docker exec onex-api python -c "from omnimarket.routing.byok_provider_backends
+      import byok_provider_plans as p; print(p(''glm''), p(''gemini''))" printed (''coding_plan'', ''general_api'')
+      (''ai_studio'',), and the container''s omnimarket is 0.4.313, installed from omnimarket commit c85bbb71
+      (its direct_url.json). The check reads the ledger row that recorded that readback. omn20158-ac2-lab-commit-carries-catalogue
+      proves that commit contains the plan-aware catalogue. The binding is a draft: this lane authored
+      the item, so it carries no accepted_by.'
+    source: manual
+    execution_scope: local_done_gate
+    checks:
+      - check_type: command
+        check_value: 'out="$(grep -oF "AC2 LAB READBACK h201 2026-10-13: inside the dev lane''s onex-api
+          container, byok_provider_plans printed (''coding_plan'', ''general_api'') (''ai_studio'',);
+          omnimarket 0.4.313 installed there." "${ONEX_LEDGER_PATH:-$OMNI_HOME/docs/tracking/ROLLING_WORK_LEDGER.md}"
+          | sort -u)"; test -n "$out" && printf ''%s\n'' "$out"'
+    binds_ac:
+      - AC2
+    ac_bindings:
+      - label: AC2
+        criterion_hash: 5528283a656db04c088ff50b1ab8c7a86ed13d0a1ded36543add5c2a1849a105
+        proposed_by: omn20158-close
+  - id: omn20158-ac3-lab-glm-overlay-backend-id
+    description: 'AC3 readback on lab host h201, 2026-10-13: a GLM general_api key registered for test
+      tenant 859bcdfb-64b3-4eac-931c-dc50f9ba2c5a through register_inference_credential in the dev lane''s
+      onex-api (the code the intake route calls) wrote a delegation_routing_tenant_overlay row with backend_id
+      byok-glm-general; resolve_byok_backend_by_id maps byok-glm-general to general_api and byok-glm to
+      coding_plan. No coding_plan row was written: a Coding Plan key is refused at registration with BYOK_CODING_PLAN_NOT_PERMITTED
+      (OMN-20157, z.ai terms), so byok-glm is shown only through the mapping. The test credential could
+      not be revoked (OMN-21074). The binding is a draft and carries no accepted_by.'
+    source: manual
+    execution_scope: local_done_gate
+    checks:
+      - check_type: command
+        check_value: out="$(grep -oF "delegation_routing_tenant_overlay row backend_id byok-glm-general,
+          endpoint https://api.z.ai/api/paas/v4/chat/completions; resolve_byok_backend_by_id maps byok-glm-general
+          to glm general_api and byok-glm to glm coding_plan." "${ONEX_LEDGER_PATH:-$OMNI_HOME/docs/tracking/ROLLING_WORK_LEDGER.md}"
+          | sort -u)"; test -n "$out" && printf '%s\n' "$out"
+    binds_ac:
+      - AC3
+    ac_bindings:
+      - label: AC3
+        criterion_hash: 725b1f1e1eaa64259ce6fb70fa7ac92d7a9eeff7592e75330c925621da24fd3a
+        proposed_by: omn20158-close
+  - id: omn20158-ac2-lab-commit-carries-catalogue
+    description: 'AC2, second half: the omnimarket commit the dev lane''s onex-api installed on 2026-10-13
+      (c85bbb71, read from its direct_url.json on h201) is a descendant of the plan-aware catalogue commit
+      73fa2c64 (omnimarket#3124). Portable: it reads GitHub, not the lab. The binding is a draft and carries
+      no accepted_by.'
+    source: manual
+    checks:
+      - check_type: command
+        check_value: s="$(gh api repos/OmniNode-ai/omnimarket/compare/73fa2c649346bfefa2aba8980f0e06ec2cf74be1...c85bbb714a8f8251499a4ed350207ff02bb84a69
+          --jq .status)"; echo "$s"; test "$s" = ahead -o "$s" = identical
+    binds_ac:
+      - AC2
+    ac_bindings:
+      - label: AC2
+        criterion_hash: 5528283a656db04c088ff50b1ab8c7a86ed13d0a1ded36543add5c2a1849a105
+        proposed_by: omn20158-close
