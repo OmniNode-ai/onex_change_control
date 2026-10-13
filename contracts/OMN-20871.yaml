@@ -248,3 +248,217 @@ dod_evidence:
       - label: "AC4"
         criterion_hash: "0bb748c55ca04dbacc4d26902079ff0f2be6157f072ab85b78110f72562936b8"
         proposed_by: "lane=claude-d05a107a"
+  - id: "dod-acc0713z-20871-ac1-lab-repro-restarts"
+    description: >-
+      AC1 binding proposed by lane=claude-d05a107a and accepted by a different lane, omn17427-a376, after
+      an independent re-run on lab host h201 on 2026-10-13 at 07:05Z, local branch: AC1-OK effects_restart_count=6
+      runtime_failures=5 naming_gh_token=5, exit 0. Falsification control: a copy of repro.log recording
+      RestartCount=0 makes the check exit 1. Stated limit, as in the draft: the check reads the 2026-10-10
+      recording and does not repeat the lab run. This lane had no Linear access, so the criterion text
+      was not re-read; the criterion_hash is the draft's.
+    source: "manual"
+    execution_scope: "local_done_gate"
+    checks:
+      - check_type: "command"
+        check_value: |-
+          if test -d /data/omninode/lakshman/omn20871-readbacks/OMN-20871-lab-repro-confirm-claudeb548-20261010; then lab_py="/usr/bin/python3 -"; else lab_py="ssh -o BatchMode=yes -o ConnectTimeout=15 jonah@192.168.86.201 /usr/bin/python3 -"; fi
+          $lab_py <<'PROBE_20871_AC1' | grep -E '^AC1-OK effects_restart_count=[1-9][0-9]* runtime_failures=[1-9][0-9]* naming_gh_token=[1-9][0-9]*$'
+          """OMN-20871 AC1 check over the recorded lab reproduction of 2026-10-10. Read-only.
+
+          It reads two files of that lab run, kept as a copy in the lakshman data area on the lab host:
+            repro.log                the replayed dev-lane class steps and their final RestartCount line
+            effects-fatal-lines.txt  the fatal lines of every runtime-effects exit in that run
+          Both are read whole before anything is graded. It prints one verdict line, AC1-OK or AC1-FAIL, and is
+          red when either file is missing, unreadable or not the recorded one (sha256), when the rebuild step or
+          the final line is not there exactly once, when runtime-effects did not restart, when no runtime failure
+          was recorded, or when any recorded failure does not name GH_TOKEN. It reads a record: the lab run is
+          not repeated.
+
+          Run on the lab host: python3 - [folder] < this   (the folder defaults to the kept copy).
+          """
+
+          import hashlib
+          import os
+          import re
+          import sys
+
+          RECORDED = {
+              "repro.log": "95833d9376c66467a8daebf83d28157be83fdfe761eab068c59dc8f39856889d",
+              "effects-fatal-lines.txt": "041097315460e23b11cf5f764bd03abadc7b4d5e3a8e47d6212e8b5efcd07e29",
+          }
+          STEP = re.compile(r" 5\. rebuild on the omnimarket release v0\.4\.309 and recreate both kernels together$")
+          DONE = re.compile(r" done: effects RestartCount=([0-9]+) main RestartCount=[0-9]+$")
+          NAMED = re.compile(r"Auto-wiring failed for .*SecretResolutionError: Secret reference .GH_TOKEN. ")
+
+
+          class Fail(Exception):
+              pass
+
+
+          def recorded(root, name):
+              raw = open(os.path.join(root, name), "rb").read()
+              if hashlib.sha256(raw).hexdigest() != RECORDED[name]:
+                  raise Fail(name + " is not the recorded file (sha256)")
+              return raw.decode("utf-8").splitlines()
+
+
+          def verdict(root):
+              lines = recorded(root, "repro.log") + recorded(root, "effects-fatal-lines.txt")
+              step = sum(1 for line in lines if STEP.search(line))
+              done = [m.group(1) for m in (DONE.search(line) for line in lines) if m]
+              restarts = int(done[-1]) if done else 0
+              failed = sum(1 for line in lines if "ONEX runtime failed with unexpected error" in line)
+              named = sum(1 for line in lines if NAMED.search(line))
+              facts = "effects_restart_count=%d runtime_failures=%d naming_gh_token=%d" % (restarts, failed, named)
+              if step == 1 and len(done) == 1 and restarts > 0 and failed > 0 and named == failed:
+                  return "AC1-OK " + facts
+              raise Fail("step=%d done=%d " % (step, len(done)) + facts)
+
+
+          if __name__ == "__main__":
+              default = "/data/omninode/lakshman/omn20871-readbacks/OMN-20871-lab-repro-confirm-claudeb548-20261010"
+              folder = sys.argv[1] if len(sys.argv) > 1 else default
+              try:
+                  print(verdict(folder))
+              except Exception as error:
+                  print("AC1-FAIL " + type(error).__name__ + ": " + str(error))
+                  sys.exit(1)
+          PROBE_20871_AC1
+          test "${PIPESTATUS[0]}${PIPESTATUS[1]}" = "00"
+    binds_ac:
+      - "AC1"
+    ac_bindings:
+      - label: "AC1"
+        criterion_hash: "9690412205835b520180a35e75de937fffdde9208be33d3007674f050c15c876"
+        proposed_by: "lane=claude-d05a107a"
+        accepted_by: "lane=omn17427-a376"
+        accepted_at: "2026-10-13T07:12:42Z"
+  - id: "dod-acc0713z-20871-ac2-three-clean-runs"
+    description: >-
+      AC2 binding proposed by lane=claude-d05a107a and accepted by a different lane, omn17427-a376, after
+      an independent re-run on lab host h201 on 2026-10-13 at 07:05Z, local branch: AC2-OK runs=3 clean_runs=3
+      strict_bindings=2 github_token_lines=0, exit 0. Falsification control: a copy of the override with
+      a GH_TOKEN line added makes the check exit 1. Stated limit, as in the draft: the check reads the
+      three recorded runs of 2026-10-10 and does not repeat them. This lane had no Linear access, so the
+      criterion text was not re-read; the criterion_hash is the draft's.
+    source: "manual"
+    execution_scope: "local_done_gate"
+    checks:
+      - check_type: "command"
+        check_value: |-
+          if test -d /data/omninode/lakshman/omn20871-readbacks/OMN-20871-ac2-omnimarket3707-claudeb548-20261010; then lab_py="/usr/bin/python3 -"; else lab_py="ssh -o BatchMode=yes -o ConnectTimeout=15 jonah@192.168.86.201 /usr/bin/python3 -"; fi
+          $lab_py <<'PROBE_20871_AC2' | grep -E '^AC2-OK runs=3 clean_runs=3 strict_bindings=2 github_token_lines=0$'
+          """OMN-20871 AC2 check over the three recorded lab runs of 2026-10-10. Read-only.
+
+          It reads two files of those lab runs, kept as a copy in the lakshman data area on the lab host:
+            verify3707.log               the image build at the head commit of omnimarket#3707 and one result line per run
+            dev-lane-class.override.yml  the compose override the runs used
+          Both are read whole before anything is graded. It prints one verdict line, AC2-OK or AC2-FAIL, and is
+          red when either file is missing, unreadable or not the recorded one (sha256), when the build is not at
+          that commit exactly once, when there are not three runs started and three results, when any result is
+          not a pass inside 900 s with both kernels running, healthy and at RestartCount 0 and zero fatal lines,
+          when the override does not bind strict mode twice, or when any line names a GitHub token. It reads a
+          record: the lab runs are not repeated.
+
+          Run on the lab host: python3 - [folder] < this   (the folder defaults to the kept copy).
+          """
+
+          import hashlib
+          import os
+          import re
+          import sys
+
+          RECORDED = {
+              "verify3707.log": "f0559a97a788e039acfa7e5cf95cfedf6544de46a729d773bc6811a4491ff738",
+              "dev-lane-class.override.yml": "27bcd1b836713141b96b7b13ad8467f741d8671733a52c75cffe7e2ae272a4d8",
+          }
+          HEAD_3707 = "cbe1b90f8f16c41c18c955000b55917b434cfffe"
+          STARTED = re.compile(r"recreate both kernels together, plain strict override$")
+          STRICT = re.compile(r"ONEX_WIRING_STRICT_MODE: .1.$")
+          TOKEN = re.compile(r"GH_TOKEN|GITHUB_TOKEN")
+
+
+          class Fail(Exception):
+              pass
+
+
+          def recorded(root, name):
+              raw = open(os.path.join(root, name), "rb").read()
+              if hashlib.sha256(raw).hexdigest() != RECORDED[name]:
+                  raise Fail(name + " is not the recorded file (sha256)")
+              return raw.decode("utf-8").splitlines()
+
+
+          def verdict(root):
+              lines = recorded(root, "verify3707.log") + recorded(root, "dev-lane-class.override.yml")
+              build = started = results = clean = 0
+              for line in lines:
+                  f = line.split() + [""] * 7
+                  if f[1] == "build" and f[3] == "omnimarket" and f[4] == HEAD_3707:
+                      build += 1
+                  if f[1] == "run" and f[3] == "recreate" and STARTED.search(line):
+                      started += 1
+                  if f[1] == "run" and f[3] != "recreate":
+                      results += 1
+                      secs = re.sub(r"[^0-9]", "", f[4])
+                      if (
+                          f[2] == str(results) + ":"
+                          and f[3] == "pass"
+                          and secs != ""
+                          and int(secs) <= 900
+                          and f[5] == "main=running/healthy/r=0"
+                          and f[6] == "effects=running/healthy/r=0);"
+                          and "; omnimarket in effects: 0.4.310; fatal lines: 0; " in line
+                      ):
+                          clean += 1
+              strict = sum(1 for line in lines if STRICT.search(line))
+              token = sum(1 for line in lines if TOKEN.search(line))
+              facts = "runs=%d clean_runs=%d strict_bindings=%d github_token_lines=%d" % (results, clean, strict, token)
+              if build == 1 and started == 3 and results == 3 and clean == 3 and strict == 2 and token == 0:
+                  return "AC2-OK " + facts
+              raise Fail("build=%d started=%d " % (build, started) + facts)
+
+
+          if __name__ == "__main__":
+              default = "/data/omninode/lakshman/omn20871-readbacks/OMN-20871-ac2-omnimarket3707-claudeb548-20261010"
+              folder = sys.argv[1] if len(sys.argv) > 1 else default
+              try:
+                  print(verdict(folder))
+              except Exception as error:
+                  print("AC2-FAIL " + type(error).__name__ + ": " + str(error))
+                  sys.exit(1)
+          PROBE_20871_AC2
+          test "${PIPESTATUS[0]}${PIPESTATUS[1]}" = "00"
+    binds_ac:
+      - "AC2"
+    ac_bindings:
+      - label: "AC2"
+        criterion_hash: "b76e864b5e37d542cb3dd4ae805a0453e0d6dbe988b054e467ab6952eaa4d500"
+        proposed_by: "lane=claude-d05a107a"
+        accepted_by: "lane=omn17427-a376"
+        accepted_at: "2026-10-13T07:12:42Z"
+  - id: "dod-acc0713z-20871-ac3-crash-loop-gate-900s"
+    description: >-
+      AC3 binding proposed by lane=claude-d05a107a and accepted by a different lane, omn17427-a376, after
+      an independent re-run on lab host h201 on 2026-10-13 at omnibase_infra origin/dev f6f301ae8 (clean
+      canonical clone): 4 passed and AC3-OK gate_steps=1 deadline_assignments=1 budget_900s=1 deadline_enforced=1.
+      Falsification controls: the awk leg run on a copy of the workflow with the deadline at 901 prints
+      AC3-FAIL budget_900s=0; tests/ci/test_runtime_boot_dev_lane_class_omn17427.py does not exist at
+      the parent of 3a198752c (#4777), which added it. Stated limit, as in the draft: the deadline is
+      pinned by text, not by execution. This lane had no Linear access, so the criterion text was not
+      re-read; the criterion_hash is the draft's.
+    source: "manual"
+    execution_scope: "local_done_gate"
+    checks:
+      - check_type: "command"
+        check_value: |-
+          env -u PYTHONPATH uv run pytest "tests/ci/test_runtime_boot_dev_lane_class_omn17427.py::test_the_phase_runs_in_order_after_the_laptop_checks_and_before_the_log_tail" "tests/ci/test_runtime_boot_dev_lane_class_omn17427.py::test_the_gate_passes_two_steady_kernels" "tests/ci/test_runtime_boot_dev_lane_class_omn17427.py::test_the_gate_fails_a_restarting_kernel" -q -p no:randomly && awk 'index($0, "- name: Dev-lane class -- both kernels stay healthy and running with no restart (crash-loop gate)") { gate = 1; steps++; next } gate && /^      - name: / { gate = 0 } gate && /deadline=/ { assigned++; if (index($0, "deadline=$(( $(date +%s) + 900 ))")) budget++ } gate && index($0, "-ge \"$deadline\" ]; then") { enforced++ } END { if (steps == 1 && assigned == 1 && budget == 1 && enforced == 1) print "AC3-OK gate_steps=1 deadline_assignments=1 budget_900s=1 deadline_enforced=1"; else printf "AC3-FAIL gate_steps=%d deadline_assignments=%d budget_900s=%d deadline_enforced=%d\n", steps, assigned, budget, enforced }' .github/workflows/reusable-runtime-boot.yml | grep -E '^AC3-OK gate_steps=1 deadline_assignments=1 budget_900s=1 deadline_enforced=1$'
+        cwd: "${OMNI_HOME}/omnibase_infra"
+    binds_ac:
+      - "AC3"
+    ac_bindings:
+      - label: "AC3"
+        criterion_hash: "541e20588965fc700750855302fa16658d663c598c3cd7a8e933150420d584b7"
+        proposed_by: "lane=claude-d05a107a"
+        accepted_by: "lane=omn17427-a376"
+        accepted_at: "2026-10-13T07:12:42Z"
