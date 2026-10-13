@@ -727,3 +727,125 @@ dod_evidence:
         check_value: |-
           uv run pytest tests/integration/test_catalog_local_render_loopback_omn19972.py tests/unit/infra/test_catalog_local_profile.py -q
         cwd: "${OMNI_HOME}/omnibase_infra"
+  - id: "dod-omn19972-ac3-lab-row-and-runs-readback"
+    description: >-
+      AC3, the lab-step readback, as a read that can be re-run. On the isolated .201 lane omnibase-infra-omn19972
+      (the catalog local bundle booted as its own compose project), one real delegation on 2026-10-07
+      11:44:52Z, correlation 10ec189c-d617-47ca-8b5a-04ffb0e8c56d, wrote one row to the lane's compose
+      Postgres. The lane's runtime image was at omnimarket 919215ff, a dev commit after 2120def, the merge
+      of omnimarket#3448 that makes the Runs read resolve a slug-named tenant to its registry uuid. The
+      check reads, over ssh and read-only: that row in delegation_events (count 1, inside a READ ONLY
+      transaction), and the Runs exposure delegation.decisions.v1 on the lane's projection-api (127.0.0.1:23002
+      on the host) for the same correlation id, once with no tenant named (the lane default, as the Runs
+      page reads it) and once by the tenant slug local-ee67b16e7aab. Each read must serve exactly that
+      one row. No uuid-scoped read is used, because one does not count as proof (ruling recorded on the
+      ticket, comment f96a4f52). A never-used correlation id must read 0 rows from both stores, so a read
+      that ignores its filter fails the check. Limits, stated: the check does not boot the stack or run
+      a delegation, so it proves the row is stored and served now, not that a fresh boot writes one; the
+      boot and the delegation are recorded in the 2026-10-06 17:46Z readback comment on omnimarket#3448
+      and in the lane readback of 2026-10-07. The criterion says laptop; the run was on a lab host under
+      the lab-first rule, booting the same local bundle. The check goes red if the lane is torn down or
+      its Postgres volume is reset. The binding is a draft: this lane authored the item, so it carries
+      no accepted_by.
+    source: "manual"
+    execution_scope: "local_done_gate"
+    checks:
+      - check_type: "command"
+        check_value: |-
+          if docker inspect omnibase-infra-omn19972-postgres >/dev/null 2>&1; then lab_py="python3 -"; else lab_py="ssh -o BatchMode=yes -o ConnectTimeout=15 jonah@192.168.86.201 python3 -"; fi
+          $lab_py <<'PY' | grep -E '^AC3-OK pg=1 runs_default=1 runs_slug=1 control_pg=0 control_runs=0$'
+          import json, subprocess, urllib.request
+          P = "omnibase-infra-omn19972"
+          CID = "10ec189c-d617-47ca-8b5a-04ffb0e8c56d"
+          CTL = "00000000-0000-4000-8000-000000019972"
+          SLUG = "local-ee67b16e7aab"
+          def pg(cid):
+              sql = "BEGIN READ ONLY; SELECT $q$PGROWS $q$ || count(*) FROM delegation_events WHERE correlation_id::text = $q$" + cid + "$q$; ROLLBACK;"
+              try:
+                  out = subprocess.run(["docker", "exec", "-i", P + "-postgres", "psql", "-X", "-U", "postgres", "-d", "omnidash_analytics", "-At", "-v", "ON_ERROR_STOP=1"], input=sql, capture_output=True, text=True, timeout=30)
+              except Exception:
+                  return "ERR"
+              rows = [line.split()[1] for line in out.stdout.splitlines() if line.startswith("PGROWS ")]
+              return rows[0] if out.returncode == 0 and len(rows) == 1 else "ERR"
+          def runs(query, cid):
+              url = "http://127.0.0.1:23002/projection/onex.snapshot.projection.delegation.decisions.v1?" + query + "correlation_id=" + cid
+              try:
+                  with urllib.request.urlopen(url, timeout=15) as r:
+                      d = json.load(r)
+                  rows = d["rows"]
+                  ok = d["row_count"] == len(rows) and all(row["correlation_id"] == cid for row in rows)
+              except Exception:
+                  return "ERR"
+              return str(len(rows)) if ok else "ERR"
+          facts = (pg(CID), runs("", CID), runs("tenant=" + SLUG + "&", CID), pg(CTL), runs("", CTL))
+          print(("AC3-OK" if facts == ("1", "1", "1", "0", "0") else "AC3-FAIL") + " pg=%s runs_default=%s runs_slug=%s control_pg=%s control_runs=%s" % facts)
+          PY
+    binds_ac:
+      - "AC3"
+    ac_bindings:
+      - label: "AC3"
+        criterion_hash: "3d37f1022280debd8c31dd83f69ef693af06965015c6728fd6ab8303275f930e"
+  - id: "dod-omn19972-ac3-lab-row-and-runs-readback-v2"
+    description: >-
+      Supersedes dod-omn19972-ac3-lab-row-and-runs-readback. That item's wrapper piped the probe into
+      the match for its verdict line, so in a shell without pipefail a remote read that printed the valid
+      line and then dropped was graded on the line alone. This item runs the same probe, unchanged, and
+      also requires that the probe and the match each exited 0. What follows is that item's description,
+      which still holds. AC3, the lab-step readback, as a read that can be re-run. On the isolated .201
+      lane omnibase-infra-omn19972 (the catalog local bundle booted as its own compose project), one real
+      delegation on 2026-10-07 11:44:52Z, correlation 10ec189c-d617-47ca-8b5a-04ffb0e8c56d, wrote one
+      row to the lane's compose Postgres. The lane's runtime image was at omnimarket 919215ff, a dev commit
+      after 2120def, the merge of omnimarket#3448 that makes the Runs read resolve a slug-named tenant
+      to its registry uuid. The check reads, over ssh and read-only: that row in delegation_events (count
+      1, inside a READ ONLY transaction), and the Runs exposure delegation.decisions.v1 on the lane's
+      projection-api (127.0.0.1:23002 on the host) for the same correlation id, once with no tenant named
+      (the lane default, as the Runs page reads it) and once by the tenant slug local-ee67b16e7aab. Each
+      read must serve exactly that one row. No uuid-scoped read is used, because one does not count as
+      proof (ruling recorded on the ticket, comment f96a4f52). A never-used correlation id must read 0
+      rows from both stores, so a read that ignores its filter fails the check. Limits, stated: the check
+      does not boot the stack or run a delegation, so it proves the row is stored and served now, not
+      that a fresh boot writes one; the boot and the delegation are recorded in the 2026-10-06 17:46Z
+      readback comment on omnimarket#3448 and in the lane readback of 2026-10-07. The criterion says laptop;
+      the run was on a lab host under the lab-first rule, booting the same local bundle. The check goes
+      red if the lane is torn down or its Postgres volume is reset. The binding is a draft: this lane
+      authored the item, so it carries no accepted_by.
+    source: "manual"
+    execution_scope: "local_done_gate"
+    evidence_artifact: "supersedes_dod_evidence:dod-omn19972-ac3-lab-row-and-runs-readback"
+    checks:
+      - check_type: "command"
+        check_value: |-
+          if docker inspect omnibase-infra-omn19972-postgres >/dev/null 2>&1; then lab_py="python3 -"; else lab_py="ssh -o BatchMode=yes -o ConnectTimeout=15 jonah@192.168.86.201 python3 -"; fi
+          $lab_py <<'PY' | grep -E '^AC3-OK pg=1 runs_default=1 runs_slug=1 control_pg=0 control_runs=0$'
+          import json, subprocess, urllib.request
+          P = "omnibase-infra-omn19972"
+          CID = "10ec189c-d617-47ca-8b5a-04ffb0e8c56d"
+          CTL = "00000000-0000-4000-8000-000000019972"
+          SLUG = "local-ee67b16e7aab"
+          def pg(cid):
+              sql = "BEGIN READ ONLY; SELECT $q$PGROWS $q$ || count(*) FROM delegation_events WHERE correlation_id::text = $q$" + cid + "$q$; ROLLBACK;"
+              try:
+                  out = subprocess.run(["docker", "exec", "-i", P + "-postgres", "psql", "-X", "-U", "postgres", "-d", "omnidash_analytics", "-At", "-v", "ON_ERROR_STOP=1"], input=sql, capture_output=True, text=True, timeout=30)
+              except Exception:
+                  return "ERR"
+              rows = [line.split()[1] for line in out.stdout.splitlines() if line.startswith("PGROWS ")]
+              return rows[0] if out.returncode == 0 and len(rows) == 1 else "ERR"
+          def runs(query, cid):
+              url = "http://127.0.0.1:23002/projection/onex.snapshot.projection.delegation.decisions.v1?" + query + "correlation_id=" + cid
+              try:
+                  with urllib.request.urlopen(url, timeout=15) as r:
+                      d = json.load(r)
+                  rows = d["rows"]
+                  ok = d["row_count"] == len(rows) and all(row["correlation_id"] == cid for row in rows)
+              except Exception:
+                  return "ERR"
+              return str(len(rows)) if ok else "ERR"
+          facts = (pg(CID), runs("", CID), runs("tenant=" + SLUG + "&", CID), pg(CTL), runs("", CTL))
+          print(("AC3-OK" if facts == ("1", "1", "1", "0", "0") else "AC3-FAIL") + " pg=%s runs_default=%s runs_slug=%s control_pg=%s control_runs=%s" % facts)
+          PY
+          test "${PIPESTATUS[0]}${PIPESTATUS[1]}" = "00"
+    binds_ac:
+      - "AC3"
+    ac_bindings:
+      - label: "AC3"
+        criterion_hash: "3d37f1022280debd8c31dd83f69ef693af06965015c6728fd6ab8303275f930e"
