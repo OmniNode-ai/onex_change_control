@@ -1,7 +1,7 @@
 # SPDX-FileCopyrightText: 2026 OmniNode.ai Inc.
 # SPDX-License-Identifier: MIT
 
-"""Fail-closed guard: reject BOT-authored PRs touching grants/** or allowlists/**.
+"""Fail-closed guard: reject BOT-authored PRs touching grants/**.
 
 OMN-14919.
 
@@ -21,9 +21,13 @@ minting its own authorization:
   bot is the PR author, ``jonah`` is a different login, so the inequality holds.
 
 So a bot could open a PR that edits ``grants/**`` (the prod-promotion trust
-anchor) or ``allowlists/**`` (compliance exemptions) and self-authorize. This
-guard is the mechanical closure: it **rejects any bot-authored PR that touches**
-``grants/**`` **or** ``allowlists/**``.
+anchor) and self-authorize. This guard is the mechanical closure: it **rejects
+any bot-authored PR that touches** ``grants/**``.
+
+``allowlists/**`` is deliberately NOT guarded (OMN-14919 amendment, operator
+ruling 2026-10-14T12:04:57Z: no human-authored commit is required). The
+allowlist files keep their content validation in their own validators; this
+guard only ever checked authorship, so nothing of it remains on that surface.
 
 It deliberately does NOT block bots from minting *evidence* companions — those
 touch only ``contracts/**`` and ``drift/**``. The line is exact: a machine may
@@ -80,17 +84,17 @@ if TYPE_CHECKING:
     from collections.abc import Sequence
 
 # ---------------------------------------------------------------------------
-# Policy constants — the two authorization surfaces a machine writer must never
+# Policy constants — the authorization surface a machine writer must never
 # touch, and the machine identities we recognize. Both are intentionally module
 # constants (greppable, extensible) rather than buried in logic.
 # ---------------------------------------------------------------------------
 
 # A changed file is "sensitive" when it lives under one of these repo-relative
-# prefixes. Scoped EXACTLY to the two authorization surfaces named in the closure
-# rationale — grants (prod-promotion trust anchor) and allowlists (compliance
-# exemptions). Evidence surfaces (contracts/, drift/) are intentionally NOT here:
-# machine-minted evidence companions are allowed.
-SENSITIVE_PATH_PREFIXES: tuple[str, ...] = ("grants/", "allowlists/")
+# prefixes. Scoped EXACTLY to the prod-promotion trust anchor (grants/).
+# Evidence surfaces (contracts/, drift/) and allowlists/ are intentionally NOT
+# here: machine-minted evidence companions and lane-authored allowlist changes
+# are allowed.
+SENSITIVE_PATH_PREFIXES: tuple[str, ...] = ("grants/",)
 
 # Known non-human GitHub login handles (compared case-insensitively). Any login
 # ending in "[bot]" is also treated as a bot regardless of this set.
@@ -240,7 +244,7 @@ def evaluate(
     if not sensitive:
         return (
             _EXIT_PASS,
-            "PASS: PR touches no grants/** or allowlists/** path; the "
+            "PASS: PR touches no grants/** path; the "
             "bot-authored-authz guard does not apply (OMN-14919).",
         )
 
@@ -257,7 +261,7 @@ def evaluate(
         return (
             _EXIT_REJECT,
             "REJECT: a BOT-authored change touches a guarded authorization surface "
-            "(grants/** or allowlists/**). A machine writer must never mint its own "
+            "(grants/**). A machine writer must never mint its own "
             "authorization — App tokens scope by repo not path, OCC has no required "
             "reviews, and CODEOWNERS here is advisory (OMN-14919).\n"
             f"  Bot signal(s):\n{joined}\n"
@@ -270,7 +274,7 @@ def evaluate(
         return (
             _EXIT_INCONCLUSIVE,
             "INCONCLUSIVE: the PR touches a guarded authorization surface "
-            "(grants/** or allowlists/**) but the commit author/committer "
+            "(grants/**) but the commit author/committer "
             "identities could not be read from git, so human authorship cannot be "
             "proven. Fail-closed (OMN-14919).\n"
             f"  Guarded path(s) touched:\n{touched}",
@@ -278,8 +282,8 @@ def evaluate(
 
     return (
         _EXIT_PASS,
-        "PASS: PR touches a guarded authorization surface (grants/** or "
-        "allowlists/**) but authorship is proven human (no bot login/type and no "
+        "PASS: PR touches a guarded authorization surface (grants/**) but "
+        "authorship is proven human (no bot login/type and no "
         "machine commit identities) (OMN-14919).\n"
         f"  Guarded path(s) touched:\n{touched}",
     )
@@ -355,7 +359,7 @@ def resolve_staged_changed_files(repo_root: str) -> list[str]:
     Uses ``-z`` (NUL-delimited) output rather than plain ``--name-only``:
     without it, git quotes special-character filenames (tabs, newlines,
     non-ASCII) as a C-style string (e.g. ``"grants/x\ty.yaml"``), which would
-    corrupt the leading ``grants/``/``allowlists/`` prefix that
+    corrupt the leading ``grants/`` prefix that
     :func:`is_sensitive_path` matches against.
     """
     result = _run_git(
