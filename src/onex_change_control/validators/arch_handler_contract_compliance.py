@@ -206,7 +206,7 @@ def _load_scripts_exceptions(
 
     This is the ONLY way a NEW ``scripts/**`` file may land under the deny-new
     policy (OMN-14475). The registry is a single central file resolved from
-    onex_change_control@main in CI (mirroring ``skip_token_approvals.yaml``) so
+    onex_change_control@main in CI so
     a downstream PR cannot self-add an entry; the gate is CODEOWNERS review on a
     separate @main PR. ``approved_by`` records the reviewer's login but is
     advisory, not code-enforced (no ``approved_by != author`` check here — that

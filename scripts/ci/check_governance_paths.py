@@ -9,9 +9,12 @@ Why this exists
 `jonahgabriel`, gated only on `occ-preflight / eligibility` success. Agent
 sessions in this org share that GitHub identity, so an agent-opened PR that
 touches `grants/prod_promotion_grants.yaml` (the OMN-13418 prod-promotion
-trust anchor) or `allowlists/skip_token_approvals.yaml` (the skip-token
-approval registry) could be armed and merged unattended, with zero human
+trust anchor) could be armed and merged unattended, with zero human
 review (`onex_change_control@main` has `requiresApprovingReviews=false`).
+
+`allowlists/skip_token_approvals.yaml` was a second guarded path until
+OMN-14919 (operator ruling 2026-10-14T12:04:57Z): a PR touching it no longer
+needs a human merge decision.
 
 Live near-miss 2026-08-17 ~05:30Z: `auto-merge.yml` armed a freshly opened
 grant PR within seconds of open; containment was manual
@@ -19,7 +22,7 @@ grant PR within seconds of open; containment was manual
 
 This is a DIFFERENT closure from OMN-14919's
 `check_bot_authored_authz_guard` in `ci.yml`, which rejects BOT-authored
-(GitHub author type == Bot) PRs touching `grants/**` / `allowlists/**`. That
+(GitHub author type == Bot) PRs touching `grants/**`. That
 guard does not fire here because an agent session acting as `jonahgabriel`
 has author type `User`, not `Bot`. This module closes the actor-gate hole
 directly: regardless of actor identity or `occ-preflight` outcome, a PR
@@ -87,10 +90,7 @@ if TYPE_CHECKING:
 # are added in exactly one place (per OMN-16117's fix shape).
 # ---------------------------------------------------------------------------
 
-GOVERNANCE_PATHS: tuple[str, ...] = (
-    "grants/prod_promotion_grants.yaml",
-    "allowlists/skip_token_approvals.yaml",
-)
+GOVERNANCE_PATHS: tuple[str, ...] = ("grants/prod_promotion_grants.yaml",)
 
 _EXIT_SAFE_TO_ARM = 0
 _EXIT_EXCLUDE = 1

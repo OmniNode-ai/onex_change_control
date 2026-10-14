@@ -255,7 +255,7 @@ def test_governance_path_checker_is_importable_and_guards_the_grant_file() -> No
     spec.loader.exec_module(module)
 
     assert "grants/prod_promotion_grants.yaml" in module.GOVERNANCE_PATHS
-    assert "allowlists/skip_token_approvals.yaml" in module.GOVERNANCE_PATHS
+    assert "allowlists/skip_token_approvals.yaml" not in module.GOVERNANCE_PATHS
     # Fail-closed contract: an undetermined changed-file set excludes.
     assert module.touches_governance_path(None) is True
     assert module.touches_governance_path(["grants/prod_promotion_grants.yaml"]) is True

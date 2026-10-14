@@ -69,7 +69,8 @@ class TestIsGovernancePath:
             "contracts/OMN-16117.yaml",
             "drift/dod_receipts/OMN-16117/x/command.yaml",
             "grants/other_grant.yaml",  # under grants/ but not the guarded file
-            "allowlists/omnimarket.yaml",  # under allowlists/ but not the guarded file
+            "allowlists/omnimarket.yaml",
+            "allowlists/skip_token_approvals.yaml",  # not guarded (OMN-14919)
             "scripts/ci/check_governance_paths.py",
             "README.md",
         ],
@@ -114,8 +115,24 @@ class TestTouchesGovernancePath:
         governance file."""
         assert touches_governance_path(None) is True
 
-    def test_skip_token_allowlist_is_governance(self) -> None:
-        assert touches_governance_path(["allowlists/skip_token_approvals.yaml"]) is True
+    def test_skip_token_allowlist_is_not_governance(self) -> None:
+        """OMN-14919: no human merge decision is required for the skip-token file."""
+        assert (
+            touches_governance_path(["allowlists/skip_token_approvals.yaml"]) is False
+        )
+
+    def test_skip_token_allowlist_deletion_with_prod_grant_still_excluded(
+        self,
+    ) -> None:
+        assert (
+            touches_governance_path(
+                [
+                    "allowlists/skip_token_approvals.yaml",
+                    "grants/prod_promotion_grants.yaml",
+                ]
+            )
+            is True
+        )
 
 
 # ---------------------------------------------------------------------------
@@ -197,7 +214,7 @@ class TestSubprocessInvocation:
                 str(_SCRIPT),
                 "check",
                 "--changed-files-json",
-                json.dumps(["allowlists/skip_token_approvals.yaml"]),
+                json.dumps(["grants/prod_promotion_grants.yaml"]),
             ],
             capture_output=True,
             text=True,

@@ -321,10 +321,8 @@ class TestTheValidatorDocumentsTheKind:
     than a preference. `grants/prod_promotion_grants.yaml` is a guarded
     authorization surface: `check-bot-authored-authz-guard` refuses any
     BOT-authored change to it, because a machine writer must never mint its own
-    authorization. This module lives under `src/`, which
-    `check-human-authored-privileged-pr` requires to be authored BY the writer
-    App. One PR cannot satisfy both, so the two files cannot move together and
-    the field reference lives here, in the module that enforces it.
+    authorization. The field reference lives here, in the module that enforces
+    it.
     """
 
     def test_the_validator_documents_every_manifest_field(self) -> None:
