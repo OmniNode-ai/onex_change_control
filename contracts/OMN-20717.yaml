@@ -1,0 +1,178 @@
+---
+schema_version: "1.0.0"
+ticket_id: "OMN-20717"
+title: "delegation.decisions.v1 serves each call's cost_usd, so the Usage page's cost can be checked against
+  the call rows"
+summary: >-
+  Hand-authored OCC evidence for OMN-20717. AC1 and AC2 are bound to the tests of omnimarket#3807 in omnimarket's
+  own contracts/OMN-20717.yaml; this contract adds the AC3 check over the recorded lab readback and the
+  merged-PR citation for #3807.
+is_seam_ticket: false
+interface_change: false
+interfaces_touched: []
+requirements:
+  - id: "req-transcribed-acceptance-criteria"
+    statement: |-
+      The acceptance criteria declared on OMN-20717, transcribed from the ticket body on 2026-10-14. The ticket body is the source.
+    acceptance:
+      - id: "AC1"
+        statement: |-
+          AC1: decisions.v1 declares `cost_usd`, and a priced call's row returns the same `cost_usd` that `delegation_events` stores -- falsifier: uv run pytest on the exposure test shows the column missing or a different value
+      - id: "AC2"
+        statement: |-
+          AC2: an unpriced call returns null, never 0 -- falsifier: the same test finds 0.0 for an unpriced call
+      - id: "AC3"
+        statement: |-
+          AC3: on a lab host, the Usage page's cost for one day and model equals the sum of that day's decisions.v1 `cost_usd` values, over at least one non-zero-cost call -- falsifier: the lab step's two numbers differ
+evidence_requirements:
+  - kind: "manual"
+    description: >-
+      AC3 is re-derived from the two exposures the lab install served on 2026-10-14 at 10:06:42Z, kept
+      unchanged on the lab host and pinned by sha256.
+    command: "python3 - < probe (lab host)"
+emergency_bypass:
+  enabled: false
+  justification: ""
+  follow_up_ticket_id: ""
+dod_evidence:
+  - id: "dod-omn20717-ac3-usage-equals-call-rows-recorded"
+    description: >-
+      AC3, recorded lab readback. On lab host .201 on 2026-10-14 a throwaway install of omnimarket 0.4.313
+      (dev e9055c04, which carries #3807) made one priced delegation (correlation id 7ce1e196, qwen/qwen3.8-27b,
+      stored cost 0.000662) and its own onex dashboard served usage-by-model-day.v1 and delegation.decisions.v1
+      at 10:06:42Z. Both answers are kept byte for byte in the lakshman data area and pinned by sha256.
+      The check reads both whole and is red when a file is missing, altered or not JSON, when either read
+      is partial, when the Usage row for that day and model is absent, when no call of that day and model
+      has a non-zero cost, and when the Usage page's measured cost differs from the sum of that day's
+      decisions.v1 cost_usd values. On the lab host it printed AC3-OK (0.000662 = 0.000662, two calls,
+      one non-zero); five planted faults (one byte changed, a file missing, the sum changed, the priced
+      call set to zero, a truncated read) each exited 1. Stated limits: it reads the 2026-10-14 record,
+      not the install now; its ssh path for a host that does not hold the folder is unproven (the laptop
+      could not reach it); run it on the lab host.
+    source: "manual"
+    execution_scope: "local_done_gate"
+    checks:
+      - check_type: "command"
+        check_value: |-
+          if test -d /data/omninode/lakshman/omn20717-readbacks/OMN-20717-ac3-readback-20261014T100636Z; then lab_py="/usr/bin/python3 -"; else lab_py="ssh -o BatchMode=yes -o ConnectTimeout=15 jonah@192.168.86.201 /usr/bin/python3 -"; fi
+          $lab_py <<'PROBE_20717_AC3' | grep -E '^AC3-OK day=2026-10-14 model=qwen/qwen3.8-27b usage_measured_cost_usd=0.000662 decisions_cost_usd_sum=0.000662 calls=2 nonzero_calls=1$'
+          """OMN-20717 AC3 check over the recorded lab readback of 2026-10-14. Read-only.
+
+          It reads two files, kept as a copy in the lakshman data area on the lab host, each saved byte for byte on
+          2026-10-14 at 10:06:42Z by the install's own `onex dashboard` on .201, after one priced delegation
+          (correlation id 7ce1e196-2aa9-4420-a54e-20615a0a4431). The install was omnimarket built from
+          repos/OmniNode-ai/omnimarket/commits/e9055c04ef36cf031e6068a70c3e853b60b86af2 (dev, carries #3807):
+            onex.snapshot.projection.usage-by-model-day.v1.json   the exposure the Usage page binds
+            onex.snapshot.projection.delegation.decisions.v1.json the call rows
+          Both are read whole before anything is graded. It prints one verdict line, AC3-OK or AC3-FAIL, and is red when
+          a file is missing, unreadable, not the recorded one (sha256) or not JSON; when either read is truncated, paged
+          or its row count disagrees with its rows; when the Usage row for 2026-10-14 and qwen/qwen3.8-27b is absent or
+          not unique; when no call of that day and model has a non-zero cost; and when the Usage page's measured cost
+          differs from the sum of that day's decisions.v1 cost_usd values for the model. It reads a record: the lab
+          install is not read again.
+
+          Run on the lab host: python3 - [folder] < this   (the folder defaults to the kept copy).
+          """
+
+          import hashlib
+          import json
+          import os
+          import sys
+
+          FOLDER = "/data/omninode/lakshman/omn20717-readbacks/OMN-20717-ac3-readback-20261014T100636Z"
+          USAGE = "onex.snapshot.projection.usage-by-model-day.v1.json"
+          DECISIONS = "onex.snapshot.projection.delegation.decisions.v1.json"
+          RECORDED = {
+              DECISIONS: "0552f081cc8f9f3b368647e764f747cf030c4ec09019f7570975309af3576abe",
+              USAGE: "184a42b844033a655d48f4293d1956b32d270df11b6124e7a9587c73d8ff684b",
+          }
+          DAY = "2026-10-14"
+          MODEL = "qwen/qwen3.8-27b"
+
+
+          def fail(reason):
+              print(f"AC3-FAIL {reason}")
+              sys.exit(1)
+
+
+          def load(folder, name):
+              path = os.path.join(folder, name)
+              try:
+                  with open(path, "rb") as handle:
+                      raw = handle.read()
+              except OSError as exc:
+                  fail(f"{name} unreadable: {exc.__class__.__name__}")
+              digest = hashlib.sha256(raw).hexdigest()
+              if digest != RECORDED[name]:
+                  fail(f"{name} is not the recorded file (sha256 {digest[:12]})")
+              try:
+                  doc = json.loads(raw)
+              except ValueError:
+                  fail(f"{name} is not JSON")
+              rows = doc.get("rows")
+              if not isinstance(rows, list):
+                  fail(f"{name} has no rows list")
+              if doc.get("truncated") is not False or doc.get("next_cursor") is not None:
+                  fail(f"{name} is a partial read")
+              if doc.get("row_count") != len(rows):
+                  fail(f"{name} row_count {doc.get('row_count')} != {len(rows)} rows")
+              return doc, rows
+
+
+          def main():
+              folder = sys.argv[1] if len(sys.argv) > 1 else FOLDER
+              usage_doc, usage_rows = load(folder, USAGE)
+              decisions_doc, decision_rows = load(folder, DECISIONS)
+              if usage_doc.get("topic") != USAGE[: -len(".json")] or decisions_doc.get("topic") != DECISIONS[: -len(".json")]:
+                  fail("a file holds another exposure")
+
+              matches = [r for r in usage_rows if r.get("usage_day") == DAY and r.get("model_id") == MODEL]
+              if len(matches) != 1:
+                  fail(f"{len(matches)} Usage rows for {DAY} {MODEL}")
+              page_cost = matches[0].get("measured_cost_usd")
+              if not isinstance(page_cost, (int, float)) or isinstance(page_cost, bool):
+                  fail("the Usage row has no measured cost")
+
+              day_rows = [
+                  r for r in decision_rows
+                  if str(r.get("created_at", "")).startswith(DAY + "T") and r.get("model_name") == MODEL
+              ]
+              costs = [r.get("cost_usd") for r in day_rows]
+              if any(c is not None and (not isinstance(c, (int, float)) or isinstance(c, bool)) for c in costs):
+                  fail("a call row has a cost that is not a number")
+              priced = [c for c in costs if c is not None]
+              nonzero = [c for c in priced if c != 0]
+              if not nonzero:
+                  fail(f"no non-zero-cost call for {DAY} {MODEL}")
+              total = sum(priced)
+              if abs(total - page_cost) > 1e-12:
+                  fail(f"usage {page_cost!r} != decisions sum {total!r}")
+              print(
+                  f"AC3-OK day={DAY} model={MODEL} usage_measured_cost_usd={page_cost!r} "
+                  f"decisions_cost_usd_sum={total!r} calls={len(day_rows)} nonzero_calls={len(nonzero)}"
+              )
+
+
+          main()
+          PROBE_20717_AC3
+          test "${PIPESTATUS[0]}${PIPESTATUS[1]}" = "00"
+    binds_ac:
+      - "AC3"
+    ac_bindings:
+      - label: "AC3"
+        criterion_hash: "2df899cd179a98b88c3a088c336cae2659ecd99cff6e6bd30f293676c9eb5190"
+        proposed_by: "lane=claude-2a317a77"
+  - id: "dod-omn20717-merged-pr-3807-citation"
+    description: >-
+      The merged-PR citation for this ticket. The durable evidence gate takes it from a PASS receipt that
+      carries pr_number, commit_sha and a repository named in the probe text. The check reads omnimarket#3807
+      (the tests AC1 and AC2 are bound to) and passes only when it is MERGED as commit fc5ef994cd3a. It
+      is red when the pull request is not merged, when its merge commit is another one, and when the read
+      fails, even after printing a matching line. It binds no acceptance criterion.
+    source: "manual"
+    execution_scope: "local_done_gate"
+    checks:
+      - check_type: "command"
+        check_value: |-
+          gh pr view 3807 --repo OmniNode-ai/omnimarket --json number,state,url,mergeCommit --jq '"\(.number) \(.state) \(.mergeCommit.oid) \(.url)"' | grep -E '^3807 MERGED fc5ef994cd3a76a8ef6e0f622ba9351d148729fe https://github.com/OmniNode-ai/omnimarket/pull/3807$'
+          test "${PIPESTATUS[0]}${PIPESTATUS[1]}" = "00"
