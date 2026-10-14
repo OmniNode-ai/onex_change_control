@@ -176,3 +176,67 @@ dod_evidence:
         check_value: |-
           gh pr view 3807 --repo OmniNode-ai/omnimarket --json number,state,url,mergeCommit --jq '"\(.number) \(.state) \(.mergeCommit.oid) \(.url)"' | grep -E '^3807 MERGED fc5ef994cd3a76a8ef6e0f622ba9351d148729fe https://github.com/OmniNode-ai/omnimarket/pull/3807$'
           test "${PIPESTATUS[0]}${PIPESTATUS[1]}" = "00"
+  - id: dod-omn20717-ac1-ac2-cost-tests
+    description: Draft AC1 and AC2 bindings to the focused behavior tests carried by merged omnimarket#3807
+      (fc5ef994cd3a76a8ef6e0f622ba9351d148729fe). The tests compare non-round stored costs with served
+      and republished rows and require an unmeasured local-store cost to remain null. AC2 remains limited
+      to the local store and returned-null republish paths; this does not claim the Postgres storage question
+      is resolved. The product checkout is required, so the local Done gate executes this item.
+    source: manual
+    execution_scope: local_done_gate
+    checks:
+      - check_type: test_passes
+        check_value: uv run --no-sync pytest tests/projection/test_decisions_cost_matches_the_stored_cost_omn20717.py
+          tests/projection/test_dashboard_decisions_serve_status_and_cost_omn20753.py -q --no-cov -p no:randomly
+        cwd: ${OMNI_HOME}/omnimarket
+    binds_ac:
+      - AC1
+      - AC2
+    ac_bindings:
+      - label: AC1
+        criterion_hash: e4e1c4023f8e03c01fa5cc086b2c8f27aefe6de2ddb02b7a784f66ea3eec0e2f
+        proposed_by: landing-L7541
+      - label: AC2
+        criterion_hash: 8e2b886fac788b9d8be612f5e8d657372f93466300a75985a4b48b1303e0a512
+        proposed_by: landing-L7541
+  - id: dod-omn20717-merged-decisions-cost-column
+    description: Hosted merged-code check of omnimarket#3807 at its immutable merge commit. Reads the
+      product node contract outside this OCC diff and requires exactly one decisions.v1 exposure over
+      delegation_events with cost_usd among its columns. Missing exposure, wrong table, missing column
+      and failed content reads are red. This supplements the focused behavior tests; it does not bind
+      a criterion or claim a live runtime comparison. Hosted runners read GitHub contents with their workflow
+      token. Local verification may select the canonical Git object database with OMN20717_GIT_DIR; both
+      transports read the same pinned commit and path.
+    source: manual
+    checks:
+      - check_type: command
+        check_value: |-
+          uv run python - <<'PROBE_20717_MERGED_EXPOSURE'
+          import base64
+          import os
+          import subprocess
+
+          import yaml
+
+          ref = "fc5ef994cd3a76a8ef6e0f622ba9351d148729fe"
+          path = "src/omnimarket/nodes/node_projection_delegation/contract.yaml"
+          local_git = os.environ.get("OMN20717_GIT_DIR")
+          if local_git:
+              raw = subprocess.check_output(
+                  ["git", "--git-dir", local_git, "show", f"{ref}:{path}"], timeout=30
+              )
+          else:
+              encoded = subprocess.check_output(
+                  ["gh", "api", f"repos/OmniNode-ai/omnimarket/contents/{path}?ref={ref}",
+                   "--jq", ".content"], timeout=30
+              )
+              raw = base64.b64decode(encoded)
+          contract = yaml.safe_load(raw)
+          topic = "onex.snapshot.projection.delegation.decisions.v1"
+          exposures = [e for e in contract["projection_api"]["exposures"] if e["topic"] == topic]
+          assert len(exposures) == 1, "decisions exposure missing or duplicated"
+          exposure = exposures[0]
+          assert exposure["table"] == "delegation_events", "decisions reads another table"
+          assert "cost_usd" in exposure["columns"], "decisions omits stored cost_usd"
+          print(f"MERGED-EXPOSURE-OK repo=OmniNode-ai/omnimarket ref={ref} table=delegation_events column=cost_usd")
+          PROBE_20717_MERGED_EXPOSURE
