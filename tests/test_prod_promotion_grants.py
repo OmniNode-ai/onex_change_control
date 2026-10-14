@@ -20,11 +20,13 @@ DoD tests:
 
 from __future__ import annotations
 
+import fnmatch
 import re
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
+import pytest
 import yaml
 
 # Path to the repo root relative to this test file
@@ -323,35 +325,110 @@ def _validate_entries(entries: list[dict[str, Any]]) -> list[str]:
     return errors
 
 
+#: OMN-13410: the GitHub team that approves prod-promotion grants. It holds the
+#: two founders' accounts and nothing else: no App and no other login.
+_GRANT_APPROVER_TEAM = "@OmniNode-ai/prod-grant-approvers"
+_GRANT_FILE_CODEOWNERS_PATH = "/grants/prod_promotion_grants.yaml"
+_CODEOWNERS_SELF_PATH = "/.github/CODEOWNERS"
+
+
+def _codeowners_rules() -> list[tuple[str, list[str]]]:
+    """Return (pattern, owners) for every rule line of CODEOWNERS, in file order."""
+    assert _CODEOWNERS_FILE.exists(), f"CODEOWNERS not found at {_CODEOWNERS_FILE}"
+    rules: list[tuple[str, list[str]]] = []
+    for line in _CODEOWNERS_FILE.read_text(encoding="utf-8").splitlines():
+        stripped = line.split("#", 1)[0].strip()
+        if not stripped:
+            continue
+        pattern, *owners = stripped.split()
+        rules.append((pattern, owners))
+    return rules
+
+
+def _explicit_rules(path: str) -> list[tuple[str, list[str]]]:
+    """Rules naming `path` itself, with or without the leading slash."""
+    names = {path, path.lstrip("/")}
+    return [
+        (pattern, owners) for pattern, owners in _codeowners_rules() if pattern in names
+    ]
+
+
+def _codeowners_pattern_matches(pattern: str, path: str) -> bool:
+    """Whether a CODEOWNERS pattern covers a repository path.
+
+    Deliberately generous: `*` is allowed to cross `/`, so the check can only
+    count more rules as matching than GitHub does, never fewer.
+    """
+    anchored = pattern.startswith("/") or "/" in pattern.rstrip("/")
+    pat = pattern.strip("/")
+    if pat in {"*", "**"}:
+        return True
+    parts = path.split("/")
+    if anchored:
+        candidates = ["/".join(parts[: i + 1]) for i in range(len(parts))]
+    else:
+        candidates = parts
+    return any(fnmatch.fnmatchcase(candidate, pat) for candidate in candidates)
+
+
 class TestGrantFileCodeownersRequired:
-    """CODEOWNERS owns the exact grants/prod_promotion_grants.yaml path."""
+    """CODEOWNERS gives the grant file and CODEOWNERS itself to the approvers only.
+
+    OMN-13410: the grant registry is valid only once approved by a code owner,
+    and code-owner review on `main` is satisfied by ANY listed owner. So the
+    grant path names exactly one team, the grant approvers, and so does
+    `.github/CODEOWNERS` itself: if nothing owns that file, a pull request can
+    delete the grant rule with no code-owner review and a later pull request
+    can merge a grant with none.
+    """
 
     def test_grant_file_codeowners_required(self) -> None:
-        """CODEOWNERS must have a dedicated entry for grants/prod_promotion_grants.yaml.
+        """One dedicated CODEOWNERS rule for the grant file, owned by the approvers.
 
         OMN-13437 DoD: test_grant_file_codeowners_required.
         """
-        assert _CODEOWNERS_FILE.exists(), f"CODEOWNERS not found at {_CODEOWNERS_FILE}"
-        content = _CODEOWNERS_FILE.read_text(encoding="utf-8")
-        lines = content.splitlines()
-
-        # Find non-comment lines referencing the exact grant file path
-        matching_lines = [
-            line
-            for line in lines
-            if line.strip()
-            and not line.strip().startswith("#")
-            and "grants/prod_promotion_grants.yaml" in line
-        ]
-        assert matching_lines, (
-            "CODEOWNERS must have a dedicated line for "
-            f"grants/prod_promotion_grants.yaml. Not found in {_CODEOWNERS_FILE}"
+        rules = _explicit_rules(_GRANT_FILE_CODEOWNERS_PATH)
+        assert len(rules) == 1, (
+            "CODEOWNERS must have exactly one dedicated rule for "
+            f"{_GRANT_FILE_CODEOWNERS_PATH}. Found: {rules}"
         )
-        # Verify platform-leads is the owner
-        assert any("@OmniNode-ai/platform-leads" in line for line in matching_lines), (
-            "CODEOWNERS entry for grants/prod_promotion_grants.yaml must "
-            "reference @OmniNode-ai/platform-leads. "
-            f"Found lines: {matching_lines}"
+        assert rules[0][1] == [_GRANT_APPROVER_TEAM], (
+            f"The {_GRANT_FILE_CODEOWNERS_PATH} rule must name only "
+            f"{_GRANT_APPROVER_TEAM}. Found owners: {rules[0][1]}"
+        )
+
+    def test_codeowners_file_owned_by_grant_approvers(self) -> None:
+        """`.github/CODEOWNERS` has one rule of its own, owned by the approvers only."""
+        rules = _explicit_rules(_CODEOWNERS_SELF_PATH)
+        assert len(rules) == 1, (
+            "CODEOWNERS must have exactly one dedicated rule for "
+            f"{_CODEOWNERS_SELF_PATH}, or the grant rule can be deleted without "
+            f"code-owner review. Found: {rules}"
+        )
+        assert rules[0][1] == [_GRANT_APPROVER_TEAM], (
+            f"The {_CODEOWNERS_SELF_PATH} rule must name only "
+            f"{_GRANT_APPROVER_TEAM}. Found owners: {rules[0][1]}"
+        )
+
+    @pytest.mark.parametrize(
+        "path",
+        ["grants/prod_promotion_grants.yaml", ".github/CODEOWNERS"],
+    )
+    def test_last_matching_rule_is_approver_team_only(self, path: str) -> None:
+        """The rule GitHub applies (the last match) names only the approver team.
+
+        A later broad rule such as `* @someone` overrides the dedicated one, so
+        the dedicated rule existing is not enough.
+        """
+        matching = [
+            (pattern, owners)
+            for pattern, owners in _codeowners_rules()
+            if _codeowners_pattern_matches(pattern, path)
+        ]
+        assert matching, f"No CODEOWNERS rule matches {path}"
+        assert matching[-1][1] == [_GRANT_APPROVER_TEAM], (
+            f"The last CODEOWNERS rule matching {path} is {matching[-1]}; it "
+            f"must name only {_GRANT_APPROVER_TEAM}"
         )
 
     def test_grant_codeowners_line_is_separate_from_skip_token_line(self) -> None:
