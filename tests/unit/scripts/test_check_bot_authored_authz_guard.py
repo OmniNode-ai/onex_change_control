@@ -5,7 +5,9 @@
 
 The guard is the mechanical closure for the canonical machine OCC producer: a
 machine writer authenticating with a repo-scoped App token could otherwise push
-to grants/** or allowlists/** and mint its own authorization. These tests isolate
+to grants/** and mint its own authorization. allowlists/** is no longer guarded
+(OMN-14919: no authorship requirement on the compliance-exemption registry). These
+tests isolate
 the pure decision logic (`evaluate`) and identity predicates from git I/O, then
 separately prove the git-derivation layer end-to-end against a real throwaway repo
 (a seeded bot-authored PR touching grants/** must REJECT) and prove it fails closed
@@ -14,11 +16,15 @@ when git history is unreadable.
 
 from __future__ import annotations
 
+import os
 import subprocess
 from pathlib import Path
 from unittest import mock
 
 import pytest
+from omnibase_core.validators.no_unguarded_git_subprocess import (
+    scrub_git_location_env,
+)
 
 from onex_change_control.scripts.check_bot_authored_authz_guard import (
     _EXIT_INCONCLUSIVE,
@@ -97,9 +103,8 @@ class TestIdentityPredicates:
         "path",
         [
             "grants/prod_promotion_grants.yaml",
-            "allowlists/omnimarket.yaml",
             "./grants/x.yaml",
-            "allowlists/nested/deep.yaml",
+            "grants/nested/deep.yaml",
         ],
     )
     def test_sensitive_paths(self, path: str) -> None:
@@ -112,7 +117,9 @@ class TestIdentityPredicates:
             "drift/dod_receipts/OMN-1/x/command.yaml",
             "src/onex_change_control/scripts/x.py",
             "grants_notes.md",  # not under grants/
-            "my_allowlists/x.yaml",  # not under allowlists/
+            "my_allowlists/x.yaml",
+            "allowlists/omnimarket.yaml",  # no longer guarded (OMN-14919)
+            "allowlists/skip_token_approvals.yaml",  # no longer guarded (OMN-14919)
         ],
     )
     def test_non_sensitive_paths(self, path: str) -> None:
@@ -137,16 +144,45 @@ class TestEvaluate:
         assert "REJECT" in msg
         assert "omnimarket-bot" in msg
 
-    def test_acceptance_1b_bot_author_type_touches_allowlists_rejects(self) -> None:
-        """A1: PR author type Bot + allowlists/** -> REJECT (no bot commits)."""
+    def test_acceptance_1b_bot_author_type_touches_grants_rejects(self) -> None:
+        """A1: PR author type Bot + grants/** -> REJECT (no bot commits)."""
         code, msg = evaluate(
-            changed_files=["allowlists/omnimarket.yaml"],
+            changed_files=["grants/prod_promotion_grants.yaml"],
             pr_author_login="some-app[bot]",
             pr_author_type="Bot",
             commit_identities=_HUMAN,  # commits look human, but PR author is a bot
         )
         assert code == _EXIT_REJECT
         assert "Bot" in msg
+
+    @pytest.mark.parametrize(
+        "path",
+        ["allowlists/skip_token_approvals.yaml", "allowlists/omnimarket.yaml"],
+    )
+    def test_bot_and_lane_authored_allowlists_change_passes(self, path: str) -> None:
+        """OMN-14919: a bot PR author / machine commit on allowlists/** passes.
+
+        No human-authorship requirement on the allowlists surface. Content
+        validation of the allowlist files is owned by their own validators.
+        """
+        code, msg = evaluate(
+            changed_files=[path],
+            pr_author_login="some-app[bot]",
+            pr_author_type="Bot",
+            commit_identities=_BOT_COMMIT,
+        )
+        assert code == _EXIT_PASS
+        assert "does not apply" in msg
+
+    def test_bot_allowlists_change_with_unreadable_git_passes(self) -> None:
+        """An unreadable identity history cannot block a path no longer guarded."""
+        code, _ = evaluate(
+            changed_files=["allowlists/skip_token_approvals.yaml"],
+            pr_author_login=None,
+            pr_author_type=None,
+            commit_identities=None,
+        )
+        assert code == _EXIT_PASS
 
     def test_acceptance_2_human_touches_grants_passes(self) -> None:
         """A2: human author + grants/** touched -> PASS."""
@@ -226,6 +262,7 @@ def _git(repo: Path, *args: str) -> None:
         check=True,
         capture_output=True,
         text=True,
+        env=scrub_git_location_env(os.environ),
     )
 
 
@@ -446,7 +483,7 @@ class TestPrecommitConfigDeclaresStagedHook:
     """Config test (RED on current tree, OMN-15008): the pre-commit mirror of
     the CI gate must exist in BOTH .pre-commit-hooks.yaml (the shippable hook
     definition) and .pre-commit-config.yaml (this repo's own local wiring of
-    it), scoped to grants/**+allowlists/** and invoking --staged.
+    it), scoped to grants/** and invoking --staged.
     """
 
     _REPO_ROOT = Path(__file__).resolve().parents[3]
@@ -476,7 +513,7 @@ class TestPrecommitConfigDeclaresStagedHook:
         entry = hook["entry"]
         assert isinstance(entry, str)
         assert "--staged" in entry
-        assert hook.get("files") == r"^(grants/|allowlists/)"
+        assert hook.get("files") == r"^grants/"
         assert hook.get("pass_filenames") is False
 
     def test_pre_commit_config_yaml_wires_hook(self) -> None:
@@ -484,5 +521,5 @@ class TestPrecommitConfigDeclaresStagedHook:
         entry = hook["entry"]
         assert isinstance(entry, str)
         assert "--staged" in entry
-        assert hook.get("files") == r"^(grants/|allowlists/)"
+        assert hook.get("files") == r"^grants/"
         assert hook.get("pass_filenames") is False

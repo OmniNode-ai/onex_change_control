@@ -82,11 +82,8 @@ recorded at omni_home docs/tracking/ROLLING_WORK_LEDGER.md:4077):
     WHY THIS REFERENCE LIVES HERE and not in the anchor's own header. That file
     is a guarded authorization surface: `check-bot-authored-authz-guard`
     refuses any BOT-authored change to `grants/**`, because a machine writer
-    must never mint its own authorization. This module lives under `src/`,
-    which `check-human-authored-privileged-pr` requires to be authored BY the
-    writer App. One PR cannot satisfy both gates, so the schema and its
-    enforcement cannot move in one change, and the enforcing module is the
-    honest home for the reference.
+    must never mint its own authorization. The enforcing module is the honest
+    home for the reference.
 
 Self-approval REFUSED again (OMN-17157, restoring OMN-14441):
     `approved_by` must not be the identity that REQUESTED the grant. The
