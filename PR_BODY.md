@@ -1,12 +1,19 @@
 ## Summary
-Ticket OMN-20074. This PR is the writer-App half of onex_change_control#13686, split because #13686 mixed an allowlist deletion that must be human-authored with edits under .github and src that must come from the writer App (check-human-authored-privileged-pr refuses a human-authored PR touching src/, scripts/ or .github/). #13686 is to be closed once both halves are open. The bot evidence commit that #13686 carried (minted for #13684) is not carried over.
+
+- onex_change_control dev head 0d170b50bb was red on CI Summary. No merge introduced a defect.
+- ci.yml has `cancel-in-progress: true` and its concurrency group was `${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}`. On a push event github.ref is refs/heads/dev, so every merge to dev shared one cancelling group and cancelled the previous merge's run.
+- The push runs for six consecutive dev merges after ce794f5122 were cancelled by the next merge.
+- CI Summary keeps `if: always()`, so on cancelled run 38522163882 (0d170b50bb) it read the cancelled gates (Supersession Binding Ratchet, Tests, Schema Purity & Naming Check) and concluded failure at 06:32:40Z. The successor run 38522777064 (8d77350c78) sat pending from 06:32:07Z to 06:42:46Z.
+- At 8d77350c78 the gates that were cancelled pass on the lab: supersession corpus, yamlfmt contamination corpus, check-schema-purity and supersession wiring all exited 0 (h202, work unit lw-4039c0f94a0c464c).
 
 ## Changes
-This half carries every file of #13686 except allowlists/skip_token_approvals.yaml: .github/CODEOWNERS (the review-owner entry for the registry is removed), .github/workflows/call-receipt-gate.yml (the gate is no longer handed a registry path; an added comment cites OMN-20074), .pre-commit-hooks/reject-deploy-gate-skip-token.sh (the hook rejects a skip token whatever comment accompanies it), src/onex_change_control/models/model_script_exception.py, src/onex_change_control/scripts/validate_precommit_fail_loud.py, src/onex_change_control/validators/arch_handler_contract_compliance.py (stale pointers to the registry corrected), and tests/unit/test_reject_deploy_gate_skip_token_hook.py. 7 files.
 
-The registry file allowlists/skip_token_approvals.yaml (its content is `entries: []`) is deleted in a separate human-authored PR that touches only that path. Governance path lists keep the registry path.
-
-Consent cited by the original commit: docs/tracking/ROLLING_WORK_LEDGER.md:66460, item 8.
+- .github/workflows/ci.yml: the concurrency group becomes `${{ github.workflow }}-${{ github.event.pull_request.number || (github.event_name == 'push' && github.sha) || github.ref }}`; cancel-in-progress stays true; an added comment cites OMN-20074. A push run is keyed on its own sha. Pull-request, merge-group and dispatch runs keep their existing groups. No gate, job or required context is added, removed or skipped.
+- tests/ci/test_cancellation_is_honored_omn18580.py: new test test_ci_push_runs_are_not_superseded_by_the_next_merge pins the push arm. The existing test test_cancel_in_progress_groups_stay_pull_request_scoped only checks for the substring github.ref, which the old group satisfied.
+- 2 files plus this PR_BODY.md.
 
 ## Proof
-Lab: host=h202 lane=omn18327-wapp command=`uv run pytest tests/unit/test_reject_deploy_gate_skip_token_hook.py tests/unit/validators/test_arch_handler_contract_compliance_capture.py tests/unit/scripts/test_check_scripts_canonical.py -q` at code commit 9d847850b8 observed=49 passed; `bash .pre-commit-hooks/reject-deploy-gate-skip-token.sh --self-test` observed=10 passed, 0 failed; `uv run check-app-pr-branch-allowed --base-ref 076264beb8 --head-ref HEAD --ticket OMN-20074` exited 0.
+
+Lab: host=h202 lane=omn20074-occdv command=`uv run pytest tests/ci/test_cancellation_is_honored_omn18580.py tests/ci/test_ci_summary_gate.py -q -p no:randomly` plus `pre-commit run --files` on the two changed files at code commit f1a2b67383 observed=150 passed, 1 skipped, pytest exit 0, pre-commit exit 0 (work unit lw-921234e60b68485b, unit exit 0).
+
+- RED before the change: the new test failed with AssertionError on the old group string (1 failed, 5 passed); after the change 6 passed.

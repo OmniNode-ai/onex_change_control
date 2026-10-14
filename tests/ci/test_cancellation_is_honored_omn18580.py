@@ -237,3 +237,35 @@ def test_cancel_in_progress_groups_stay_pull_request_scoped() -> None:
         assert "github.event.pull_request.number" in group or "github.ref" in group, (
             f"{path.name}: cancelling concurrency group is not PR-scoped: {group!r}"
         )
+
+
+@pytest.mark.unit
+def test_ci_push_runs_are_not_superseded_by_the_next_merge() -> None:
+    """A merge to ``dev`` must not cancel the previous merge's ``CI`` run.
+
+    The test above only asks for the substring ``github.ref``, and on a
+    ``push`` event that is the bare branch ref ``refs/heads/dev``. So every
+    merge shared one cancelling group with the merge before it, which is the
+    defect that test's docstring names. Measured on 2026-10-14: the push runs
+    for six consecutive dev merges after ce794f5122 were each cancelled by
+    the next merge; ``CI Summary`` keeps ``always()``, so on run 38522163882
+    (0d170b50bb) it read the cancelled gates and concluded ``failure`` at
+    06:32:40Z, and the successor run 38522777064 (8d77350c78) sat at
+    ``pending`` from 06:32:07Z to 06:42:46Z behind the superseded run.
+
+    A push run is keyed on its own commit sha, so it runs to a verdict for
+    the commit that landed. Pull-request, merge-group and dispatch runs keep
+    their existing groups.
+    """
+
+    group = " ".join(str(_load(_WORKFLOWS / "ci.yml")["concurrency"]["group"]).split())
+    push_arm = "(github.event_name == 'push' && github.sha)"
+    assert push_arm in group, (
+        f"ci.yml's concurrency group must key a push run on its sha; group is {group!r}"
+    )
+    assert group.index("github.event.pull_request.number") < group.index(push_arm), (
+        f"a pull-request run must keep its per-PR group; group is {group!r}"
+    )
+    assert group.index(push_arm) < group.index("github.ref"), (
+        f"the push arm must precede the github.ref fallback; group is {group!r}"
+    )
