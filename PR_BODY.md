@@ -1,10 +1,21 @@
 ## Summary
-This PR re-opens the change of onex_change_control#13751 (commit 031dc33505, ticket OMN-18595) through the writer-App dispatch path, because #13751 was opened under a human account and its check-human-authored-privileged-pr check is red. #13751 is to be closed once this PR is open. The original head f97d41e3b29d also carried a bot evidence commit minted for #13751; that commit is not carried over.
+
+Operator ruling 2026-10-14T12:04:57Z (OMN-14919): no human-authored commit and no required human merge decision on guarded change-control paths; the standing rule is no required human review until there are full-time employees. A change-control PR deleting the retired skip-token approvals registry file was held for a person because check-bot-authored-authz-guard rejected its bot commit on allowlists/ and the Governance File Advisory Gate required a human merge decision for allowlists/skip_token_approvals.yaml. This change removes the human-authored privileged-PR checks — they only tested who authored a PR and had no content part — and narrows the authz-guard and governance path scope to grants/.
 
 ## Changes
-Content, unchanged from #13751: .github/workflows/ci.yml and .pre-commit-config.yaml invoke the check_imperative_contracts module explicitly (`uv run python -m onex_change_control.scripts.check_imperative_contracts ...`) for the scripts scan instead of the `check-imperative-contracts` console script; .github/workflows/call-receipt-gate.yml no longer passes the retired allowlist argument (the ALLOWLIST_ARG variable and its file test are removed); tests/unit/test_check_gate_cli_omn18595.py is added (128 lines, 6 test cases).
-Added here: one comment line in ci.yml and one in call-receipt-gate.yml naming OMN-18595, because the writer-App dispatch guardrail (check-app-pr-branch-allowed) requires each changed workflow file to cite the dispatching ticket in a line the branch adds.
+
+- Removed: `.github/workflows/human-authored-privileged-pr-gate.yml`, `src/onex_change_control/scripts/check_human_authored_privileged_pr.py`, `src/onex_change_control/scripts/check_privileged_path_push.py`, their two test files, the two pyproject script entries, the check-privileged-path-push pre-push hook in `.pre-commit-config.yaml`, the two canonical-file-shape baseline lines, and the check-human-authored-privileged-pr entry in SOFT_ALLOWLIST in `scripts/ci/ci_summary_gate.py`. These checks only tested who authored a PR; they had no content part.
+- Narrowed: check_bot_authored_authz_guard SENSITIVE_PATH_PREFIXES from `(grants/, allowlists/)` to `(grants/)`; the file patterns of the check-bot-authored-authz-guard hook in `.pre-commit-config.yaml` and `.pre-commit-hooks.yaml` from `^(grants/|allowlists/)` to `^grants/`; GOVERNANCE_PATHS in `scripts/ci/check_governance_paths.py` from two files to `grants/prod_promotion_grants.yaml`. The Governance File Advisory Gate and the auto-merge.yml arming exclusion both read GOVERNANCE_PATHS.
+- Kept unchanged (prod promotion trust anchor, out of scope): bot-authored change rejection for `grants/`, the auto-merge arming exclusion and advisory gate for `grants/prod_promotion_grants.yaml`, and validate-prod-promotion-grants. No content validator was removed.
+- Docs: the CLAUDE.md privileged-paths section replaced with an authorship section; comments in ci.yml, auto-merge.yml, governance-file-advisory-gate.yml, ci_summary_gate.py, and validate_prod_promotion_grants.py updated.
+- Fixed on the way: the unguarded git subprocess in test_check_bot_authored_authz_guard.py now passes `env=scrub_git_location_env(os.environ)` (git-env-scrub hook).
 
 ## Proof
-Lab: host=h202 lane=omn18327-wapp command=`uv run pytest tests/unit/test_check_gate_cli_omn18595.py -q` at code commit b660fa5b87 observed=6 passed. `uv run check-app-pr-branch-allowed --base-ref 076264beb8 --head-ref HEAD --ticket OMN-18595` exited 0 with "PASS: all 2 changed workflow file(s) cite OMN-18595 in a line this branch adds."
-Caveat: running the same test file against the pre-image of ci.yml and .pre-commit-config.yaml on h202 also gave 6 passed, because the console script is installed in that environment, so the failure the change repairs was not reproduced on h202.
+
+Lab: host=h202 lane=omn14919-nohu command=`uv run pytest tests/unit/scripts tests/ci tests/test_prod_promotion_grants.py tests/test_prod_promotion_grants_manifest_kind.py -q --no-cov -p no:cacheprovider` at sha aceb4716db93 observed=1399 passed, 2 skipped, exit 0 (onex-lab-run --via ssh; --via bus was refused with a traceback in _bus_python).
+
+Tests changed first: a bot PR author or machine commit identity on `allowlists/skip_token_approvals.yaml` and `allowlists/omnimarket.yaml` now passes the authz guard; unreadable git history on `allowlists/` passes; bot changes on `grants/` still reject; the skip-token path is not in GOVERNANCE_PATHS and the advisory gate passes it; a combined skip-token plus grants change is still excluded. RED was observed before the code change (`test_non_sensitive_paths[allowlists/omnimarket.yaml]` failed with assert True is False).
+
+Not run on the lab: `mypy src/ --strict` (CI runs it).
+
+After merge: the change-control PR that deletes the retired skip-token approvals registry file needs its checks re-run.
