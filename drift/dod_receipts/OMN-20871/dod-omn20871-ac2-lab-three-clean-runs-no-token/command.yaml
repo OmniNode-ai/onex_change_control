@@ -1,0 +1,197 @@
+---
+schema_version: 1.0.0
+ticket_id: OMN-20871
+evidence_item_id: dod-omn20871-ac2-lab-three-clean-runs-no-token
+check_type: command
+check_value: |-
+  if test -d /data/omninode/lakshman/omn20871-readbacks/OMN-20871-ac2-omnimarket3707-claudeb548-20261010; then lab_py="/usr/bin/python3 -"; else lab_py="ssh -o BatchMode=yes -o ConnectTimeout=15 jonah@192.168.86.201 /usr/bin/python3 -"; fi
+  $lab_py <<'PROBE_20871_AC2' | grep -E '^AC2-OK runs=3 clean_runs=3 strict_bindings=2 github_token_lines=0$'
+  """OMN-20871 AC2 check over the three recorded lab runs of 2026-10-10. Read-only.
+
+  It reads two files of those lab runs, kept as a copy in the lakshman data area on the lab host:
+    verify3707.log               the image build at the head commit of omnimarket#3707 and one result line per run
+    dev-lane-class.override.yml  the compose override the runs used
+  Both are read whole before anything is graded. It prints one verdict line, AC2-OK or AC2-FAIL, and is
+  red when either file is missing, unreadable or not the recorded one (sha256), when the build is not at
+  that commit exactly once, when there are not three runs started and three results, when any result is
+  not a pass inside 900 s with both kernels running, healthy and at RestartCount 0 and zero fatal lines,
+  when the override does not bind strict mode twice, or when any line names a GitHub token. It reads a
+  record: the lab runs are not repeated.
+
+  Run on the lab host: python3 - [folder] < this   (the folder defaults to the kept copy).
+  """
+
+  import hashlib
+  import os
+  import re
+  import sys
+
+  RECORDED = {
+      "verify3707.log": "f0559a97a788e039acfa7e5cf95cfedf6544de46a729d773bc6811a4491ff738",
+      "dev-lane-class.override.yml": "27bcd1b836713141b96b7b13ad8467f741d8671733a52c75cffe7e2ae272a4d8",
+  }
+  HEAD_3707 = "cbe1b90f8f16c41c18c955000b55917b434cfffe"
+  STARTED = re.compile(r"recreate both kernels together, plain strict override$")
+  STRICT = re.compile(r"ONEX_WIRING_STRICT_MODE: .1.$")
+  TOKEN = re.compile(r"GH_TOKEN|GITHUB_TOKEN")
+
+
+  class Fail(Exception):
+      pass
+
+
+  def recorded(root, name):
+      raw = open(os.path.join(root, name), "rb").read()
+      if hashlib.sha256(raw).hexdigest() != RECORDED[name]:
+          raise Fail(name + " is not the recorded file (sha256)")
+      return raw.decode("utf-8").splitlines()
+
+
+  def verdict(root):
+      lines = recorded(root, "verify3707.log") + recorded(root, "dev-lane-class.override.yml")
+      build = started = results = clean = 0
+      for line in lines:
+          f = line.split() + [""] * 7
+          if f[1] == "build" and f[3] == "omnimarket" and f[4] == HEAD_3707:
+              build += 1
+          if f[1] == "run" and f[3] == "recreate" and STARTED.search(line):
+              started += 1
+          if f[1] == "run" and f[3] != "recreate":
+              results += 1
+              secs = re.sub(r"[^0-9]", "", f[4])
+              if (
+                  f[2] == str(results) + ":"
+                  and f[3] == "pass"
+                  and secs != ""
+                  and int(secs) <= 900
+                  and f[5] == "main=running/healthy/r=0"
+                  and f[6] == "effects=running/healthy/r=0);"
+                  and "; omnimarket in effects: 0.4.310; fatal lines: 0; " in line
+              ):
+                  clean += 1
+      strict = sum(1 for line in lines if STRICT.search(line))
+      token = sum(1 for line in lines if TOKEN.search(line))
+      facts = "runs=%d clean_runs=%d strict_bindings=%d github_token_lines=%d" % (results, clean, strict, token)
+      if build == 1 and started == 3 and results == 3 and clean == 3 and strict == 2 and token == 0:
+          return "AC2-OK " + facts
+      raise Fail("build=%d started=%d " % (build, started) + facts)
+
+
+  if __name__ == "__main__":
+      default = "/data/omninode/lakshman/omn20871-readbacks/OMN-20871-ac2-omnimarket3707-claudeb548-20261010"
+      folder = sys.argv[1] if len(sys.argv) > 1 else default
+      try:
+          print(verdict(folder))
+      except Exception as error:
+          print("AC2-FAIL " + type(error).__name__ + ": " + str(error))
+          sys.exit(1)
+  PROBE_20871_AC2
+  test "${PIPESTATUS[0]}${PIPESTATUS[1]}" = "00"
+contract_sha256: sha256:828e31857a9a097428d70962943e91488c437591c284a0438bcc1434e26b8dfc
+contract_entry_sha256: sha256:c0aa65d6954f65cbfa35883d8bd0468d9d0cb54e97e443d783a15f6e93b71018
+status: PASS
+commit_sha: cbe1b90f8f16c41c18c955000b55917b434cfffe
+runner: claude-d05a107a@onex-201
+probe_command: |-
+  gh api repos/OmniNode-ai/omnimarket/commits/cbe1b90f8f16c41c18c955000b55917b434cfffe --jq .sha || exit 2
+  if test -d /data/omninode/lakshman/omn20871-readbacks/OMN-20871-ac2-omnimarket3707-claudeb548-20261010; then lab_py="/usr/bin/python3 -"; else lab_py="ssh -o BatchMode=yes -o ConnectTimeout=15 jonah@192.168.86.201 /usr/bin/python3 -"; fi
+  $lab_py <<'PROBE_20871_AC2' | grep -E '^AC2-OK runs=3 clean_runs=3 strict_bindings=2 github_token_lines=0$'
+  """OMN-20871 AC2 check over the three recorded lab runs of 2026-10-10. Read-only.
+
+  It reads two files of those lab runs, kept as a copy in the lakshman data area on the lab host:
+    verify3707.log               the image build at the head commit of omnimarket#3707 and one result line per run
+    dev-lane-class.override.yml  the compose override the runs used
+  Both are read whole before anything is graded. It prints one verdict line, AC2-OK or AC2-FAIL, and is
+  red when either file is missing, unreadable or not the recorded one (sha256), when the build is not at
+  that commit exactly once, when there are not three runs started and three results, when any result is
+  not a pass inside 900 s with both kernels running, healthy and at RestartCount 0 and zero fatal lines,
+  when the override does not bind strict mode twice, or when any line names a GitHub token. It reads a
+  record: the lab runs are not repeated.
+
+  Run on the lab host: python3 - [folder] < this   (the folder defaults to the kept copy).
+  """
+
+  import hashlib
+  import os
+  import re
+  import sys
+
+  RECORDED = {
+      "verify3707.log": "f0559a97a788e039acfa7e5cf95cfedf6544de46a729d773bc6811a4491ff738",
+      "dev-lane-class.override.yml": "27bcd1b836713141b96b7b13ad8467f741d8671733a52c75cffe7e2ae272a4d8",
+  }
+  HEAD_3707 = "cbe1b90f8f16c41c18c955000b55917b434cfffe"
+  STARTED = re.compile(r"recreate both kernels together, plain strict override$")
+  STRICT = re.compile(r"ONEX_WIRING_STRICT_MODE: .1.$")
+  TOKEN = re.compile(r"GH_TOKEN|GITHUB_TOKEN")
+
+
+  class Fail(Exception):
+      pass
+
+
+  def recorded(root, name):
+      raw = open(os.path.join(root, name), "rb").read()
+      if hashlib.sha256(raw).hexdigest() != RECORDED[name]:
+          raise Fail(name + " is not the recorded file (sha256)")
+      return raw.decode("utf-8").splitlines()
+
+
+  def verdict(root):
+      lines = recorded(root, "verify3707.log") + recorded(root, "dev-lane-class.override.yml")
+      build = started = results = clean = 0
+      for line in lines:
+          f = line.split() + [""] * 7
+          if f[1] == "build" and f[3] == "omnimarket" and f[4] == HEAD_3707:
+              build += 1
+          if f[1] == "run" and f[3] == "recreate" and STARTED.search(line):
+              started += 1
+          if f[1] == "run" and f[3] != "recreate":
+              results += 1
+              secs = re.sub(r"[^0-9]", "", f[4])
+              if (
+                  f[2] == str(results) + ":"
+                  and f[3] == "pass"
+                  and secs != ""
+                  and int(secs) <= 900
+                  and f[5] == "main=running/healthy/r=0"
+                  and f[6] == "effects=running/healthy/r=0);"
+                  and "; omnimarket in effects: 0.4.310; fatal lines: 0; " in line
+              ):
+                  clean += 1
+      strict = sum(1 for line in lines if STRICT.search(line))
+      token = sum(1 for line in lines if TOKEN.search(line))
+      facts = "runs=%d clean_runs=%d strict_bindings=%d github_token_lines=%d" % (results, clean, strict, token)
+      if build == 1 and started == 3 and results == 3 and clean == 3 and strict == 2 and token == 0:
+          return "AC2-OK " + facts
+      raise Fail("build=%d started=%d " % (build, started) + facts)
+
+
+  if __name__ == "__main__":
+      default = "/data/omninode/lakshman/omn20871-readbacks/OMN-20871-ac2-omnimarket3707-claudeb548-20261010"
+      folder = sys.argv[1] if len(sys.argv) > 1 else default
+      try:
+          print(verdict(folder))
+      except Exception as error:
+          print("AC2-FAIL " + type(error).__name__ + ": " + str(error))
+          sys.exit(1)
+  PROBE_20871_AC2
+  test "${PIPESTATUS[0]}${PIPESTATUS[1]}" = "00"
+actual_output: 'PASS: the recorded 2026-10-10 lab runs read three consecutive passes with both kernels
+  healthy at RestartCount 0 and no GitHub token bound. Both files are read whole and checked against their
+  recorded sha256 before grading. On the lab host a missing second file and altered bytes each print AC2-FAIL
+  and exit 1, and copies recording one restarted run or a bound token, with the pin moved to them, are
+  refused by the grading. The lab step was not re-run for this receipt. A remote read that prints a valid
+  verdict line and then drops is refused: the check keeps the probe''s exit status as well as its verdict
+  line. The binding it backs is a draft until another lane accepts it.'
+branch: lakshman/OMN-20871-four-criteria-evidence
+probe_stdout: |-
+  cbe1b90f8f16c41c18c955000b55917b434cfffe
+  AC2-OK runs=3 clean_runs=3 strict_bindings=2 github_token_lines=0
+exit_code: 0
+run_timestamp: '2026-10-12T06:46:18Z'
+duration_ms: 345
+verifier: occ-probe-capture-v1
+artifact_sha256:
+  - sha256:f3f1eb2f31ac33ca2c1ff7a8b2a0266463ffd13429db4402e92cc84338a733a4
+  - sha256:227b11070ddf54df0731eaf4f0783c3558282a1c31b51e4414ddfcb68c4b7719

@@ -6,19 +6,36 @@ The receipt hardening gate must distinguish a SHA that is absent from a
 repository from a resolver that cannot establish the answer.  This module is
 deliberately session-scoped: one :class:`CommitShaResolver` owns one local
 remote-tracking index, one REST budget, and caches for a single invocation.
+
+OMN-20911: inside a lane the gh shim refuses GitHub reads, so a claim is first
+proved from the workspace's canonical clone of the claimed repository when one
+is configured (``canonical_clone_root``, which the pre-commit hook reads from
+``OMNI_HOME``). Canonical clones are fetched from GitHub by canonical-clone-sync
+and nothing else writes their ``refs/remotes/origin``, so a SHA reachable from
+one of those refs was on GitHub when it was fetched: the fact the REST read
+establishes. A receipt usually names a pull request's head, which a squash
+merge leaves on no origin ref, so the second local source is the PR watcher's
+state file (``pr_watcher_state``): the launchd watcher reads every open PR's
+head and every recent merge's head and merge commit from GitHub, so a SHA it
+recorded for that repository was on GitHub when it was read. A SHA neither
+source holds proves nothing either way (both can be stale), so a miss falls back
+to REST, which stays the only path to MISSING and the only path in CI, where no
+workspace root is set.
 """
 
 from __future__ import annotations
 
 import json
+import os
 import re
 import subprocess
 from dataclasses import dataclass
 from enum import Enum
+from pathlib import Path
 from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
-    from collections.abc import Callable, Iterable
+    from collections.abc import Callable, Iterable, Mapping
 
 
 class EnumCommitShaOutcome(str, Enum):
@@ -116,6 +133,11 @@ _MISSING_HTTP_STATUS = 404
 _SHA_ABSENT_HTTP_STATUS = 422
 _SHA_ABSENT_MESSAGE_RE = re.compile(r"^No commit found for SHA\b", re.IGNORECASE)
 _INVALID_BUDGET_MESSAGE = "rest_budget must be non-negative"
+#: The one owner whose repositories have canonical clones under the workspace root.
+_CANONICAL_CLONE_OWNER = "omninode-ai"
+_CANONICAL_CLONE_ROOT_ENV = "OMNI_HOME"
+_PR_WATCHER_STATE_ENV = "ONEX_PR_WATCHER_STATE"
+_REPO_NAME_RE = re.compile(r"^[A-Za-z0-9._-]+$")
 _INVALID_TIMEOUT_MESSAGE = "timeout_seconds must be positive"
 
 _HTTP_UNAUTHORIZED = 401
@@ -233,6 +255,61 @@ def _is_sha_absent_body(body: str) -> bool:
     )
 
 
+def canonical_clone_root_from_env(
+    environ: Mapping[str, str] | None = None,
+) -> Path | None:
+    """The workspace root holding the canonical clones, or ``None`` when unset (CI)."""
+
+    value = (os.environ if environ is None else environ).get(
+        _CANONICAL_CLONE_ROOT_ENV, ""
+    )
+    return Path(value) if value else None
+
+
+def pr_watcher_state_from_env(
+    environ: Mapping[str, str] | None = None,
+) -> Path | None:
+    """``$ONEX_PR_WATCHER_STATE``, else the watcher's file under ``$OMNI_HOME``."""
+
+    env = os.environ if environ is None else environ
+    explicit = env.get(_PR_WATCHER_STATE_ENV, "")
+    if explicit:
+        return Path(explicit)
+    root = canonical_clone_root_from_env(env)
+    if root is None:
+        return None
+    return root / ".claude_scratch" / "pr-watcher" / "state.json"
+
+
+def _watcher_index(path: Path) -> frozenset[tuple[str, str]]:
+    """``(repository name, sha)`` pairs the PR watcher recorded; empty if unreadable."""
+
+    try:
+        state = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, UnicodeDecodeError, json.JSONDecodeError):
+        return frozenset()
+    if not isinstance(state, dict):
+        return frozenset()
+    pairs: set[tuple[str, str]] = set()
+    records: list[object] = []
+    for block, nested in (("merges", False), ("prs", True)):
+        entries = state.get(block)
+        if not isinstance(entries, dict):
+            continue
+        for entry in entries.values():
+            facts = entry.get("facts") if nested and isinstance(entry, dict) else entry
+            records.append(facts)
+    for record in records:
+        if not isinstance(record, dict) or not isinstance(record.get("repo"), str):
+            continue
+        name = record["repo"].lower()
+        for field in ("head_sha", "merge_sha"):
+            value = record.get(field)
+            if isinstance(value, str) and is_full_commit_sha(value):
+                pairs.add((name, _normalize_full_commit_sha(value)))
+    return frozenset(pairs)
+
+
 def is_full_commit_sha(value: str) -> bool:
     """Return whether ``value`` is exactly one full hexadecimal Git SHA-1."""
 
@@ -259,6 +336,8 @@ class CommitShaResolver:
         rest_budget: int = 64,
         timeout_seconds: float = 15.0,
         runner: Callable[..., subprocess.CompletedProcess[str]] = subprocess.run,
+        canonical_clone_root: Path | None = None,
+        pr_watcher_state: Path | None = None,
     ) -> None:
         if rest_budget < 0:
             raise ValueError(_INVALID_BUDGET_MESSAGE)
@@ -267,6 +346,9 @@ class CommitShaResolver:
         self._rest_budget = rest_budget
         self._timeout_seconds = timeout_seconds
         self._runner = runner
+        self._canonical_clone_root = canonical_clone_root
+        self._pr_watcher_state = pr_watcher_state
+        self._watcher_pairs: frozenset[tuple[str, str]] | None = None
         self._local_index: frozenset[str] | None = None
         self._local_index_error: str | None = None
         self._local_by_sha: dict[str, CommitShaResolution] = {}
@@ -366,6 +448,12 @@ class CommitShaResolver:
         cached = self._remote_by_repo_sha.get(cache_key)
         if cached is not None:
             return cached
+        from_local = self._canonical_clone_resolution(
+            repo, sha
+        ) or self._pr_watcher_resolution(repo, sha)
+        if from_local is not None:
+            self._remote_by_repo_sha[cache_key] = from_local
+            return from_local
         if self._remote_halted_reason is not None:
             # OMN-16360: this claim was never probed. Saying so, and naming
             # the probe that did halt the session, is the difference between
@@ -513,6 +601,77 @@ class CommitShaResolver:
 
         self._remote_by_repo_sha[cache_key] = resolution
         return resolution
+
+    def _canonical_clone(self, repo: str) -> Path | None:
+        if self._canonical_clone_root is None:
+            return None
+        owner, _, name = repo.partition("/")
+        if owner.lower() != _CANONICAL_CLONE_OWNER or not _REPO_NAME_RE.match(name):
+            return None
+        if name in {".", ".."}:
+            return None
+        clone = self._canonical_clone_root / name
+        return clone if (clone / ".git").exists() else None
+
+    def _canonical_clone_resolution(
+        self, repo: str, sha: str
+    ) -> CommitShaResolution | None:
+        """REACHABLE_REMOTE when an origin ref of the canonical clone contains ``sha``.
+
+        ``None`` (fall back to REST) when there is no clone, the clone lacks the
+        object, or git fails: a clone never answers MISSING (OMN-20911).
+        """
+
+        clone = self._canonical_clone(repo)
+        if clone is None:
+            return None
+        try:
+            completed = self._runner(
+                [
+                    "git",
+                    "-C",
+                    str(clone),
+                    "for-each-ref",
+                    "--count=1",
+                    "--format=%(objectname)",
+                    "--contains",
+                    sha,
+                    "refs/remotes/origin",
+                ],
+                capture_output=True,
+                text=True,
+                check=False,
+                timeout=self._timeout_seconds,
+            )
+        except (subprocess.TimeoutExpired, OSError):
+            return None
+        if completed.returncode != 0 or not completed.stdout.strip():
+            return None
+        return CommitShaResolution(
+            EnumCommitShaOutcome.REACHABLE_REMOTE,
+            sha,
+            repo=repo,
+            detail="reachable from an origin ref of the canonical clone",
+        )
+
+    def _pr_watcher_resolution(self, repo: str, sha: str) -> CommitShaResolution | None:
+        """REACHABLE_REMOTE when the PR watcher recorded ``sha`` for ``repo``."""
+
+        if self._pr_watcher_state is None:
+            return None
+        owner, _, name = repo.partition("/")
+        if owner.lower() != _CANONICAL_CLONE_OWNER or not name:
+            return None
+        if self._watcher_pairs is None:
+            self._watcher_pairs = _watcher_index(self._pr_watcher_state)
+        if (name.lower(), sha) not in self._watcher_pairs:
+            return None
+        return CommitShaResolution(
+            EnumCommitShaOutcome.REACHABLE_REMOTE,
+            sha,
+            repo=repo,
+            detail="recorded by the PR watcher as a pull request head or merge commit",
+        )
 
     def _ensure_local_index(self) -> None:
         if self._local_index is not None or self._local_index_error is not None:
