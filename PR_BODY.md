@@ -1,24 +1,10 @@
 ## Summary
-The check-receipt-hardening pre-commit hook previously resolved every receipt commit_sha with `gh api --include repos/<repo>/commits/<sha>`. Inside a lane, the gh shim refuses that read, the resolver records UNAVAILABLE, and the hook exits 2, so no lane could commit a receipt. FRICTION rows 2026-10-11T08:36:53Z and 2026-10-11T20:11:12Z record it (three occurrences).
+This PR re-opens the change of onex_change_control#13751 (commit 031dc33505, ticket OMN-18595) through the writer-App dispatch path, because #13751 was opened under a human account and its check-human-authored-privileged-pr check is red. #13751 is to be closed once this PR is open. The original head f97d41e3b29d also carried a bot evidence commit minted for #13751; that commit is not carried over.
 
-This change implements the operator ruling from 2026-10-12T05:03:28Z, which requires that each gate added since 2026-10-08 whose replacement path does not work end to end gets a working path. The resolver in `src/onex_change_control/validation/commit_sha_resolver.py` now tries two local sources before falling back to the REST read.
+## Changes
+Content, unchanged from #13751: .github/workflows/ci.yml and .pre-commit-config.yaml invoke the check_imperative_contracts module explicitly (`uv run python -m onex_change_control.scripts.check_imperative_contracts ...`) for the scripts scan instead of the `check-imperative-contracts` console script; .github/workflows/call-receipt-gate.yml no longer passes the retired allowlist argument (the ALLOWLIST_ARG variable and its file test are removed); tests/unit/test_check_gate_cli_omn18595.py is added (128 lines, 6 test cases).
+Added here: one comment line in ci.yml and one in call-receipt-gate.yml naming OMN-18595, because the writer-App dispatch guardrail (check-app-pr-branch-allowed) requires each changed workflow file to cite the dispatching ticket in a line the branch adds.
 
-## Behaviour
-- The resolver tries two local sources before REST: the canonical clone of the claimed repository under OMNI_HOME, and the PR watcher state file.
-- For the canonical clone, the resolver returns REACHABLE_REMOTE when an origin remote-tracking ref of that clone contains the sha.
-- For the PR watcher state file (located at $ONEX_PR_WATCHER_STATE, else OMNI_HOME/.claude_scratch/pr-watcher/state.json), the resolver returns REACHABLE_REMOTE when the watcher recorded the sha as that repository's PR head or merge commit.
-- Neither local source ever answers MISSING; a sha neither holds falls back to the REST read, which is the only path to MISSING.
-- CI sets no OMNI_HOME, so REST stays the only path there.
-- Only OmniNode-ai repositories are read locally.
-- A local hit spends no REST budget and is answered even after a REST failure halted the session.
-
-## Not changed
-- The REST read and its classification.
-- The receipt rules themselves.
 ## Proof
-
-Lab: host=h101 lane=omn20911-f524 command=`check_receipt_hardening.py --paths-file0 <5 receipts from 2026-10-11> --commit-sha-inventory <tmp>/inv.json`, run in the lane (the h101 gh shim refuses the commit read) observed=without OMNI_HOME exit 2, omniclaude cc7d5a55e2b8 UNAVAILABLE and omnimemory 57038a2c8066 NOT_ATTEMPTED, remote_calls 1; with OMNI_HOME exit 0, both REACHABLE_REMOTE, remote_calls 0 (both shas held by the PR watcher state, neither by a canonical clone origin ref).
-
-Tests on h101: `tests/unit/validation/test_commit_sha_resolver.py` 47 passed (11 new; the file failed to collect against dev before the change), `tests/test_check_receipt_hardening.py` 125 passed; ruff and `mypy --strict` clean on the resolver and the test file.
-
-Companion inventory and the shim-side logged fallbacks: OmniNode-ai/omniclaude#2696.
+Lab: host=h202 lane=omn18327-wapp command=`uv run pytest tests/unit/test_check_gate_cli_omn18595.py -q` at code commit b660fa5b87 observed=6 passed. `uv run check-app-pr-branch-allowed --base-ref 076264beb8 --head-ref HEAD --ticket OMN-18595` exited 0 with "PASS: all 2 changed workflow file(s) cite OMN-18595 in a line this branch adds."
+Caveat: running the same test file against the pre-image of ci.yml and .pre-commit-config.yaml on h202 also gave 6 passed, because the console script is installed in that environment, so the failure the change repairs was not reproduced on h202.
