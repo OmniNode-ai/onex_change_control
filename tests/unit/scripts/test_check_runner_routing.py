@@ -5,6 +5,8 @@ from __future__ import annotations
 from pathlib import Path
 from typing import TYPE_CHECKING
 
+import pytest
+
 if TYPE_CHECKING:
     from collections.abc import Mapping
 
@@ -12,10 +14,10 @@ from scripts.validation.check_runner_routing import (
     FORK_AWARE_ROUTE,
     INDEX_ENV_VARS,
     PUBLIC_SELECTOR,
-    TAILNET_SUFFIX,
     TRUSTED_SELECTOR,
     expected_selector,
     hardcoded_label_violations,
+    tailnet_suffix,
     validate_index_env,
     validate_route_consumer,
     validate_runs_on,
@@ -23,6 +25,12 @@ from scripts.validation.check_runner_routing import (
 )
 
 REPO_ROOT = Path(__file__).resolve().parents[3]
+
+
+@pytest.fixture(autouse=True)
+def _no_ambient_tailnet_suffix(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.delenv("ONEX_TAILNET_SUFFIX", raising=False)
+
 
 # The exact shape this repo's ci.yml carried before OMN-16682: a devpi mirror
 # selected by a ternary keyed on fork-vs-same-repo. On a same-repo PR it
@@ -33,7 +41,7 @@ FORK_KEYED_DEVPI_TERNARY = """${{
   && github.event.pull_request.head.repo.full_name != github.repository
   )
   && 'https://pypi.org/simple/'
-  || 'http://omninode-pc.tail75df5e.ts.net:3141/root/pypi/+simple/'
+  || 'http://cache.example-tailnet.ts.net:3141/root/pypi/+simple/'
 }}"""
 
 
@@ -114,7 +122,7 @@ def test_fork_keyed_devpi_ternary_is_rejected_for_every_index_env_var() -> None:
 
         assert len(violations) == 1, f"{var} was not rejected"
         assert var in violations[0]
-        assert TAILNET_SUFFIX in violations[0]
+        assert tailnet_suffix() in violations[0]
 
 
 def test_literal_tailnet_index_is_rejected_without_any_ternary() -> None:
@@ -124,7 +132,7 @@ def test_literal_tailnet_index_is_rejected_without_any_ternary() -> None:
         job_name="example",
         env={
             "UV_DEFAULT_INDEX": (
-                "http://omninode-pc.tail75df5e.ts.net:3141/root/pypi/+simple/"
+                "http://cache.example-tailnet.ts.net:3141/root/pypi/+simple/"
             )
         },
     )
@@ -141,7 +149,7 @@ def test_public_index_and_unrelated_env_vars_are_allowed() -> None:
             "PIP_EXTRA_INDEX_URL": "https://pypi.org/simple/",
             "UV_INDEX_STRATEGY": "unsafe-best-match",
             # Not an index var: the tailnet host is legitimate here.
-            "OMNI_RUNTIME_HOST": "omninode-pc.tail75df5e.ts.net",
+            "OMNI_RUNTIME_HOST": "cache.example-tailnet.ts.net",
         },
     )
 
@@ -175,7 +183,7 @@ def test_step_level_index_pin_is_caught_too(tmp_path: Path) -> None:
         "      - name: install\n"
         "        env:\n"
         "          PIP_INDEX_URL: "
-        '"http://omninode-pc.tail75df5e.ts.net:3141/root/pypi/+simple/"\n'
+        '"http://cache.example-tailnet.ts.net:3141/root/pypi/+simple/"\n'
         "        run: pip install -e .\n",
         encoding="utf-8",
     )

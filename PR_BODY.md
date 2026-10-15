@@ -1,26 +1,15 @@
 ## Summary
+Ticket OMN-20939; operator ruling 2026-10-10: lab configuration does not ship in public repositories. This PR only removes lab values.
 
-OMN-19867: the Auto-Merge workflow's step "Check OCC eligibility preflight status" (`.github/workflows/auto-merge.yml`) reads the PR head once before its poll loop and stops at the first completed eligibility reading. The OCC writer pushes a companion PR as three commits (author; self-bind about 7s later; executed test_passes receipts 45-70s after that). On the self-bind head, eligibility concluded failure (receipts not pushed yet) or cancelled (superseded by the next push); the step exited 1; the final head went green with no event left to arm it. The ticket measured 13 of 15 sampled companions ending their only Auto-Merge run red.
+## Changes
+- check_runner_routing.py: TAILNET_SUFFIX constant replaced by tailnet_suffix(), default ".ts.net" (shape rule), narrowed by ONEX_TAILNET_SUFFIX; the repo's own workflows still pass the check.
+- run_proof.py: Kafka bootstrap, Postgres host and port, runtime base URL and lane label come from ONEX_PROOF_KAFKA_BOOTSTRAP, ONEX_PROOF_PG_HOST, ONEX_PROOF_PG_PORT, ONEX_PROOF_RUNTIME_BASE_URL, ONEX_PROOF_LANE_LABEL; a missing one stops the run naming the variable. The manifest digest recorded for this file already differed from the file before this change.
+- dod_report.json (OMN-12491, OMN-8336) and enum_compliance_violation.py docstring: lab address replaced by 192.0.2.10.
+- New tests: tests/test_check_runner_routing_tailnet_suffix.py, 4 passed. contracts/OMN-20939.yaml validates with validate-yaml.
+- This PR touches src/ and scripts/, so it is opened as the writer App through open-pr-as-writer-app.yml; the branch's PR_BODY.md carries this body.
+- Not in this PR: the public knowledge_base runbooks named in the ticket (that clone is not on the lab host this lane ran on).
 
-## Change
+## Verification
+check_runner_routing.py exercised with a probe tailnet index host with ONEX_TAILNET_SUFFIX unset and set, plus run_proof.py with ONEX_PROOF_KAFKA_BOOTSTRAP unset, observed: unset gives suffix ".ts.net" and 1 violation for the probe host; set to a different tailnet gives 0 violations; the repo's workflows pass; run_proof.py stops with "ONEX_PROOF_KAFKA_BOOTSTRAP is not configured".
 
-On a poll (non-zero budget, writer App companion only) the step re-reads the live head via `gh pr view` on every reading, and a non-success completed verdict ends the loop only after the head has held still behind it for `ELIGIBILITY_FAILURE_SETTLE_SECONDS` (180). A new push resets the window. SUCCESS on the current head stays the only arming state. The zero-budget path (human PRs, check_suite) is unchanged and still exits 1 on its first failure reading.
-
-## Tests
-
-- New `tests/ci/test_auto_merge_companion_head_follow.py`: 7 tests, executing the step's own bash against a stub `gh` whose head moves on a script. Without the workflow change, 3 of the 7 fail (`test_settle_window_is_declared_on_the_step`, `test_moved_head_success_arms_after_a_failure_on_the_self_bind_head`, `test_cancelled_then_success_on_the_new_head_arms`); with it, 7 passed.
-- Together with `tests/ci/test_auto_merge_companion_poll_omn17922.py`, `test_auto_merge_companion_budget_omn18797.py` and `test_auto_merge_rearm_on_rewrite_omn20042.py`: 49 passed; those three files unmodified.
-- `pre-commit run --files` on the two changed files: no failures.
-
-## Lab
-
-Lab: host h101, lane omn19867-tix, command `uv run pytest` on the four files above in the lane worktree; observed 49 passed in 105.57s. The tests run the step against a stub `gh`; the live AC5 check (a companion arming through its own opened Auto-Merge run) cannot be observed before merge and is pending.
-
-## Not covered
-
-- AC5 live verification after merge
-- The writer's three-commit push shape
-- Who may be armed
-- The product-PR heal
-
-Closes OMN-19867
+Lab: host=h201, lane=config-out-7-9f8a, command=check_runner_routing.py exercised with a probe tailnet index host with ONEX_TAILNET_SUFFIX unset and set, plus run_proof.py with ONEX_PROOF_KAFKA_BOOTSTRAP unset, observed: unset gives suffix ".ts.net" and 1 violation for the probe host; set to a different tailnet gives 0 violations; the repo's workflows pass; run_proof.py stops with "ONEX_PROOF_KAFKA_BOOTSTRAP is not configured".

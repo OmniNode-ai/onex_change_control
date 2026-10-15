@@ -42,9 +42,16 @@ INDEX_ENV_VARS = (
     "PIP_INDEX_URL",
     "PIP_EXTRA_INDEX_URL",
 )
-# The org's Tailscale tailnet. Any host under it is unreachable from a
-# GitHub-hosted runner.
-TAILNET_SUFFIX = "tail75df5e.ts.net"
+# Any Tailscale MagicDNS host (``*.ts.net``) is unreachable from a GitHub-hosted
+# runner. The shape rule needs no deployment fact; a deployment may narrow it to
+# its own tailnet by exporting ONEX_TAILNET_SUFFIX (supplied by whoever runs the
+# system, never committed here).
+DEFAULT_TAILNET_SUFFIX = ".ts.net"
+
+
+def tailnet_suffix() -> str:
+    """The host suffix treated as tailnet-only: the configured one, else ``.ts.net``."""
+    return os.environ.get("ONEX_TAILNET_SUFFIX", "").strip() or DEFAULT_TAILNET_SUFFIX
 
 
 def _compact(value: str) -> str:
@@ -59,16 +66,17 @@ def validate_index_env(*, workflow_path: str, job_name: str, env: object) -> lis
     if not isinstance(env, dict):
         return []
     violations: list[str] = []
+    suffix = tailnet_suffix()
     for key, value in env.items():
         if str(key) not in INDEX_ENV_VARS:
             continue
         if not isinstance(value, str):
             continue
-        if TAILNET_SUFFIX not in value:
+        if suffix not in value:
             continue
         violations.append(
             f"{workflow_path}:{job_name} sets {key} to the tailnet-only index "
-            f"host {TAILNET_SUFFIX}. Workflow expressions cannot read runner "
+            f"host {suffix}. Workflow expressions cannot read runner "
             "class, so this pins a GitHub-hosted runner to an unreachable "
             "index whenever OMNI_TRUSTED_CI_RUNS_ON_JSON is flipped "
             "(OMN-16682). Remove it and let the self-hosted fleet's "
