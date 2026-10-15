@@ -79,6 +79,17 @@ repos:
         pass_filenames: false
         files: ^(src/onex_change_control/(nodes/node_contract_drift_effect/|scripts/check_platform_leads_review_tripwire\.py)|tests/(unit/test_enforcement_surface_placement\.py|unit/scripts/test_check_platform_leads_review_tripwire\.py)|\.github/workflows/ci\.yml|\.pre-commit-config\.yaml)$
         stages: [pre-commit]
+      # OMN-20780: operator ruling 2026-10-14T12:04:57Z, no human-authored commit
+      # and no required human merge decision outside grants/. SYNC with the ci.yml
+      # step "Test authz guard and governance scope (OMN-20780)".
+      - id: authz-guard-scope-tests
+        name: Authz guard and governance scope tests (OMN-20780)
+        entry: uv run pytest tests/unit/scripts/test_check_bot_authored_authz_guard.py tests/unit/scripts/test_check_governance_paths.py
+          tests/ci/test_authz_guard_scope_wired_omn20780.py -q --no-cov -p no:cacheprovider
+        language: system
+        pass_filenames: false
+        files: ^(src/onex_change_control/scripts/check_bot_authored_authz_guard\.py|scripts/ci/check_governance_paths\.py|tests/(unit/scripts/test_check_bot_authored_authz_guard|unit/scripts/test_check_governance_paths|ci/test_authz_guard_scope_wired_omn20780)\.py|\.github/workflows/ci\.yml|\.pre-commit-config\.yaml)$
+        stages: [pre-commit]
       # OMN-18434. A test that shells out to git inherits GIT_DIR from the hook
       # running it and rewrites THIS repository instead of its fixture -- which
       # is how a shared canonical clone in this fleet was re-initialized on
@@ -244,38 +255,6 @@ repos:
         pass_filenames: true  # Only check changed files, not entire codebase
         stages: [pre-push]  # Moved to pre-push: ~1-5s for changed files only
 
-      # OMN-18804: tell a lane about the writer-App path at PUSH time.
-      #
-      # `check-human-authored-privileged-pr` (OMN-18327) refuses a
-      # human-authored PR touching src/, scripts/ or .github/. Nothing said so
-      # until the PR was already open, and three lanes in one window each paid
-      # 10-15 minutes for the close-and-reopen (OCC#10338 -> #10341,
-      # OCC#10339 -> #10342, and the CI Summary lane).
-      #
-      # It is a HINT, not a gate, and deliberately does not refuse the push
-      # itself in the ordinary case: open-pr-as-writer-app.yml creates no
-      # branch and pushes nothing -- it opens a PR for a branch ALREADY
-      # pushed -- so refusing the privileged push would refuse the first half
-      # of the very path the message points at. It exits non-zero only for the
-      # one state that cannot be repaired in place: a privileged push onto a
-      # branch whose open PR is human-authored, which the App workflow would
-      # merely EDIT rather than re-author. An unreadable PR state advises.
-      #
-      # `files:` is the same prefix set the gate refuses on, so pre-commit
-      # runs this on privileged pushes only and it costs nothing otherwise.
-      # `verbose: true` is LOAD-BEARING, not cosmetic. pre-commit swallows a
-      # hook's stdout/stderr when it passes, and this hook's whole purpose is
-      # to be READ on a pass -- measured on the first governed push of this
-      # branch, where it reported `Passed` and printed nothing at all. A hint
-      # nobody sees is the defect it was written to close.
-      - id: check-privileged-path-push
-        name: privileged paths -> open the PR as the writer App
-        entry: uv run check-privileged-path-push
-        language: system
-        files: ^(src/|scripts/|\.github/)
-        pass_filenames: true
-        verbose: true
-        stages: [pre-push]
       - id: validate-string-versions
         name: Reject string version anti-patterns (Python + YAML)
         language: system
@@ -386,8 +365,8 @@ repos:
       - id: check-scripts-canonical-form
         name: Scripts canonical-form guard (DEFAULT-DENY new scripts, OMN-14475)
         language: system
-        entry: >-
-          uv run check-imperative-contracts --repo-root . --allowlists-dir allowlists --scan-scripts
+        entry: |-
+          uv run python -m onex_change_control.scripts.check_imperative_contracts --repo-root . --allowlists-dir allowlists --scan-scripts
         pass_filenames: false
         files: ^scripts/
         stages: [pre-commit]
@@ -409,12 +388,12 @@ repos:
         name: Reject bot-authored authz changes (OMN-14919 / OMN-15008)
         description: >
           Pre-commit mirror of the check-bot-authored-authz-guard CI gate (OMN-14919). Rejects a staged
-          change touching grants/** or allowlists/** authored under a known machine identity, via the
-          SAME evaluate() decision core as the CI gate (--staged mode substitutes the in-progress commit's
-          `git var GIT_AUTHOR_IDENT`/`GIT_COMMITTER_IDENT` identity for the merged-PR history).
+          change touching grants/** authored under a known machine identity, via the SAME evaluate() decision
+          core as the CI gate (--staged mode substitutes the in-progress commit's `git var GIT_AUTHOR_IDENT`/`GIT_COMMITTER_IDENT`
+          identity for the merged-PR history).
         language: system
         entry: uv run check-bot-authored-authz-guard --staged
-        files: ^(grants/|allowlists/)
+        files: ^grants/
         pass_filenames: false
         stages: [pre-commit]
 

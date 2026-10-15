@@ -1,0 +1,88 @@
+---
+schema_version: 1.0.0
+ticket_id: OMN-19972
+evidence_item_id: dod-omn19972-ac3-lab-row-and-runs-readback
+check_type: command
+check_value: |-
+  if docker inspect omnibase-infra-omn19972-postgres >/dev/null 2>&1; then lab_py="python3 -"; else lab_py="ssh -o BatchMode=yes -o ConnectTimeout=15 jonah@192.168.86.201 python3 -"; fi
+  $lab_py <<'PY' | grep -E '^AC3-OK pg=1 runs_default=1 runs_slug=1 control_pg=0 control_runs=0$'
+  import json, subprocess, urllib.request
+  P = "omnibase-infra-omn19972"
+  CID = "10ec189c-d617-47ca-8b5a-04ffb0e8c56d"
+  CTL = "00000000-0000-4000-8000-000000019972"
+  SLUG = "local-ee67b16e7aab"
+  def pg(cid):
+      sql = "BEGIN READ ONLY; SELECT $q$PGROWS $q$ || count(*) FROM delegation_events WHERE correlation_id::text = $q$" + cid + "$q$; ROLLBACK;"
+      try:
+          out = subprocess.run(["docker", "exec", "-i", P + "-postgres", "psql", "-X", "-U", "postgres", "-d", "omnidash_analytics", "-At", "-v", "ON_ERROR_STOP=1"], input=sql, capture_output=True, text=True, timeout=30)
+      except Exception:
+          return "ERR"
+      rows = [line.split()[1] for line in out.stdout.splitlines() if line.startswith("PGROWS ")]
+      return rows[0] if out.returncode == 0 and len(rows) == 1 else "ERR"
+  def runs(query, cid):
+      url = "http://127.0.0.1:23002/projection/onex.snapshot.projection.delegation.decisions.v1?" + query + "correlation_id=" + cid
+      try:
+          with urllib.request.urlopen(url, timeout=15) as r:
+              d = json.load(r)
+          rows = d["rows"]
+          ok = d["row_count"] == len(rows) and all(row["correlation_id"] == cid for row in rows)
+      except Exception:
+          return "ERR"
+      return str(len(rows)) if ok else "ERR"
+  facts = (pg(CID), runs("", CID), runs("tenant=" + SLUG + "&", CID), pg(CTL), runs("", CTL))
+  print(("AC3-OK" if facts == ("1", "1", "1", "0", "0") else "AC3-FAIL") + " pg=%s runs_default=%s runs_slug=%s control_pg=%s control_runs=%s" % facts)
+  PY
+contract_sha256: sha256:4983202202d3f56f0682fb46db46e93046e5210c0688146e7a1b717b40514a7a
+contract_entry_sha256: sha256:62702690df245f3f51b11f30f85fcdeedac260dbb60cc5bddfbc53d58ffad265
+status: PASS
+commit_sha: 919215ff28a91d5f32f52a8309e47d58cd0b9f33
+runner: claude-d05a107a@onex-201
+probe_command: |-
+  gh api repos/OmniNode-ai/omnimarket/commits/919215ff28a91d5f32f52a8309e47d58cd0b9f33 --jq .sha || exit 2
+  if docker inspect omnibase-infra-omn19972-postgres >/dev/null 2>&1; then lab_py="python3 -"; else lab_py="ssh -o BatchMode=yes -o ConnectTimeout=15 jonah@192.168.86.201 python3 -"; fi
+  $lab_py <<'PY' | grep -E '^AC3-OK pg=1 runs_default=1 runs_slug=1 control_pg=0 control_runs=0$'
+  import json, subprocess, urllib.request
+  P = "omnibase-infra-omn19972"
+  CID = "10ec189c-d617-47ca-8b5a-04ffb0e8c56d"
+  CTL = "00000000-0000-4000-8000-000000019972"
+  SLUG = "local-ee67b16e7aab"
+  def pg(cid):
+      sql = "BEGIN READ ONLY; SELECT $q$PGROWS $q$ || count(*) FROM delegation_events WHERE correlation_id::text = $q$" + cid + "$q$; ROLLBACK;"
+      try:
+          out = subprocess.run(["docker", "exec", "-i", P + "-postgres", "psql", "-X", "-U", "postgres", "-d", "omnidash_analytics", "-At", "-v", "ON_ERROR_STOP=1"], input=sql, capture_output=True, text=True, timeout=30)
+      except Exception:
+          return "ERR"
+      rows = [line.split()[1] for line in out.stdout.splitlines() if line.startswith("PGROWS ")]
+      return rows[0] if out.returncode == 0 and len(rows) == 1 else "ERR"
+  def runs(query, cid):
+      url = "http://127.0.0.1:23002/projection/onex.snapshot.projection.delegation.decisions.v1?" + query + "correlation_id=" + cid
+      try:
+          with urllib.request.urlopen(url, timeout=15) as r:
+              d = json.load(r)
+          rows = d["rows"]
+          ok = d["row_count"] == len(rows) and all(row["correlation_id"] == cid for row in rows)
+      except Exception:
+          return "ERR"
+      return str(len(rows)) if ok else "ERR"
+  facts = (pg(CID), runs("", CID), runs("tenant=" + SLUG + "&", CID), pg(CTL), runs("", CTL))
+  print(("AC3-OK" if facts == ("1", "1", "1", "0", "0") else "AC3-FAIL") + " pg=%s runs_default=%s runs_slug=%s control_pg=%s control_runs=%s" % facts)
+  PY
+actual_output: 'PASS: read on the lab host, where the check took its local branch, not the ssh one. On
+  the isolated lane omnibase-infra-omn19972 the row a real delegation wrote on 2026-10-07 11:44:52Z, correlation
+  10ec189c-d617-47ca-8b5a-04ffb0e8c56d, is stored once in the lane''s Postgres and served once by the
+  Runs exposure, both with no tenant named and by the tenant slug; a never-used correlation id reads 0
+  from both stores. The commit is the omnimarket commit inside the lane''s runtime image, read in the
+  same step. The same check with an id nobody wrote exits 1 (AC3-FAIL pg=0 runs_default=0 runs_slug=0).
+  This run booted nothing and ran no delegation: it proves the row is stored and served now. The binding
+  it backs is a draft until another lane accepts it.'
+branch: lakshman/OMN-19972-ac3-lab-readback
+probe_stdout: |-
+  919215ff28a91d5f32f52a8309e47d58cd0b9f33
+  AC3-OK pg=1 runs_default=1 runs_slug=1 control_pg=0 control_runs=0
+exit_code: 0
+run_timestamp: '2026-10-12T05:57:25Z'
+duration_ms: 587
+verifier: occ-probe-capture-v1
+artifact_sha256:
+  - sha256:1114e4085ddee21f6d5ed10bab33c27d5b1efd4a7bbfb72b3ad8ecc2160ea69e
+  - sha256:8b38c8db06fd7d8244a1c56ffb958031d074db9639fde0ae5f12fe2c0c8932aa

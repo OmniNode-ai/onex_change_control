@@ -144,7 +144,8 @@ class TestMainCheckSubcommand:
         assert "GOVERNANCE-FILE ADVISORY GATE -- FAILED" in out
         assert "grants/prod_promotion_grants.yaml" in out
 
-    def test_skip_token_allowlist_fails(self) -> None:
+    def test_skip_token_allowlist_passes(self) -> None:
+        """OMN-14919: the skip-token registry is no longer a guarded path."""
         code = main(
             [
                 "check",
@@ -152,7 +153,7 @@ class TestMainCheckSubcommand:
                 json.dumps(["allowlists/skip_token_approvals.yaml"]),
             ]
         )
-        assert code == _EXIT_FAIL
+        assert code == _EXIT_PASS
 
     def test_ordinary_files_pass(self, capsys: pytest.CaptureFixture[str]) -> None:
         code = main(

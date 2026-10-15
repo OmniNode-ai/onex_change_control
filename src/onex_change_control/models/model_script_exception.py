@@ -6,7 +6,7 @@
 A single reviewed exception in ``allowlists/scripts_exceptions.yaml`` — the
 CODEOWNERS-approved registry that is the ONLY way a NEW ``scripts/**`` file may
 land under the DEFAULT-DENY policy (OMN-14475). The registry is resolved from
-``onex_change_control@main`` in CI (mirroring ``skip_token_approvals.yaml``), so
+``onex_change_control@main`` in CI, so
 a downstream PR cannot self-add an entry — an entry lands only via a separate,
 CODEOWNERS-reviewed PR against this file.
 

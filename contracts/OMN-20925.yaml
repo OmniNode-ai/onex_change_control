@@ -1,0 +1,141 @@
+---
+schema_version: "1.0.0"
+ticket_id: "OMN-20925"
+title: "omnibase_spi's skip-token caller pins the omniclaude reusable at a revision with no nested occ-preflight"
+summary: "omniclaude#2540 (4358450cc on omniclaude dev) removed the nested occ-preflight job from the
+  reject-deploy-gate-skip.yml reusable. omnibase_spi#364 moves call-reject-skip.yml to omniclaude dev
+  revision cb11e382966e354126cba07441e8f2b05faedee4, which has 4358450cc as an ancestor, so the caller
+  stops reporting call-reject-skip-token / occ-preflight / eligibility and keeps the scan context."
+is_seam_ticket: false
+interface_change: false
+interfaces_touched: []
+requirements:
+  - id: "req-skip-reusable-repin"
+    statement: |-
+      omnibase_spi's call-reject-skip.yml calls the omniclaude skip-token reusable at a revision that carries omniclaude#2540, so the scan still runs and no nested change-control preflight context is reported.
+    acceptance:
+      - id: "AC1"
+        statement: |-
+          AC1: In each of omnibase_spi, omnibase_compat and omniintelligence, `.github/workflows/call-reject-skip.yml` on the PR head calls omniclaude's `reject-deploy-gate-skip.yml` at a sha that has 4358450cc as an ancestor -- falsifier: `git -C omniclaude merge-base --is-ancestor 4358450cc <pinned sha>` exits 0 for each repo's pinned sha, and `git -C omniclaude show <pinned sha>:.github/workflows/reject-deploy-gate-skip.yml | grep -c occ-preflight.yml@` returns 0
+      - id: "AC2"
+        statement: |-
+          AC2: The skip-token scan still runs and still refuses a skip token on each repo's PR -- falsifier: the PR's own `call-reject-skip-token / scan` (or the repo's equivalent scan context) check run concludes success on the PR head and no `call-reject-skip-token / occ-preflight / eligibility` context is reported for that head; plus the reusable's scan step, run locally against a planted staged line carrying a skip-token prefix, exits non-zero (recorded in the PR body's Lab: line)
+      - id: "AC3"
+        statement: |-
+          AC3: Each PR changes only `call-reject-skip.yml`, its own `contracts/<this ticket>.yaml`, and at most a focused test of the pin -- falsifier: `git diff --name-only origin/dev...HEAD` per repo lists nothing else
+evidence_requirements:
+  - kind: "ci"
+    description: "omnibase_spi#364 pins the reusable at cb11e382966e354126cba07441e8f2b05faedee4 and the
+      caller names no nested occ-preflight workflow."
+    command: "grep -qE 'reject-deploy-gate-skip\\.yml@cb11e382966e354126cba07441e8f2b05faedee4( |$)' .github/workflows/call-reject-skip.yml
+      && ! grep -q 'occ-preflight\\.yml@' .github/workflows/call-reject-skip.yml"
+emergency_bypass:
+  enabled: false
+  justification: ""
+  follow_up_ticket_id: ""
+dod_evidence:
+  - id: "dod-OmniNode-ai-omnibase_spi-pr-364-pin"
+    description: "PR #364 on OmniNode-ai/omnibase_spi: call-reject-skip.yml pins omniclaude reject-deploy-gate-skip.yml
+      at cb11e382966e354126cba07441e8f2b05faedee4 and names no occ-preflight.yml reusable."
+    source: "manual"
+    checks:
+      - check_type: "command"
+        check_value: |-
+          grep -E 'reject-deploy-gate-skip\.yml@cb11e382966e354126cba07441e8f2b05faedee4( |$)' .github/workflows/call-reject-skip.yml && test "$(grep -c 'occ-preflight\.yml@' .github/workflows/call-reject-skip.yml)" = 0
+        cwd: "${OMNI_HOME}/omnibase_spi"
+    binds_ac: ["AC1"]
+  - id: "dod-OmniNode-ai-omnibase_spi-pr-364-scope"
+    description: "PR #364 on OmniNode-ai/omnibase_spi: the PR commit changes only call-reject-skip.yml
+      and contracts/OMN-20925.yaml."
+    source: "manual"
+    checks:
+      - check_type: "command"
+        check_value: |-
+          files="$(git diff --name-only 0f595a3a19e62a7e48c23196c4a4c22ea8699278 HEAD | tr '\n' ' ')"; echo "$files"; test "$files" = '.github/workflows/call-reject-skip.yml contracts/OMN-20925.yaml '
+        cwd: "${OMNI_HOME}/omnibase_spi"
+    binds_ac: ["AC3"]
+  - id: dod-OmniNode-ai-omnibase_spi-pr-364-scan
+    description: 'Local behavioral leg of AC2 for omnibase_spi PR #364: execute the scan step from the
+      pinned omniclaude reusable with a clean diff and a planted skip-token diff. The clean diff exits
+      0 and the planted diff exits 1; the reusable has no nested occ-preflight. This item does not attest
+      hosted check conclusions or the other repositories.'
+    source: manual
+    checks:
+      - check_type: command
+        check_value: |-
+          python3 - <<'PROBE'
+          import json
+          import os
+          from pathlib import Path
+          import re
+          import subprocess
+          import tempfile
+          import yaml
+
+          caller = subprocess.check_output([
+              "git", "show", "0c82123aacc3d1e3db39f5d9277fecf60e931536:.github/workflows/call-reject-skip.yml"
+          ], text=True)
+          uses = yaml.safe_load(caller)["jobs"]["call-reject-skip-token"]["uses"]
+          pin = uses.rsplit("@", 1)[1]
+          assert pin == "cb11e382966e354126cba07441e8f2b05faedee4", uses
+          reusable = subprocess.check_output([
+              "git", "-C", str(Path(os.environ["OMNI_HOME"]) / "omniclaude"),
+              "show", pin + ":.github/workflows/reject-deploy-gate-skip.yml"
+          ], text=True)
+          assert not re.search(r"occ-preflight\.yml@", reusable)
+          steps = yaml.safe_load(reusable)["jobs"]["scan-skip-tokens"]["steps"]
+          scan = next(step["run"] for step in steps if "check_surface()" in step.get("run", ""))
+          assert "${{" not in scan
+          with tempfile.TemporaryDirectory() as scratch:
+              root = Path(scratch)
+              body = root / "body.txt"
+              body.write_text("Routine change")
+              fake_gh = root / "gh"
+              fake_gh.write_text("#!/bin/bash\ncase \"$1 $2\" in\n"
+                                 "  'pr diff') printf '%s\\n' \"$PROBE_DIFF\" ;;\n"
+                                 "  'pr view') printf '%s\\n' 'Routine change' ;;\n"
+                                 "  *) exit 64 ;;\nesac\n")
+              fake_gh.chmod(0o755)
+              env = {**os.environ, "PATH": str(root) + os.pathsep + os.environ["PATH"],
+                     "RUNNER_TEMP": str(root), "RESOLVED_BODY_PATH": str(body),
+                     "RESOLVED_PR_NUMBER": "364", "RESOLVED_PR_AUTHOR": "probe-author",
+                     "PR_TITLE": "Routine change", "EVENT_NAME": "pull_request",
+                     "REPO": "OmniNode-ai/omnibase_spi"}
+              prefix = "diff --git a/probe.md b/probe.md\n--- a/probe.md\n+++ b/probe.md\n@@ -0,0 +1 @@\n+"
+              results = {}
+              for case, line, expected in (("clean", "Routine change", 0),
+                                           ("planted", "[" + "skip-" + "deploy-gate:probe]", 1)):
+                  env["PROBE_DIFF"] = prefix + line + "\n"
+                  run = subprocess.run(["bash", "-c", scan], env=env, capture_output=True, text=True)
+                  print(run.stdout, end="")
+                  assert run.returncode == expected, (case, run.returncode, run.stdout, run.stderr)
+                  if case == "planted":
+                      assert "changed file diff contains" in run.stdout, run.stdout
+                  results[case] = run.returncode
+              print(json.dumps({"pin": pin, "nested_preflight": False, "scan_exit_codes": results}, sort_keys=True))
+          PROBE
+        cwd: ${OMNI_HOME}/omnibase_spi
+    binds_ac:
+      - AC2
+  - id: "dod-OmniNode-ai-omnibase_compat-pr-232-pin"
+    description: "PR #232 on OmniNode-ai/omnibase_compat: call-reject-skip.yml at the PR commit 82185615bf25bc223f00150d3443220b4582e22c
+      pins omniclaude reject-deploy-gate-skip.yml at cb11e382966e354126cba07441e8f2b05faedee4 and names
+      no occ-preflight.yml reusable."
+    source: "manual"
+    checks:
+      - check_type: "command"
+        check_value: |-
+          git show 82185615bf25bc223f00150d3443220b4582e22c:.github/workflows/call-reject-skip.yml | grep -E 'reject-deploy-gate-skip\.yml@cb11e382966e354126cba07441e8f2b05faedee4( |$)' && test "$(git show 82185615bf25bc223f00150d3443220b4582e22c:.github/workflows/call-reject-skip.yml | grep -c 'occ-preflight\.yml@')" = 0
+        cwd: "${OMNI_HOME}/omnibase_compat"
+    binds_ac: ["AC1"]
+  - id: "dod-OmniNode-ai-omniintelligence-pr-1042-pin"
+    description: "PR #1042 on OmniNode-ai/omniintelligence: call-reject-skip.yml at the PR commit 40a8d215850a30fe8b9632a532ff7c6ede079b89
+      pins omniclaude reject-deploy-gate-skip.yml at cb11e382966e354126cba07441e8f2b05faedee4 and names
+      no occ-preflight.yml reusable."
+    source: "manual"
+    checks:
+      - check_type: "command"
+        check_value: |-
+          git show 40a8d215850a30fe8b9632a532ff7c6ede079b89:.github/workflows/call-reject-skip.yml | grep -E 'reject-deploy-gate-skip\.yml@cb11e382966e354126cba07441e8f2b05faedee4( |$)' && test "$(git show 40a8d215850a30fe8b9632a532ff7c6ede079b89:.github/workflows/call-reject-skip.yml | grep -c 'occ-preflight\.yml@')" = 0
+        cwd: "${OMNI_HOME}/omniintelligence"
+    binds_ac: ["AC1"]

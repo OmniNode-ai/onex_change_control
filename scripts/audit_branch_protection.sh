@@ -55,9 +55,27 @@
 #       unreadable bypass list is not evidence of no bypass. The audit token
 #       must therefore be able to read bypass lists.
 #
+# Repo-level checks 7 and 8 (OMN-16289 re-affirmed by the operator 2026-10-10,
+# "Dev as a default branch has been the rule for months anything targeting Main
+# has been violating that rule"):
+#   7. The repository's default branch is `dev`. Judged for every repo in REPOS
+#      and for the registry code repos in DEFAULT_BRANCH_ONLY_REPOS. A repo that
+#      still defaults to `main` is tolerated only while it is named in
+#      DEFAULT_BRANCH_PENDING_REPOS, a shrink-only baseline: an entry whose repo
+#      already defaults to `dev` FAILS as stale, so the list can only get shorter.
+#   8. No open feature pull request targets `main` in a repo whose default is
+#      `dev`. A head branch under hotfix/ or promotion/ is a sanctioned main
+#      path (prod-grant hotfixes, release promotion) and passes. Anything else
+#      FAILS unless it is named in MAIN_PR_PENDING, a shrink-only baseline of
+#      <repo>#<number> entries; an entry whose PR is no longer open against
+#      `main` FAILS as stale.
+# Docs-only repositories (knowledge-base, knowledge-base-internal) are outside
+# both scopes: they hold no code and their readers consume origin/main by path.
+#
 # DEV-EXEMPT repos (audited on `main` only): repos with no protected `dev` branch.
-#   omnistream — no `dev` branch exists.
 #   omniweb    — `dev` exists but is intentionally unprotected (PHP landing page).
+#   (omnistream left this list on 2026-10-10: its `dev` now exists, carries
+#   main's protection and is its default branch.)
 #
 # MAIN-EXEMPT repos (audited on `dev` only): see MAIN_AUDIT_EXEMPT_REPOS.
 #
@@ -98,7 +116,66 @@ fi
 PRIVATE_REPOS=(omninode_infra omnistream omniweb)
 
 # Repos with no protected `dev` branch — audited on `main` only.
-DEV_EXEMPT_REPOS=(omnistream omniweb)
+DEV_EXEMPT_REPOS=(omniweb)
+
+# Registry code repos judged ONLY on checks 7 and 8 (default branch is `dev`, no
+# feature PR targets `main`). Their branch protection is not audited here: the
+# per-branch checks assume the CI Summary / ruleset shapes of the REPOS above.
+# Move a repo into REPOS in the change that gives it that protection shape.
+DEFAULT_BRANCH_ONLY_REPOS=(
+  omniopencode
+  omnicrush
+  omnigemini
+  omnibase_internal
+  omniclaude-internal
+  omni_home
+)
+if [[ -n "${BRANCH_PROTECTION_AUDIT_DEFAULT_ONLY_REPOS+x}" ]]; then
+  IFS=',' read -r -a DEFAULT_BRANCH_ONLY_REPOS <<< "${BRANCH_PROTECTION_AUDIT_DEFAULT_ONLY_REPOS}"
+elif [[ -n "${BRANCH_PROTECTION_AUDIT_REPOS:-}" ]]; then
+  # A single-repo run (the tests, a spot check) does not drag the registry in.
+  DEFAULT_BRANCH_ONLY_REPOS=()
+fi
+
+# SHRINK-ONLY baseline of repos still on a `main` default (OMN-16289). Each
+# needs the preparation wave in beta/plans/2026-10-05-dev-default-branch-plan.md
+# (workflow PR filters, sync timers, the stranded-clone guard) before the switch;
+# delete the entry in the change that switches the repo. A new entry is refused
+# in review: a repo that defaults to `main` is the defect this list counts down.
+# Entries are read token-by-token by tests/test_audit_branch_protection_dev_default.py
+# -- keep comments OUT of the array body.
+DEFAULT_BRANCH_PENDING_REPOS=(
+  omnibase_internal
+  omniclaude-internal
+  omni_home
+)
+if [[ -n "${BRANCH_PROTECTION_AUDIT_DEFAULT_PENDING_REPOS+x}" ]]; then
+  IFS=',' read -r -a DEFAULT_BRANCH_PENDING_REPOS <<< "${BRANCH_PROTECTION_AUDIT_DEFAULT_PENDING_REPOS}"
+elif [[ -n "${BRANCH_PROTECTION_AUDIT_REPOS:-}" ]]; then
+  DEFAULT_BRANCH_PENDING_REPOS=()
+fi
+
+# SHRINK-ONLY baseline of open PRs that target `main` in a dev-default repo and
+# are not hotfix/ or promotion/ heads. omniweb#437-439 repair omniweb `main`
+# itself (the stale public-cluster deploy job, OMN-18635 AC6); `dev` already
+# carries the fix, so retargeting them would be wrong. They leave this list when
+# omniweb's main is reconciled (OMN-18635 AC8/AC9) or the PRs close.
+# Entries are <repo>#<number>; keep comments OUT of the array body.
+MAIN_PR_PENDING=(
+  omniweb#437
+  omniweb#438
+  omniweb#439
+)
+if [[ -n "${BRANCH_PROTECTION_AUDIT_MAIN_PR_PENDING+x}" ]]; then
+  IFS=',' read -r -a MAIN_PR_PENDING <<< "${BRANCH_PROTECTION_AUDIT_MAIN_PR_PENDING}"
+elif [[ -n "${BRANCH_PROTECTION_AUDIT_REPOS:-}" ]]; then
+  MAIN_PR_PENDING=()
+fi
+
+# Head-branch prefixes that are a sanctioned way to target `main` (prod-grant
+# hotfix PRs, release promotion): omni_home CLAUDE.md rule 12 and the landing
+# controller's retarget_of exemption.
+SANCTIONED_MAIN_HEAD_REGEX='^(hotfix|promotion)/'
 
 # ──────────────────────────────────────────────────────────────────────
 # RELEASE-SYNCED main (OMN-16289 / OMN-17186)
@@ -688,6 +765,141 @@ check_merge_queue_bypass() {
   fi
 }
 
+# in_list <needle> [item...] -- exact-match membership, safe on an empty list.
+in_list() {
+  local needle="$1" item
+  shift
+  for item in "$@"; do
+    if [[ "$item" == "$needle" ]]; then
+      return 0
+    fi
+  done
+  return 1
+}
+
+# check_default_branch <repo> <repo-settings-json>   (check 7, OMN-16289)
+#
+# The default branch must be `dev`. A repo still defaulting to `main` passes
+# only while it is in the shrink-only DEFAULT_BRANCH_PENDING_REPOS baseline,
+# and a baseline entry whose repo already defaults to `dev` FAILS so the list
+# cannot go stale. An unreadable default branch FAILS: absence is not `dev`.
+check_default_branch() {
+  local repo="$1"
+  local settings="$2"
+  local default_branch pending=false
+
+  if in_list "$repo" ${DEFAULT_BRANCH_PENDING_REPOS[@]+"${DEFAULT_BRANCH_PENDING_REPOS[@]}"}; then
+    pending=true
+  fi
+  TOTAL_CHECKS=$((TOTAL_CHECKS + 1))
+  default_branch=$(printf '%s' "$settings" | jq -r '.default_branch // ""' 2>/dev/null) || default_branch=""
+
+  if [[ -z "$default_branch" ]]; then
+    echo "  [repo] FAIL: default branch is unreadable, so \`dev\` cannot be claimed (OMN-16289)"
+    emit_jsonl "$repo" "-" "default_branch_is_dev" "FAIL" "default branch unreadable"
+    REPO_OK=false
+    FAILURES=$((FAILURES + 1))
+  elif [[ "$default_branch" == "dev" ]]; then
+    if $pending; then
+      echo "  [repo] FAIL: ${repo} defaults to dev but is still in DEFAULT_BRANCH_PENDING_REPOS -- delete the stale baseline entry (OMN-16289)"
+      emit_jsonl "$repo" "-" "default_branch_is_dev" "FAIL" "stale pending baseline entry"
+      REPO_OK=false
+      FAILURES=$((FAILURES + 1))
+    else
+      echo "  [repo] PASS: default branch is dev"
+      emit_jsonl "$repo" "-" "default_branch_is_dev" "PASS" "dev"
+    fi
+  elif $pending; then
+    echo "  [repo] NOTE: default branch is ${default_branch}; ${repo} is in the shrink-only DEFAULT_BRANCH_PENDING_REPOS baseline (OMN-16289)"
+    emit_jsonl "$repo" "-" "default_branch_is_dev" "NOTE" "default ${default_branch}; pending baseline"
+  else
+    echo "  [repo] FAIL: default branch is ${default_branch}, not dev -- dev is the default branch of every code repository (OMN-16289)"
+    emit_jsonl "$repo" "-" "default_branch_is_dev" "FAIL" "default ${default_branch}"
+    REPO_OK=false
+    FAILURES=$((FAILURES + 1))
+  fi
+}
+
+# check_main_targeting_prs <repo> <repo-settings-json>   (check 8, OMN-16289)
+#
+# Only judged for a repo whose default branch is `dev`: an open PR on `main`
+# there is either a sanctioned path (head under hotfix/ or promotion/), a
+# baselined entry in MAIN_PR_PENDING, or a feature PR aimed at the wrong base.
+# A MAIN_PR_PENDING entry for this repo whose PR is no longer open against
+# `main` FAILS as stale. An unreadable PR list FAILS.
+check_main_targeting_prs() {
+  local repo="$1"
+  local settings="$2"
+  local full="${ORG}/${repo}"
+  local default_branch prs line number head entry judged=0 seen=" "
+
+  default_branch=$(printf '%s' "$settings" | jq -r '.default_branch // ""' 2>/dev/null) || default_branch=""
+  if [[ "$default_branch" != "dev" ]]; then
+    return
+  fi
+  TOTAL_CHECKS=$((TOTAL_CHECKS + 1))
+  prs=$(gh api "repos/${full}/pulls?state=open&base=main&per_page=100" 2>&1) || {
+    echo "  [repo] FAIL: open pull requests on main are unreadable, so \"no feature PR targets main\" cannot be claimed"
+    emit_jsonl "$repo" "-" "no_feature_pr_targets_main" "FAIL" "pull request list not fetchable"
+    REPO_OK=false
+    FAILURES=$((FAILURES + 1))
+    return
+  }
+  while IFS= read -r line; do
+    [[ -z "$line" ]] && continue
+    number="${line%% *}"
+    head="${line#* }"
+    seen="${seen}${number} "
+    if [[ "$head" =~ $SANCTIONED_MAIN_HEAD_REGEX ]]; then
+      echo "  [repo] NOTE: ${repo}#${number} targets main from ${head} (sanctioned hotfix/promotion path)"
+      emit_jsonl "$repo" "-" "no_feature_pr_targets_main" "NOTE" "${repo}#${number} sanctioned ${head}"
+    elif in_list "${repo}#${number}" ${MAIN_PR_PENDING[@]+"${MAIN_PR_PENDING[@]}"}; then
+      echo "  [repo] NOTE: ${repo}#${number} targets main and is in the shrink-only MAIN_PR_PENDING baseline"
+      emit_jsonl "$repo" "-" "no_feature_pr_targets_main" "NOTE" "${repo}#${number} pending baseline"
+    else
+      echo "  [repo] FAIL: ${repo}#${number} (${head}) targets main; dev is the base branch -- gh pr edit ${number} --repo ${full} --base dev (OMN-16289)"
+      emit_jsonl "$repo" "-" "no_feature_pr_targets_main" "FAIL" "${repo}#${number} ${head}"
+      REPO_OK=false
+      FAILURES=$((FAILURES + 1))
+    fi
+    judged=1
+  done < <(printf '%s' "$prs" | jq -r '.[] | "\(.number) \(.head.ref)"')
+
+  for entry in ${MAIN_PR_PENDING[@]+"${MAIN_PR_PENDING[@]}"}; do
+    if [[ "${entry%%#*}" == "$repo" && "$seen" != *" ${entry##*#} "* ]]; then
+      echo "  [repo] FAIL: ${entry} is in MAIN_PR_PENDING but is not open against main -- delete the stale baseline entry (OMN-16289)"
+      emit_jsonl "$repo" "-" "no_feature_pr_targets_main" "FAIL" "stale baseline entry ${entry}"
+      REPO_OK=false
+      FAILURES=$((FAILURES + 1))
+      judged=1
+    fi
+  done
+  if [[ "$judged" -eq 0 ]]; then
+    echo "  [repo] PASS: no open pull request targets main"
+    emit_jsonl "$repo" "-" "no_feature_pr_targets_main" "PASS" "none open"
+  fi
+}
+
+check_default_only_repo() {
+  local repo="$1"
+  local full="${ORG}/${repo}"
+  local settings
+  REPO_OK=true
+
+  echo "───────────────────────────────────────"
+  echo "Repo: ${full} (default-branch checks only)"
+  echo "───────────────────────────────────────"
+  settings=$(gh api "repos/${full}" 2>&1) || settings=""
+  check_default_branch "$repo" "$settings"
+  check_main_targeting_prs "$repo" "$settings"
+  if $REPO_OK; then
+    echo "  >>> COMPLIANT"
+  else
+    echo "  >>> NON-COMPLIANT"
+  fi
+  echo ""
+}
+
 check_repo() {
   local repo="$1"
   local full="${ORG}/${repo}"
@@ -751,6 +963,10 @@ check_repo() {
     fi
   fi
 
+  # 7 + 8. Default branch is dev; no feature PR targets main (OMN-16289)
+  check_default_branch "$repo" "$repo_settings"
+  check_main_targeting_prs "$repo" "$repo_settings"
+
   # 6. Merge Queue ruleset (skip private repos)
   if is_private "$repo"; then
     echo "  [repo] SKIP: Merge Queue ruleset check (private repo)"
@@ -806,6 +1022,10 @@ echo ""
 
 for repo in "${REPOS[@]}"; do
   check_repo "$repo"
+done
+
+for repo in ${DEFAULT_BRANCH_ONLY_REPOS[@]+"${DEFAULT_BRANCH_ONLY_REPOS[@]}"}; do
+  check_default_only_repo "$repo"
 done
 
 echo "======================================="

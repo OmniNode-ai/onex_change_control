@@ -1,0 +1,229 @@
+---
+schema_version: 1.0.0
+ticket_id: OMN-20717
+evidence_item_id: dod-omn20717-ac3-usage-equals-call-rows-recorded
+check_type: command
+check_value: |-
+  if test -d /data/omninode/lakshman/omn20717-readbacks/OMN-20717-ac3-readback-20261014T100636Z; then lab_py="/usr/bin/python3 -"; else lab_py="ssh -o BatchMode=yes -o ConnectTimeout=15 jonah@192.168.86.201 /usr/bin/python3 -"; fi
+  $lab_py <<'PROBE_20717_AC3' | grep -E '^AC3-OK day=2026-10-14 model=qwen/qwen3.8-27b usage_measured_cost_usd=0.000662 decisions_cost_usd_sum=0.000662 calls=2 nonzero_calls=1$'
+  """OMN-20717 AC3 check over the recorded lab readback of 2026-10-14. Read-only.
+
+  It reads two files, kept as a copy in the lakshman data area on the lab host, each saved byte for byte on
+  2026-10-14 at 10:06:42Z by the install's own `onex dashboard` on .201, after one priced delegation
+  (correlation id 7ce1e196-2aa9-4420-a54e-20615a0a4431). The install was omnimarket built from
+  repos/OmniNode-ai/omnimarket/commits/e9055c04ef36cf031e6068a70c3e853b60b86af2 (dev, carries #3807):
+    onex.snapshot.projection.usage-by-model-day.v1.json   the exposure the Usage page binds
+    onex.snapshot.projection.delegation.decisions.v1.json the call rows
+  Both are read whole before anything is graded. It prints one verdict line, AC3-OK or AC3-FAIL, and is red when
+  a file is missing, unreadable, not the recorded one (sha256) or not JSON; when either read is truncated, paged
+  or its row count disagrees with its rows; when the Usage row for 2026-10-14 and qwen/qwen3.8-27b is absent or
+  not unique; when no call of that day and model has a non-zero cost; and when the Usage page's measured cost
+  differs from the sum of that day's decisions.v1 cost_usd values for the model. It reads a record: the lab
+  install is not read again.
+
+  Run on the lab host: python3 - [folder] < this   (the folder defaults to the kept copy).
+  """
+
+  import hashlib
+  import json
+  import os
+  import sys
+
+  FOLDER = "/data/omninode/lakshman/omn20717-readbacks/OMN-20717-ac3-readback-20261014T100636Z"
+  USAGE = "onex.snapshot.projection.usage-by-model-day.v1.json"
+  DECISIONS = "onex.snapshot.projection.delegation.decisions.v1.json"
+  RECORDED = {
+      DECISIONS: "0552f081cc8f9f3b368647e764f747cf030c4ec09019f7570975309af3576abe",
+      USAGE: "184a42b844033a655d48f4293d1956b32d270df11b6124e7a9587c73d8ff684b",
+  }
+  DAY = "2026-10-14"
+  MODEL = "qwen/qwen3.8-27b"
+
+
+  def fail(reason):
+      print(f"AC3-FAIL {reason}")
+      sys.exit(1)
+
+
+  def load(folder, name):
+      path = os.path.join(folder, name)
+      try:
+          with open(path, "rb") as handle:
+              raw = handle.read()
+      except OSError as exc:
+          fail(f"{name} unreadable: {exc.__class__.__name__}")
+      digest = hashlib.sha256(raw).hexdigest()
+      if digest != RECORDED[name]:
+          fail(f"{name} is not the recorded file (sha256 {digest[:12]})")
+      try:
+          doc = json.loads(raw)
+      except ValueError:
+          fail(f"{name} is not JSON")
+      rows = doc.get("rows")
+      if not isinstance(rows, list):
+          fail(f"{name} has no rows list")
+      if doc.get("truncated") is not False or doc.get("next_cursor") is not None:
+          fail(f"{name} is a partial read")
+      if doc.get("row_count") != len(rows):
+          fail(f"{name} row_count {doc.get('row_count')} != {len(rows)} rows")
+      return doc, rows
+
+
+  def main():
+      folder = sys.argv[1] if len(sys.argv) > 1 else FOLDER
+      usage_doc, usage_rows = load(folder, USAGE)
+      decisions_doc, decision_rows = load(folder, DECISIONS)
+      if usage_doc.get("topic") != USAGE[: -len(".json")] or decisions_doc.get("topic") != DECISIONS[: -len(".json")]:
+          fail("a file holds another exposure")
+
+      matches = [r for r in usage_rows if r.get("usage_day") == DAY and r.get("model_id") == MODEL]
+      if len(matches) != 1:
+          fail(f"{len(matches)} Usage rows for {DAY} {MODEL}")
+      page_cost = matches[0].get("measured_cost_usd")
+      if not isinstance(page_cost, (int, float)) or isinstance(page_cost, bool):
+          fail("the Usage row has no measured cost")
+
+      day_rows = [
+          r for r in decision_rows
+          if str(r.get("created_at", "")).startswith(DAY + "T") and r.get("model_name") == MODEL
+      ]
+      costs = [r.get("cost_usd") for r in day_rows]
+      if any(c is not None and (not isinstance(c, (int, float)) or isinstance(c, bool)) for c in costs):
+          fail("a call row has a cost that is not a number")
+      priced = [c for c in costs if c is not None]
+      nonzero = [c for c in priced if c != 0]
+      if not nonzero:
+          fail(f"no non-zero-cost call for {DAY} {MODEL}")
+      total = sum(priced)
+      if abs(total - page_cost) > 1e-12:
+          fail(f"usage {page_cost!r} != decisions sum {total!r}")
+      print(
+          f"AC3-OK day={DAY} model={MODEL} usage_measured_cost_usd={page_cost!r} "
+          f"decisions_cost_usd_sum={total!r} calls={len(day_rows)} nonzero_calls={len(nonzero)}"
+      )
+
+
+  main()
+  PROBE_20717_AC3
+  test "${PIPESTATUS[0]}${PIPESTATUS[1]}" = "00"
+contract_sha256: sha256:917d52071c9a502255a47be9d93ba051f383cd0f7779269e8abf8edb85f4bf81
+contract_entry_sha256: sha256:1e78b6a3411b6c0f68cd17020f6519ec82889bb1b06b38700726b7b83bbfc1db
+status: PASS
+commit_sha: e9055c04ef36cf031e6068a70c3e853b60b86af2
+runner: claude-2a317a77@onex-201
+probe_command: |-
+  if test -d /data/omninode/lakshman/omn20717-readbacks/OMN-20717-ac3-readback-20261014T100636Z; then lab_py="/usr/bin/python3 -"; else lab_py="ssh -o BatchMode=yes -o ConnectTimeout=15 jonah@192.168.86.201 /usr/bin/python3 -"; fi
+  $lab_py <<'PROBE_20717_AC3' | grep -E '^AC3-OK day=2026-10-14 model=qwen/qwen3.8-27b usage_measured_cost_usd=0.000662 decisions_cost_usd_sum=0.000662 calls=2 nonzero_calls=1$'
+  """OMN-20717 AC3 check over the recorded lab readback of 2026-10-14. Read-only.
+
+  It reads two files, kept as a copy in the lakshman data area on the lab host, each saved byte for byte on
+  2026-10-14 at 10:06:42Z by the install's own `onex dashboard` on .201, after one priced delegation
+  (correlation id 7ce1e196-2aa9-4420-a54e-20615a0a4431). The install was omnimarket built from
+  repos/OmniNode-ai/omnimarket/commits/e9055c04ef36cf031e6068a70c3e853b60b86af2 (dev, carries #3807):
+    onex.snapshot.projection.usage-by-model-day.v1.json   the exposure the Usage page binds
+    onex.snapshot.projection.delegation.decisions.v1.json the call rows
+  Both are read whole before anything is graded. It prints one verdict line, AC3-OK or AC3-FAIL, and is red when
+  a file is missing, unreadable, not the recorded one (sha256) or not JSON; when either read is truncated, paged
+  or its row count disagrees with its rows; when the Usage row for 2026-10-14 and qwen/qwen3.8-27b is absent or
+  not unique; when no call of that day and model has a non-zero cost; and when the Usage page's measured cost
+  differs from the sum of that day's decisions.v1 cost_usd values for the model. It reads a record: the lab
+  install is not read again.
+
+  Run on the lab host: python3 - [folder] < this   (the folder defaults to the kept copy).
+  """
+
+  import hashlib
+  import json
+  import os
+  import sys
+
+  FOLDER = "/data/omninode/lakshman/omn20717-readbacks/OMN-20717-ac3-readback-20261014T100636Z"
+  USAGE = "onex.snapshot.projection.usage-by-model-day.v1.json"
+  DECISIONS = "onex.snapshot.projection.delegation.decisions.v1.json"
+  RECORDED = {
+      DECISIONS: "0552f081cc8f9f3b368647e764f747cf030c4ec09019f7570975309af3576abe",
+      USAGE: "184a42b844033a655d48f4293d1956b32d270df11b6124e7a9587c73d8ff684b",
+  }
+  DAY = "2026-10-14"
+  MODEL = "qwen/qwen3.8-27b"
+
+
+  def fail(reason):
+      print(f"AC3-FAIL {reason}")
+      sys.exit(1)
+
+
+  def load(folder, name):
+      path = os.path.join(folder, name)
+      try:
+          with open(path, "rb") as handle:
+              raw = handle.read()
+      except OSError as exc:
+          fail(f"{name} unreadable: {exc.__class__.__name__}")
+      digest = hashlib.sha256(raw).hexdigest()
+      if digest != RECORDED[name]:
+          fail(f"{name} is not the recorded file (sha256 {digest[:12]})")
+      try:
+          doc = json.loads(raw)
+      except ValueError:
+          fail(f"{name} is not JSON")
+      rows = doc.get("rows")
+      if not isinstance(rows, list):
+          fail(f"{name} has no rows list")
+      if doc.get("truncated") is not False or doc.get("next_cursor") is not None:
+          fail(f"{name} is a partial read")
+      if doc.get("row_count") != len(rows):
+          fail(f"{name} row_count {doc.get('row_count')} != {len(rows)} rows")
+      return doc, rows
+
+
+  def main():
+      folder = sys.argv[1] if len(sys.argv) > 1 else FOLDER
+      usage_doc, usage_rows = load(folder, USAGE)
+      decisions_doc, decision_rows = load(folder, DECISIONS)
+      if usage_doc.get("topic") != USAGE[: -len(".json")] or decisions_doc.get("topic") != DECISIONS[: -len(".json")]:
+          fail("a file holds another exposure")
+
+      matches = [r for r in usage_rows if r.get("usage_day") == DAY and r.get("model_id") == MODEL]
+      if len(matches) != 1:
+          fail(f"{len(matches)} Usage rows for {DAY} {MODEL}")
+      page_cost = matches[0].get("measured_cost_usd")
+      if not isinstance(page_cost, (int, float)) or isinstance(page_cost, bool):
+          fail("the Usage row has no measured cost")
+
+      day_rows = [
+          r for r in decision_rows
+          if str(r.get("created_at", "")).startswith(DAY + "T") and r.get("model_name") == MODEL
+      ]
+      costs = [r.get("cost_usd") for r in day_rows]
+      if any(c is not None and (not isinstance(c, (int, float)) or isinstance(c, bool)) for c in costs):
+          fail("a call row has a cost that is not a number")
+      priced = [c for c in costs if c is not None]
+      nonzero = [c for c in priced if c != 0]
+      if not nonzero:
+          fail(f"no non-zero-cost call for {DAY} {MODEL}")
+      total = sum(priced)
+      if abs(total - page_cost) > 1e-12:
+          fail(f"usage {page_cost!r} != decisions sum {total!r}")
+      print(
+          f"AC3-OK day={DAY} model={MODEL} usage_measured_cost_usd={page_cost!r} "
+          f"decisions_cost_usd_sum={total!r} calls={len(day_rows)} nonzero_calls={len(nonzero)}"
+      )
+
+
+  main()
+  PROBE_20717_AC3
+  test "${PIPESTATUS[0]}${PIPESTATUS[1]}" = "00"
+actual_output: 'PASS: AC3 recorded-readback check run by lane claude-2a317a77 on the lab host (.201):
+  AC3-OK, Usage measured cost 0.000662 equals the sum of the day''s decisions.v1 cost_usd 0.000662 over
+  one non-zero-cost call; a one-byte-altered copy exited 1.'
+branch: dev
+probe_stdout: AC3-OK day=2026-10-14 model=qwen/qwen3.8-27b usage_measured_cost_usd=0.000662 decisions_cost_usd_sum=0.000662
+  calls=2 nonzero_calls=1
+exit_code: 0
+run_timestamp: '2026-10-14T11:30:24Z'
+duration_ms: 2100
+verifier: occ-probe-capture-v1
+artifact_sha256:
+  - sha256:b0b659e4f6ccfb0bd7b96d8f7c3879ff7af332fe79a7a17bc3373cc9ca17d613
+  - sha256:bf21bb22255a7ef25a96bb0fc1c146e86dee80f29c1c4b848216f1d0b1ab8438
