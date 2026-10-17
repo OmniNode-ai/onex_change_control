@@ -12,12 +12,14 @@ commit it pins), not only against synthetic fixtures.
 from __future__ import annotations
 
 import importlib.util
+import subprocess
 from pathlib import Path
 from typing import Any
 
 import pytest
 import yaml
 from omnibase_core.models.contracts.ticket.model_dod_receipt import ModelDodReceipt
+from omnibase_core.validation.validator_receipt_honesty import check_receipt_honesty
 
 pytestmark = pytest.mark.unit
 
@@ -93,6 +95,99 @@ def test_capture_writes_fields_from_the_run(tmp_path: Path) -> None:
     assert on_disk["probe_stdout"] == "first\nsecond"
     assert on_disk["run_timestamp"] != "2026-10-02T00:00:00Z"
     ModelDodReceipt.model_validate(on_disk)
+
+
+@pytest.fixture(scope="module")
+def capture_yamlfmt() -> Path:
+    """Resolve/install the formatter from the hook's pin, never the host PATH."""
+    clientlib = importlib.import_module("pre_commit.clientlib")
+    repository = importlib.import_module("pre_commit.repository")
+    store_module = importlib.import_module("pre_commit.store")
+
+    config = clientlib.load_config(str(_REPO_ROOT / ".pre-commit-config.yaml"))
+    repo = next(repo for repo in config["repos"] if repo["repo"].endswith("/yamlfmt"))
+    store = store_module.Store()
+    hooks = repository._repository_hooks(repo, store, config)
+    repository.install_hook_envs(hooks, store)
+    hook = next(hook for hook in hooks if hook.id == "yamlfmt")
+    return (
+        Path(hook.prefix.prefix_dir)
+        / f"golangenv-{hook.language_version}"
+        / "bin"
+        / "yamlfmt"
+    )
+
+
+@pytest.mark.parametrize("supersede", [False, True])
+@pytest.mark.parametrize(
+    "capture_case",
+    [
+        ("printf 'first  \\nsecond\\n'", "first\nsecond", None),
+        (
+            "printf '\\033[32mgreen\\033[0m\\r\\n  indented\\r\\n'",
+            "green\n  indented",
+            None,
+        ),
+        (
+            "printf '%s\\n' '" + "captured output " * 12 + "'",
+            ("captured output " * 12).rstrip(),
+            None,
+        ),
+        ("printf '4\\n'", "4", None),
+        ("printf 'café\\n\\n  result: pass\\n'", "café\n\n  result: pass", None),
+        (
+            f"printf '{_GREEN}\\n' | grep -c ^a",
+            None,
+            _RED,
+        ),
+    ],
+)
+def test_capture_probe_receipt_is_yamlfmt_fixpoint(
+    tmp_path: Path,
+    capture_yamlfmt: Path,
+    capture_case: tuple[str, str | None, str | None],
+    *,
+    supersede: bool,
+) -> None:
+    """OMN-20665: the real pinned hook must leave honest capture bytes alone."""
+    probe, expected, red_ref = capture_case
+    receipt = _receipt(probe)
+    document = (
+        {"supersedes": "command.yaml", "replacement": receipt, "tombstone": False}
+        if supersede
+        else receipt
+    )
+    path = _write(tmp_path, document)
+    captured = gate.capture_probe(path, tmp_path, red_ref=red_ref)
+    if expected is not None:
+        assert captured["probe_stdout"] == expected
+    else:
+        assert gate._red_green_proof(captured["probe_stdout"]) == {
+            "evidence_ref": _GREEN,
+            "green_exit": 0,
+            "red_exit": 1,
+            "red_ref": _RED,
+        }
+    before = path.read_bytes()
+    formatted = subprocess.run(
+        [
+            str(capture_yamlfmt),
+            "-conf",
+            str(_REPO_ROOT / ".yamlfmt"),
+            str(path),
+        ],
+        cwd=_REPO_ROOT,
+        capture_output=True,
+        text=True,
+        check=False,
+        timeout=900,
+    )
+    assert formatted.returncode == 0, formatted.stdout + formatted.stderr
+    assert path.read_bytes() == before
+    on_disk = gate._capture_target(yaml.safe_load(path.read_text()))
+    assert on_disk == captured
+    assert gate.probe_capture_violations(on_disk, str(path)) == []
+    assert check_receipt_honesty(ModelDodReceipt.model_validate(on_disk)) == []
 
 
 def test_capture_refuses_a_probe_that_prints_nothing(tmp_path: Path) -> None:
