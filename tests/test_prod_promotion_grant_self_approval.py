@@ -397,3 +397,71 @@ class TestTheRefusalIsWiredOnThisBranch:
             "ci.yml does not run on pull requests targeting main, so nothing "
             "here gates a grant PR"
         )
+
+
+GRANT_GATE_RESULT_ENV = "GRANT_GATE_RESULT"
+GRANT_GATE_RESULT_EXPRESSION = f"needs.{SELF_APPROVAL_JOB}.result"
+
+
+class TestTheRollupFailsOnASkippedGrantGate:
+    """OMN-18945 AC-4. `ci-summary`'s generic rollup fails only on `failure`
+    and `cancelled`, so a SKIPPED grant-bearing dependency reads as a pass.
+    The rollup carries one step that holds that dependency to `success`, and
+    this class runs that step's own script rather than grepping for a word.
+    """
+
+    @pytest.fixture(scope="class")
+    def strict_step(self) -> dict[str, Any]:
+        loaded = yaml.safe_load(CI_WORKFLOW.read_text(encoding="utf-8"))
+        steps = loaded["jobs"][CI_SUMMARY_JOB].get("steps")
+        assert isinstance(steps, list), "ci-summary declares no steps list"
+        assert steps, "ci-summary declares no steps"
+        found = [
+            step
+            for step in steps
+            if isinstance(step, dict)
+            and GRANT_GATE_RESULT_EXPRESSION in str(step.get("env", {}))
+        ]
+        assert len(found) == 1, (
+            f"ci-summary must carry exactly one step that reads "
+            f"`{GRANT_GATE_RESULT_EXPRESSION}`, found {len(found)}; without it a "
+            "skipped grant gate is indistinguishable from a passing one"
+        )
+        return found[0]
+
+    @staticmethod
+    def _run(step: dict[str, Any], result: str) -> subprocess.CompletedProcess[str]:
+        return subprocess.run(
+            ["/bin/bash", "-c", str(step["run"])],
+            env={"PATH": "/usr/bin:/bin", GRANT_GATE_RESULT_ENV: result},
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+
+    def test_the_step_reads_the_result_through_its_env(
+        self, strict_step: dict[str, Any]
+    ) -> None:
+        env = strict_step["env"]
+        assert env.get(GRANT_GATE_RESULT_ENV) == (
+            "${{ " + GRANT_GATE_RESULT_EXPRESSION + " }}"
+        ), env
+
+    def test_positive_control_a_successful_grant_gate_passes(
+        self, strict_step: dict[str, Any]
+    ) -> None:
+        """Without this, a step that exited 1 unconditionally would satisfy
+        every refusal case below and prove nothing."""
+        completed = self._run(strict_step, "success")
+        assert completed.returncode == 0, completed.stdout + completed.stderr
+
+    @pytest.mark.parametrize("result", ["skipped", "failure", "cancelled", ""])
+    def test_any_result_but_success_fails_the_rollup(
+        self, strict_step: dict[str, Any], result: str
+    ) -> None:
+        completed = self._run(strict_step, result)
+        assert completed.returncode == 1, (
+            f"result {result!r} must fail the rollup: "
+            + completed.stdout
+            + completed.stderr
+        )
