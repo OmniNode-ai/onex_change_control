@@ -932,7 +932,37 @@ def _main_rollup_failures(jobs: dict[str, Any], ref: str) -> list[str]:
             "cannot block a grant PR: `CI Summary` is the required context on "
             f"{ref} and the standalone grants workflow is not"
         ]
-    return []
+    return _main_rollup_strict_step_failures(summary, ref)
+
+
+def _main_rollup_strict_step_failures(
+    summary: dict[str, Any] | None, ref: str
+) -> list[str]:
+    """OMN-18945 AC-4: a SKIPPED grant job must fail the rollup.
+
+    The generic rollup fails on `failure` and `cancelled` only, so being in
+    `needs:` is not enough: a skipped dependency reads as a pass. The rollup
+    must carry a step that reads the job's result through its own `env` and
+    refuses anything but `success`.
+    """
+    result_expression = f"needs.{MAIN_SELF_APPROVAL_JOB}.result"
+    steps = summary.get("steps") if isinstance(summary, dict) else None
+    for step in steps if isinstance(steps, list) else []:
+        if not isinstance(step, dict):
+            continue
+        env = step.get("env")
+        reads_result = isinstance(env, dict) and any(
+            result_expression in str(value) for value in env.values()
+        )
+        run_text = str(step.get("run", ""))
+        if reads_result and '!= "success"' in run_text and "exit 1" in run_text:
+            return []
+    return [
+        f"`{MAIN_CI_SUMMARY_JOB}`@{ref} has no step that fails unless "
+        f"`{result_expression}` is `success`, so a SKIPPED "
+        f"`{MAIN_SELF_APPROVAL_JOB}` reads as a pass in the rollup, which "
+        "fails only on `failure` and `cancelled`"
+    ]
 
 
 def authoring_time_refusal_present_on_main(

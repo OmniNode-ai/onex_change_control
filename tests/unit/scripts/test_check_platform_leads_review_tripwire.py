@@ -860,6 +860,7 @@ class TestAuthoringTimeRefusalPresentOnMainOMN18945:
         requester: bool = True,
         conditional: str | None = None,
         in_summary: bool = True,
+        strict_step: bool = True,
     ) -> str:
         jobs: list[str] = []
         if job_present:
@@ -871,6 +872,15 @@ class TestAuthoringTimeRefusalPresentOnMainOMN18945:
                 "    steps:\n"
                 f"      - run: uv run some-validator{flag}\n"
             )
+        strict = (
+            "      - env:\n"
+            "          GRANT_GATE_RESULT: "
+            f"${{{{ needs.{MAIN_SELF_APPROVAL_JOB}.result }}}}\n"
+            "        run: |\n"
+            '          if [[ "${GRANT_GATE_RESULT}" != "success" ]]; then exit 1; fi\n'
+            if strict_step
+            else ""
+        )
         needs = ["test", "pre-commit"]
         if in_summary:
             needs.append(MAIN_SELF_APPROVAL_JOB)
@@ -878,6 +888,7 @@ class TestAuthoringTimeRefusalPresentOnMainOMN18945:
             f"  {MAIN_CI_SUMMARY_JOB}:\n"
             f"    needs: [{', '.join(needs)}]\n"
             "    steps:\n"
+            f"{strict}"
             "      - run: echo ok\n"
         )
         return "jobs:\n" + "".join(jobs)
@@ -953,6 +964,21 @@ class TestAuthoringTimeRefusalPresentOnMainOMN18945:
         ok, detail = self._call(self.GOOD_MODULE, self._workflow(in_summary=False))
         assert ok is False
         assert MAIN_CI_SUMMARY_JOB in detail
+
+    def test_trips_when_the_rollup_lets_a_skipped_grant_job_through(self) -> None:
+        """OMN-18945 AC-4. Holding the job in `needs:` is not enough: the
+        generic rollup fails on `failure` and `cancelled` only, so a SKIPPED
+        job reads as a pass unless a step refuses anything but `success`.
+        """
+        ok, detail = self._call(self.GOOD_MODULE, self._workflow(strict_step=False))
+        assert ok is False
+        assert "SKIPPED" in detail
+        assert f"needs.{MAIN_SELF_APPROVAL_JOB}.result" in detail
+
+    def test_positive_control_the_strict_step_is_what_clears_that_fact(self) -> None:
+        """Same workflow with the strict step present: the fact must clear."""
+        ok, detail = self._call(self.GOOD_MODULE, self._workflow(strict_step=True))
+        assert ok is True, detail
 
     def test_every_failing_sub_fact_is_named_not_just_the_first(self) -> None:
         ok, detail = self._call(
