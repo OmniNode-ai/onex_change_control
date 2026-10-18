@@ -799,6 +799,23 @@ jobs:
     needs: [zone-filter, pre-commit, type-check, test, schema-purity, no-localhost-fallbacks, imperative-contract-guard, context-integrity-contracts, migration-conflicts, migration-inventory, kafka-boundary-parity, cross-repo-null-contract, seam-contract-coverage, contract-sync-gate, validate-contracts, honesty-gate, prod-promotion-grant-self-approval]
     if: always()
     steps:
+      # OMN-18945 AC-4. The generic rollup below fails only on `failure` and
+      # `cancelled`, so a SKIPPED dependency reads as a pass. The grant
+      # self-approval job is the one dependency here that carries a refusal on
+      # the branch prod-promotion grants are authored on; a skip of it would
+      # leave a grant PR green with the refusal never having run. Anything but
+      # `success` fails the rollup, and the result is read through env so the
+      # script that decides is the script the test runs.
+      - name: Fail closed unless the grant self-approval gate succeeded
+        env:
+          GRANT_GATE_RESULT: ${{ needs.prod-promotion-grant-self-approval.result }}
+        run: |
+          if [[ "${GRANT_GATE_RESULT}" != "success" ]]; then
+            echo "::error::prod-promotion-grant-self-approval ended '${GRANT_GATE_RESULT}', not 'success'."
+            echo "::error::A skipped or unresolved grant gate is not a pass."
+            exit 1
+          fi
+          echo "prod-promotion-grant-self-approval succeeded"
       - name: Check all jobs passed
         run: |
           if [[ "${{ contains(needs.*.result, 'failure') || contains(needs.*.result, 'cancelled') }}" == "true" ]]; then
