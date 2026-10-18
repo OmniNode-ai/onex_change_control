@@ -274,6 +274,12 @@ def test_existing_tripwire_fails_when_live_protection_loses_its_context() -> Non
         "    name: CI Summary\n"
         "    if: always()\n"
         "    needs: [prod-promotion-grant-self-approval]\n"
+        "    steps:\n"
+        "      - env:\n"
+        "          GRANT_GATE_RESULT: "
+        "${{ needs.prod-promotion-grant-self-approval.result }}\n"
+        "        run: |\n"
+        '          if [[ "${GRANT_GATE_RESULT}" != "success" ]]; then exit 1; fi\n'
     )
     with (
         mock.patch.object(
