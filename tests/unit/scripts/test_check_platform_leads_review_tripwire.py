@@ -893,7 +893,9 @@ class TestAuthoringTimeRefusalPresentOnMainOMN18945:
         )
         return "jobs:\n" + "".join(jobs)
 
-    def _call(self, module_src: str, workflow_src: str) -> tuple[bool, str]:
+    def _call(
+        self, module_src: str, workflow_src: str, *, require_strict_step: bool = False
+    ) -> tuple[bool, str]:
         with (
             mock.patch(
                 f"{MODULE}._read_repo_file_at_ref",
@@ -906,7 +908,9 @@ class TestAuthoringTimeRefusalPresentOnMainOMN18945:
                 return_value=(True, "live protection verified"),
             ),
         ):
-            return authoring_time_refusal_present_on_main(repo=self.REPO)
+            return authoring_time_refusal_present_on_main(
+                repo=self.REPO, require_strict_step=require_strict_step
+            )
 
     def test_passes_when_main_carries_a_wired_blocking_refusal(self) -> None:
         ok, detail = self._call(self.GOOD_MODULE, self._workflow())
@@ -970,14 +974,28 @@ class TestAuthoringTimeRefusalPresentOnMainOMN18945:
         generic rollup fails on `failure` and `cancelled` only, so a SKIPPED
         job reads as a pass unless a step refuses anything but `success`.
         """
-        ok, detail = self._call(self.GOOD_MODULE, self._workflow(strict_step=False))
+        ok, detail = self._call(
+            self.GOOD_MODULE,
+            self._workflow(strict_step=False),
+            require_strict_step=True,
+        )
         assert ok is False
         assert "SKIPPED" in detail
         assert f"needs.{MAIN_SELF_APPROVAL_JOB}.result" in detail
 
     def test_positive_control_the_strict_step_is_what_clears_that_fact(self) -> None:
         """Same workflow with the strict step present: the fact must clear."""
-        ok, detail = self._call(self.GOOD_MODULE, self._workflow(strict_step=True))
+        ok, detail = self._call(
+            self.GOOD_MODULE,
+            self._workflow(strict_step=True),
+            require_strict_step=True,
+        )
+        assert ok is True, detail
+
+    def test_strict_step_fact_is_off_by_default(self) -> None:
+        """Strict-mode invariant: the AC-4 fact ships default OFF, so `main`
+        without the step does not trip until CI opts in."""
+        ok, detail = self._call(self.GOOD_MODULE, self._workflow(strict_step=False))
         assert ok is True, detail
 
     def test_every_failing_sub_fact_is_named_not_just_the_first(self) -> None:

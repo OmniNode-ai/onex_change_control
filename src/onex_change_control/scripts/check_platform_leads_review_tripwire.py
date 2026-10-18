@@ -910,12 +910,18 @@ def _main_refusal_job_failures(jobs: dict[str, Any], ref: str) -> list[str]:
     return failures
 
 
-def _main_rollup_failures(jobs: dict[str, Any], ref: str) -> list[str]:
+def _main_rollup_failures(
+    jobs: dict[str, Any], ref: str, *, require_strict_step: bool = False
+) -> list[str]:
     """The sub-fact that makes the refusal BLOCK rather than merely report.
 
     `CI Summary` is the required context on the other branch and the
     standalone grants workflow is not, so a refusal outside that rollup
     reports red beside a green required context and merges anyway.
+
+    `require_strict_step` (default OFF) adds the OMN-18945 AC-4 strict-step
+    fact. It tightens acceptance on `main`, so it lands off and is switched
+    on in CI in a separate change once `main` carries the step.
     """
     summary = jobs.get(MAIN_CI_SUMMARY_JOB)
     summary_needs = summary.get("needs") if isinstance(summary, dict) else None
@@ -932,6 +938,8 @@ def _main_rollup_failures(jobs: dict[str, Any], ref: str) -> list[str]:
             "cannot block a grant PR: `CI Summary` is the required context on "
             f"{ref} and the standalone grants workflow is not"
         ]
+    if not require_strict_step:
+        return []
     return _main_rollup_strict_step_failures(summary, ref)
 
 
@@ -971,6 +979,7 @@ def authoring_time_refusal_present_on_main(
     ref: str = MAIN_BRANCH_REF,
     credential_origin: str = "unknown",
     deadline: float | None = None,
+    require_strict_step: bool = False,
 ) -> tuple[bool, str]:
     """Prove the refusal exists, is unconditional, and BLOCKS on `main`.
 
@@ -1050,7 +1059,9 @@ def authoring_time_refusal_present_on_main(
         raise TripwireInconclusiveError(msg)
 
     missing.extend(_main_refusal_job_failures(jobs, ref))
-    missing.extend(_main_rollup_failures(jobs, ref))
+    missing.extend(
+        _main_rollup_failures(jobs, ref, require_strict_step=require_strict_step)
+    )
     placement_ok, placement_detail = enforcement_placement_present(
         repo=repo,
         ref=ref,
@@ -1273,6 +1284,15 @@ def main(argv: Sequence[str] | None = None) -> int:
         help="The branch prod-promotion grants are authored on.",
     )
     parser.add_argument(
+        "--require-main-rollup-strict-step",
+        action="store_true",
+        help=(
+            "Also trip unless main's ci-summary carries a step that fails "
+            "unless the grant self-approval job succeeded (OMN-18945 AC-4). "
+            "Default OFF until main carries that step."
+        ),
+    )
+    parser.add_argument(
         "--credential-origin",
         default="unknown",
         choices=["cross_repo_pat", "fallback", "unknown"],
@@ -1309,6 +1329,7 @@ def main(argv: Sequence[str] | None = None) -> int:
             ref=args.main_ref,
             credential_origin=args.credential_origin,
             deadline=retry_deadline,
+            require_strict_step=args.require_main_rollup_strict_step,
         )
         promotion = promotion_time_refusal_present(
             args.promotion_gate_repo,
