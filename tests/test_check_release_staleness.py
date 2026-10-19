@@ -298,6 +298,10 @@ def _enforced(repo: str) -> dict[str, object]:
     }
 
 
+def _opted_in(repo: str) -> dict[str, object]:
+    return {**_enforced(repo), "dev_merge_tag_publishes": True}
+
+
 def _unenforced(repo: str) -> dict[str, object]:
     return {
         "repo": repo,
@@ -314,6 +318,119 @@ def _unenforced(repo: str) -> dict[str, object]:
 # ---------------------------------------------------------------------------
 # The measurement
 # ---------------------------------------------------------------------------
+
+
+def test_dev_merge_tag_publishes_for_an_opted_in_repo(tmp_path: Path) -> None:
+    """Internal consumers already pin the dev merge, so old release debt is fresh."""
+    dev_tag = "dev-20261019000000-aaaaaaaaaaaa"
+    rules = _repo_rules(
+        "omnimarket",
+        tags=["v0.1.0", dev_tag],
+        compare={"v0.1.0": [("aaaa111", _iso(48))], dev_tag: []},
+    )
+    env = _install_gh_stub(tmp_path, rules)
+    result = _run(
+        env,
+        "--policy",
+        str(_policy(tmp_path, [_opted_in("omnimarket")])),
+        "--no-positive-control",
+    )
+
+    assert result.returncode == 0, result.stdout + result.stderr
+    assert "FRESH" in result.stdout
+    assert dev_tag in result.stdout
+
+
+def test_dev_merge_tag_does_not_publish_without_opt_in(tmp_path: Path) -> None:
+    """A repo without the policy opt-in still owes a release for packaged source."""
+    dev_tag = "dev-20261019000000-aaaaaaaaaaaa"
+    rules = _repo_rules(
+        "omnimarket",
+        tags=["v0.1.0", dev_tag],
+        compare={"v0.1.0": [("aaaa111", _iso(48))], dev_tag: []},
+    )
+    env = _install_gh_stub(tmp_path, rules)
+    result = _run(
+        env,
+        "--policy",
+        str(_policy(tmp_path, [_enforced("omnimarket")])),
+        "--no-positive-control",
+    )
+
+    assert result.returncode == 1, result.stdout + result.stderr
+    assert "STALE" in result.stdout
+    assert "v0.1.0" in result.stdout
+    assert dev_tag not in result.stdout
+
+
+def test_dev_latest_never_counts_as_a_dev_merge_tag(tmp_path: Path) -> None:
+    """Opting in does not let an arbitrary dev- tag erase release debt."""
+    rules = _repo_rules(
+        "omnimarket",
+        tags=["v0.1.0", "dev-latest"],
+        compare={"v0.1.0": [("aaaa111", _iso(48))]},
+    )
+    env = _install_gh_stub(tmp_path, rules)
+    result = _run(
+        env,
+        "--policy",
+        str(_policy(tmp_path, [_opted_in("omnimarket")])),
+        "--no-positive-control",
+    )
+
+    assert result.returncode == 1, result.stdout + result.stderr
+    assert "STALE" in result.stdout
+    assert "v0.1.0" in result.stdout
+    assert "dev-latest" not in result.stdout
+
+
+def test_newest_dev_merge_tag_is_chosen_by_name_not_api_order(tmp_path: Path) -> None:
+    """The timestamp in the name decides which dev merge consumers can pin."""
+    dev_tag = "dev-20261019120000-bbbbbbbbbbbb"
+    rules = _repo_rules(
+        "omnimarket",
+        tags=[dev_tag, "v0.1.0", "dev-20261018120000-aaaaaaaaaaaa"],
+        compare={dev_tag: []},
+    )
+    env = _install_gh_stub(tmp_path, rules)
+    result = _run(
+        env,
+        "--policy",
+        str(_policy(tmp_path, [_opted_in("omnimarket")])),
+        "--no-positive-control",
+    )
+
+    assert result.returncode == 0, result.stdout + result.stderr
+    assert "FRESH" in result.stdout
+    assert dev_tag in result.stdout
+
+
+@pytest.mark.parametrize("opted_in", [True, False])
+def test_dev_merge_tag_without_releases_needs_opt_in(
+    tmp_path: Path,
+    *,
+    opted_in: bool,
+) -> None:
+    """A dev merge alone is published only when the repo's consumers pin it."""
+    dev_tag = "dev-20261019000000-aaaaaaaaaaaa"
+    rules = _repo_rules("omnimarket", tags=[dev_tag], compare={dev_tag: []})
+    env = _install_gh_stub(tmp_path, rules)
+    entry = _opted_in("omnimarket") if opted_in else _enforced("omnimarket")
+    result = _run(
+        env,
+        "--policy",
+        str(_policy(tmp_path, [entry])),
+        "--no-positive-control",
+    )
+
+    assert result.returncode == (0 if opted_in else 1), result.stdout + result.stderr
+    if opted_in:
+        assert dev_tag in result.stdout
+        assert "FRESH" in result.stdout
+    else:
+        assert (
+            "no vX.Y.Z tags exist — it has never published a release" in result.stdout
+        )
 
 
 def test_enforced_repo_stale_beyond_the_window_fails(tmp_path: Path) -> None:
@@ -378,6 +495,24 @@ def test_docs_only_commits_are_not_release_debt(tmp_path: Path) -> None:
 # ---------------------------------------------------------------------------
 # Fail-closed
 # ---------------------------------------------------------------------------
+
+
+def test_dev_merge_tag_opt_in_keeps_the_release_positive_control(
+    tmp_path: Path,
+) -> None:
+    """A fresh dev merge still needs proof from an old release tag to pass."""
+    dev_tag = "dev-20261019000000-aaaaaaaaaaaa"
+    rules = _repo_rules(
+        "omnimarket",
+        tags=["v0.1.0", "v0.2.0", dev_tag],
+        compare={"v0.1.0": [("aaaa111", _iso(48))], dev_tag: []},
+    )
+    env = _install_gh_stub(tmp_path, rules)
+    result = _run(env, "--policy", str(_policy(tmp_path, [_opted_in("omnimarket")])))
+
+    assert result.returncode == 0, result.stdout + result.stderr
+    assert dev_tag in result.stdout
+    assert "control PASSED: omnimarket vs tag v0.1.0" in result.stdout
 
 
 def test_zero_stale_rows_with_a_blind_control_is_not_green(tmp_path: Path) -> None:
@@ -949,6 +1084,17 @@ def test_enforced_must_be_stated_explicitly(tmp_path: Path) -> None:
     assert "explicit true or false" in result.stderr
 
 
+def test_dev_merge_tag_publishes_must_be_a_bool(tmp_path: Path) -> None:
+    """A string opt-in is a configuration error, never an implicit decision."""
+    entry = {**_enforced("omnimarket"), "dev_merge_tag_publishes": "yes"}
+    env = _install_gh_stub(tmp_path, [])
+    result = _run(env, "--check-roster", "--policy", str(_policy(tmp_path, [entry])))
+
+    assert result.returncode == 2, result.stdout + result.stderr
+    assert "omnimarket" in result.stderr
+    assert "dev_merge_tag_publishes must be true or false" in result.stderr
+
+
 def test_unenforced_entry_without_a_ticket_is_rejected(tmp_path: Path) -> None:
     entry = _unenforced("omniclaude")
     del entry["deferral_ticket"]
@@ -1154,6 +1300,24 @@ def test_live_policy_and_baseline_agree() -> None:
         timeout=60,
     )
     assert result.returncode == 0, result.stdout + result.stderr
+
+
+def test_live_policy_omnimarket_dev_merge_tags_publish() -> None:
+    """Omnimarket's internal consumers pin dev merge tags (OMN-17427)."""
+    spec = importlib.util.spec_from_file_location("_staleness_live_policy", SCRIPT)
+    assert spec is not None
+    assert spec.loader is not None
+    module = importlib.util.module_from_spec(spec)
+    sys.modules[spec.name] = module
+    try:
+        spec.loader.exec_module(module)
+        policy = module.load_policy(LIVE_POLICY)
+    finally:
+        sys.modules.pop(spec.name, None)
+
+    assert {repo.repo for repo in policy.repos if repo.dev_merge_tag_publishes} == {
+        "omnimarket"
+    }
 
 
 def test_live_policy_paths_match_the_release_on_merge_filter() -> None:

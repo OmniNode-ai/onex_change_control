@@ -25,6 +25,10 @@ For each repo in the publishing set (``release_staleness_policy.yaml``):
 
 * the latest ``vX.Y.Z`` tag, chosen by SEMVER ORDER, never by the API's
   return order (the tags endpoint is not sorted by version);
+* for a repo whose policy sets ``dev_merge_tag_publishes``, the base is the
+  newest ``dev-<YYYYMMDDHHMMSS>-<sha12>`` dev merge tag when one exists, because
+  internal consumers pin it (rulings 2026-10-16T07:34:18Z, 09:35:49Z;
+  OMN-17427); a stale row there means the dev merge tagger stopped;
 * the commits on ``dev`` that are not contained in that tag, via
   ``compare/{tag}...dev``;
 * which of those touch a **packaged path** — the same set the release-on-merge
@@ -199,6 +203,12 @@ ORG = "OmniNode-ai"
 #: fresh.
 RELEASE_TAG = re.compile(r"^v(\d+)\.(\d+)\.(\d+)$")
 
+#: A commit a dev merge tag reaches is published for repos whose internal
+#: consumers pin dev merge tags (rulings 2026-10-16T07:34:18Z, 09:35:49Z;
+#: OMN-17427). Anything else in dev-, e.g. dev-latest, never counts. The
+#: 14-digit timestamp makes C-order name order time order.
+DEV_MERGE_TAG = re.compile(r"^dev-(\d{14})-([0-9a-f]{12})$")
+
 #: Verdicts. ``STALE_UNENFORCED`` is stale-and-recorded: it prints in the
 #: table and is counted, but does not fail the run, because the repo has no
 #: release-on-merge trigger yet and therefore no mechanism by which anyone
@@ -315,6 +325,7 @@ class RepoPolicy:
     enforced: bool
     deferral_reason: str
     deferral_ticket: str
+    dev_merge_tag_publishes: bool = False
 
 
 @dataclass(frozen=True)
@@ -391,6 +402,11 @@ def load_policy(path: Path) -> Policy:
                 f"policy: {name}: enforced must be an explicit true or false — "
                 "a repo whose blast radius is left to a default is a repo nobody decided about"
             )
+        dev_merge_tag_publishes = entry.get("dev_merge_tag_publishes", False)
+        if not isinstance(dev_merge_tag_publishes, bool):
+            raise PolicyError(
+                f"policy: {name}: dev_merge_tag_publishes must be true or false"
+            )
         reason = entry.get("deferral_reason", "")
         ticket = entry.get("deferral_ticket", "")
         if not enforced:
@@ -414,6 +430,7 @@ def load_policy(path: Path) -> Policy:
                 enforced=enforced,
                 deferral_reason=reason if isinstance(reason, str) else "",
                 deferral_ticket=ticket if isinstance(ticket, str) else "",
+                dev_merge_tag_publishes=dev_merge_tag_publishes,
             )
         )
 
@@ -612,15 +629,18 @@ def _semver(tag: str) -> tuple[int, int, int]:
     return (int(match.group(1)), int(match.group(2)), int(match.group(3)))
 
 
-def fetch_release_tags(repos: Sequence[str]) -> dict[str, list[str] | str]:
-    """Every ``vX.Y.Z`` tag for each repo, ascending by semver.
+def _fetch_tags(
+    repos: Sequence[str],
+) -> dict[str, tuple[list[str], str | None] | str]:
+    """Release tags ascending by semver, and the newest dev merge tag, per repo.
 
     ONE GraphQL document covers the whole roster, and a second only covers the
     repos that still have pages left. The eight-repo roster costs 2 requests
     where the per-repo REST paginate cost 11 (148/122/113/53/19/36/44/36 tags).
 
     Returns a per-repo result so a single unreadable repo stays a single ERROR
-    row: the value is the ascending tag list, or an error string.
+    row: the value is ``(release_tags, newest_dev_merge_tag)``, or an error
+    string. The dev merge tags ride the same pages, so they cost no request.
 
     SEMVER ORDER IS STILL APPLIED HERE, and still not taken from the API.
     GraphQL can order refs alphabetically or by tag commit date, and neither is
@@ -631,6 +651,7 @@ def fetch_release_tags(repos: Sequence[str]) -> dict[str, list[str] | str]:
     is chosen by semver order, never by the API return order.
     """
     collected: dict[str, list[str]] = {repo: [] for repo in repos}
+    dev_tags: dict[str, str] = {}
     failed: dict[str, str] = {}
     cursors: dict[str, str | None] = {repo: None for repo in repos}
     pending = list(repos)
@@ -666,6 +687,8 @@ def fetch_release_tags(repos: Sequence[str]) -> dict[str, list[str] | str]:
                 name = str((entry or {}).get("name", "")).strip()
                 if RELEASE_TAG.match(name):
                     collected[repo].append(name)
+                elif DEV_MERGE_TAG.match(name):
+                    dev_tags[repo] = max(dev_tags.get(repo, ""), name)
             page = refs.get("pageInfo") or {}
             if page.get("hasNextPage") and page.get("endCursor"):
                 cursors[repo] = str(page["endCursor"])
@@ -678,16 +701,32 @@ def fetch_release_tags(repos: Sequence[str]) -> dict[str, list[str] | str]:
                 + ", ".join(pending)
             )
 
-    result: dict[str, list[str] | str] = {}
+    result: dict[str, tuple[list[str], str | None] | str] = {}
     for repo in repos:
         if repo in failed:
             result[repo] = f"{repo}: {failed[repo]}"
-        elif not collected[repo]:
-            result[repo] = (
-                f"{repo}: no vX.Y.Z tags exist — it has never published a release"
-            )
         else:
-            result[repo] = sorted(set(collected[repo]), key=_semver)
+            result[repo] = (
+                sorted(set(collected[repo]), key=_semver),
+                dev_tags.get(repo),
+            )
+    return result
+
+
+def _no_release_error(repo: str) -> str:
+    return f"{repo}: no vX.Y.Z tags exist — it has never published a release"
+
+
+def fetch_release_tags(repos: Sequence[str]) -> dict[str, list[str] | str]:
+    """Every ``vX.Y.Z`` tag for each repo, ascending by semver, or an error."""
+    result: dict[str, list[str] | str] = {}
+    for repo, answer in _fetch_tags(repos).items():
+        if isinstance(answer, str):
+            result[repo] = answer
+        elif not answer[0]:
+            result[repo] = _no_release_error(repo)
+        else:
+            result[repo] = answer[0]
     return result
 
 
@@ -909,13 +948,21 @@ def measure_roster(
     # Phase 1 --------------------------------------------------------------
     bases: dict[str, str] = {}
     if base_override is None:
-        tags = fetch_release_tags([r.repo for r in policy_repos])
+        tags = _fetch_tags([r.repo for r in policy_repos])
         for policy_repo in policy_repos:
             answer = tags[policy_repo.repo]
             if isinstance(answer, str):
                 errors[policy_repo.repo] = answer
+                continue
+            release_tags, dev_tag = answer
+            # OMN-17427: an opted-in repo is measured from its newest dev merge
+            # tag. The positive control passes base_override and never gets here.
+            if policy_repo.dev_merge_tag_publishes and dev_tag is not None:
+                bases[policy_repo.repo] = dev_tag
+            elif release_tags:
+                bases[policy_repo.repo] = release_tags[-1]
             else:
-                bases[policy_repo.repo] = answer[-1]
+                errors[policy_repo.repo] = _no_release_error(policy_repo.repo)
     else:
         for policy_repo in policy_repos:
             bases[policy_repo.repo] = base_override
